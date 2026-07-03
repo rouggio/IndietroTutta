@@ -1,5 +1,6 @@
 #include <TFT_eSPI.h>
 #include <TinyGPSPlus.h>
+#include <SPI.h>
 
 #include "gps.h"
 #include "screens.h"
@@ -13,17 +14,18 @@ unsigned long lastUpdate = 0;
 int page = 0;
 const int NUM_PAGES = 4;
 
-void setup() {
+
+void setup(void) {
   Serial.begin(115200);
+  delay(1000);
 
   GPS_begin();
 
   tft.init();
-  tft.invertDisplay(false);
   tft.setRotation(1);
+  tft.invertDisplay(false);
 
   drawSplash(tft);
-  delay(1500);
 }
 
 void loop() {
@@ -41,4 +43,5 @@ void loop() {
     lastUpdate = millis();
     drawScreen(tft, gps, page);
   }
+
 }

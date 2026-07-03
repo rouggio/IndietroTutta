@@ -1,4 +1,4 @@
-PORT ?= /dev/ttyUSB0
+PORT ?= /dev/ttyUSB1
 BAUD ?= 115200
 VENV := .venv
 PY := $(VENV)/bin/python
@@ -24,6 +24,10 @@ monitor:
 
 clean:
 	$(PY) -m platformio run -t clean
+
+deploy: build upload
+
+all: build upload monitor
 
 watch:
 	@command -v entr >/dev/null 2>&1 || (echo "Please install 'entr' or use scripts/watch.sh" && exit 1)
