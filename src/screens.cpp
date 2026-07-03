@@ -26,78 +26,57 @@ static void drawScreenOne(TFT_eSPI &tft, TinyGPSPlus &gps) {
   int satCount = gps.satellites.isValid() ? gps.satellites.value() : 0;
 
 
-  if (gps.speed.isValid() && gps.satellites.isValid()) {
-    maybeClear(tft, 0);
+  if (gps.speed.isValid()) {
+    maybeClear(tft, 1);
 
+    // number of connected satellites
     tft.setTextDatum(TR_DATUM);
     tft.setTextColor(TFT_CYAN, TFT_BLACK);
     tft.drawString("Sats: " + String(satCount), 315, 4, 2);
 
+    // speed in knots
     float speed = gps.speed.knots();
     tft.setTextDatum(MC_DATUM);
     tft.setTextColor(TFT_YELLOW, TFT_BLACK);
     tft.drawString(String(speed, 1), CX, CY - 20, 8);
     tft.drawString("KNOTS", CX, CY + 40, 4);
+
   } else {
-    maybeClear(tft, 1);
-    tft.setTextColor(TFT_YELLOW, TFT_BLACK);
-    tft.drawString("NO GPS", CX, CY, 4);
-  }
-}
 
-// ---------------- COURSE ----------------
-static void drawCourse(TFT_eSPI &tft, TinyGPSPlus &gps) {
-  tft.setTextDatum(MC_DATUM);
-
-  if (gps.course.isValid()) {
     maybeClear(tft, 2);
-    float c = gps.course.deg();
-    tft.setTextColor(TFT_WHITE, TFT_BLACK);
-    tft.drawString("COURSE", CX, CY - 60, 4);
-    tft.drawString(String(c, 0) + "°", CX, CY, 6);
-  } else {
-    maybeClear(tft, 3);
     tft.setTextColor(TFT_YELLOW, TFT_BLACK);
-    tft.drawString("NO COURSE DATA", CX, CY, 4);
+    tft.drawString("Waiting GPS Fix", CX, CY, 4);
+
   }
 }
 
-// ---------------- POSITION ----------------
-static void drawPosition(TFT_eSPI &tft, TinyGPSPlus &gps) {
+// ---------------- SCREEN TWO ----------------
+static void drawScreenTwo(TFT_eSPI &tft, TinyGPSPlus &gps) {
   tft.setTextDatum(TL_DATUM);
 
   tft.setTextColor(TFT_WHITE, TFT_BLACK);
 
   if (gps.location.isValid()) {
-    maybeClear(tft, 4);
-    tft.drawString("LAT:", 10, 30, 4);
-    tft.drawString(String(gps.location.lat(), 6), 10, 70, 4);
-    tft.drawString("LON:", 10, 120, 4);
-    tft.drawString(String(gps.location.lng(), 6), 10, 160, 4);
+    maybeClear(tft, 1);
+    tft.drawString("LAT: " + String(gps.location.lat(), 6), 10, 10, 4);
+    tft.drawString("LON: " + String(gps.location.lng(), 6), 10, 40, 4);
+    tft.drawString("Bearing: " + String(gps.course.deg(), 0), 10, 70, 4);
+    tft.drawString("SAT: " + String(gps.satellites.value()), 10, 100, 4);
+    tft.drawString("HDOP: " + String(gps.hdop.hdop(), 1), 10, 130, 4);
+    tft.drawString("ALT: " + String(gps.altitude.meters(), 0) + " m", 10, 160, 4);
   } else {
-    maybeClear(tft, 5);
+    maybeClear(tft, 2);
     tft.setTextDatum(MC_DATUM);
     tft.setTextColor(TFT_YELLOW, TFT_BLACK);
-    tft.drawString("WAITING GPS FIX", CX, CY, 4);
+    tft.drawString("Waiting GPS Fix", CX, CY, 4);
   }
-}
-
-// ---------------- STATUS ----------------
-static void drawStatus(TFT_eSPI &tft, TinyGPSPlus &gps) {
-  tft.setTextDatum(TL_DATUM);
-  tft.setTextColor(TFT_WHITE, TFT_BLACK);
-  tft.drawString("SAT: " + String(gps.satellites.value()), 10, 40, 4);
-  tft.drawString("HDOP: " + String(gps.hdop.hdop(), 1), 10, 90, 4);
-  tft.drawString("ALT: " + String(gps.altitude.meters(), 0) + " m", 10, 140, 4);
 }
 
 // ---------------- MAIN ROUTER ----------------
 void drawScreen(TFT_eSPI &tft, TinyGPSPlus &gps, int page) {
   switch (page) {
     case 0: drawScreenOne(tft, gps); break;
-    case 1: drawCourse(tft, gps); break;
-    case 2: drawPosition(tft, gps); break;
-    case 3: drawStatus(tft, gps); break;
+    case 1: drawScreenTwo(tft, gps); break;
 
     default:
       tft.fillScreen(TFT_BLACK);

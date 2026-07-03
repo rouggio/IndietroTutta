@@ -15,7 +15,7 @@ unsigned long lastButtonChange = 0;
 unsigned long lastUpdate = 0;
 
 int page = 0;
-const int NUM_PAGES = 4;
+const int NUM_PAGES = 2;
 bool lastButtonState = HIGH;
 
 void setup(void) {
