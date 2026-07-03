@@ -35,8 +35,8 @@ static void drawScreenOne(TFT_eSPI &tft, TinyGPSPlus &gps) {
 
     float speed = gps.speed.knots();
     tft.setTextDatum(MC_DATUM);
-    tft.setTextColor(TFT_GREEN, TFT_BLACK);
-    tft.drawString(String(speed, 1), CX, CY - 20, 6);
+    tft.setTextColor(TFT_YELLOW, TFT_BLACK);
+    tft.drawString(String(speed, 1), CX, CY - 20, 8);
     tft.drawString("KNOTS", CX, CY + 40, 4);
   } else {
     maybeClear(tft, 1);
