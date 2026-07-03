@@ -5,10 +5,19 @@ static const int CY = 120;
 
 void drawSplash(TFT_eSPI &tft) {
   tft.fillScreen(TFT_WHITE);
-  tft.setTextColor(TFT_CYAN, TFT_BLACK);
+  tft.setTextColor(TFT_BLUE, TFT_WHITE);
   tft.setTextDatum(MC_DATUM);
   tft.drawString("GPS MARINE", CX, CY, 4);
   delay(2000);
+  tft.fillScreen(TFT_BLACK);
+}
+
+static void maybeClear(TFT_eSPI &tft, int newState) {
+  static int lastState = -1;
+  if (newState != lastState) {
+    lastState = newState;
+    tft.fillScreen(TFT_BLACK);
+  }
 }
 
 // ---------------- SPEED ----------------
@@ -18,11 +27,13 @@ static void drawSpeed(TFT_eSPI &tft, TinyGPSPlus &gps) {
   tft.setTextDatum(MC_DATUM);
 
   if (gps.speed.isValid()) {
+    maybeClear(tft, 0);
     float speed = gps.speed.knots();
     tft.setTextColor(TFT_GREEN, TFT_BLACK);
     tft.drawString(String(speed, 1), CX, CY - 20, 6);
     tft.drawString("KNOTS", CX, CY + 40, 4);
   } else {
+    maybeClear(tft, 1);
     tft.setTextColor(TFT_YELLOW, TFT_BLACK);
     tft.drawString("NO GPS", CX, CY, 4);
   }
@@ -33,11 +44,13 @@ static void drawCourse(TFT_eSPI &tft, TinyGPSPlus &gps) {
   tft.setTextDatum(MC_DATUM);
 
   if (gps.course.isValid()) {
+    maybeClear(tft, 2);
     float c = gps.course.deg();
     tft.setTextColor(TFT_WHITE, TFT_BLACK);
     tft.drawString("COURSE", CX, CY - 60, 4);
     tft.drawString(String(c, 0) + "°", CX, CY, 6);
   } else {
+    maybeClear(tft, 3);
     tft.setTextColor(TFT_YELLOW, TFT_BLACK);
     tft.drawString("NO COURSE DATA", CX, CY, 4);
   }
@@ -50,11 +63,13 @@ static void drawPosition(TFT_eSPI &tft, TinyGPSPlus &gps) {
   tft.setTextColor(TFT_WHITE, TFT_BLACK);
 
   if (gps.location.isValid()) {
+    maybeClear(tft, 4);
     tft.drawString("LAT:", 10, 30, 4);
     tft.drawString(String(gps.location.lat(), 6), 10, 70, 4);
     tft.drawString("LON:", 10, 120, 4);
     tft.drawString(String(gps.location.lng(), 6), 10, 160, 4);
   } else {
+    maybeClear(tft, 5);
     tft.setTextDatum(MC_DATUM);
     tft.setTextColor(TFT_YELLOW, TFT_BLACK);
     tft.drawString("WAITING GPS FIX", CX, CY, 4);
