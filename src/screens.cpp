@@ -20,15 +20,21 @@ static void maybeClear(TFT_eSPI &tft, int newState) {
   }
 }
 
-// ---------------- SPEED ----------------
-static void drawSpeed(TFT_eSPI &tft, TinyGPSPlus &gps) {
+// ---------------- SCREEN ONE ----------------
+static void drawScreenOne(TFT_eSPI &tft, TinyGPSPlus &gps) {
   float speed = gps.speed.isValid() ? gps.speed.knots() : 0;
+  int satCount = gps.satellites.isValid() ? gps.satellites.value() : 0;
 
-  tft.setTextDatum(MC_DATUM);
 
-  if (gps.speed.isValid()) {
+  if (gps.speed.isValid() && gps.satellites.isValid()) {
     maybeClear(tft, 0);
+
+    tft.setTextDatum(TR_DATUM);
+    tft.setTextColor(TFT_CYAN, TFT_BLACK);
+    tft.drawString("Sats: " + String(satCount), 315, 4, 2);
+
     float speed = gps.speed.knots();
+    tft.setTextDatum(MC_DATUM);
     tft.setTextColor(TFT_GREEN, TFT_BLACK);
     tft.drawString(String(speed, 1), CX, CY - 20, 6);
     tft.drawString("KNOTS", CX, CY + 40, 4);
@@ -88,7 +94,7 @@ static void drawStatus(TFT_eSPI &tft, TinyGPSPlus &gps) {
 // ---------------- MAIN ROUTER ----------------
 void drawScreen(TFT_eSPI &tft, TinyGPSPlus &gps, int page) {
   switch (page) {
-    case 0: drawSpeed(tft, gps); break;
+    case 0: drawScreenOne(tft, gps); break;
     case 1: drawCourse(tft, gps); break;
     case 2: drawPosition(tft, gps); break;
     case 3: drawStatus(tft, gps); break;
