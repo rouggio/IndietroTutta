@@ -25,8 +25,11 @@ void setup(void) {
   GPS_begin();
 
   tft.init();
-  tft.setRotation(1);
   tft.invertDisplay(false);
+  tft.setRotation(1);
+  tft.writecommand(0x36);
+  tft.writedata(0x68);
+
   pinMode(SCREEN_BUTTON_PIN, INPUT_PULLUP);
 
   drawSplash(tft);
@@ -48,5 +51,4 @@ void loop() {
     lastUpdate = millis();
     drawScreen(tft, gps, page);
   }
-
 }

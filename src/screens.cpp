@@ -4,10 +4,10 @@ static const int CX = 160;
 static const int CY = 120;
 
 void drawSplash(TFT_eSPI &tft) {
-  tft.fillScreen(TFT_WHITE);
-  tft.setTextColor(TFT_BLUE, TFT_WHITE);
+  tft.fillScreen(TFT_BLACK);
+  tft.setTextColor(TFT_BLUE, TFT_BLACK);
   tft.setTextDatum(MC_DATUM);
-  tft.drawString("GPS MARINE", CX, CY, 4);
+  tft.drawString("Indietro Tutta!", CX, CY, 4);
   delay(2000);
   tft.fillScreen(TFT_BLACK);
 }
@@ -30,13 +30,19 @@ static void drawScreenOne(TFT_eSPI &tft, TinyGPSPlus &gps) {
     maybeClear(tft, 1);
 
     // number of connected satellites
-    tft.setTextDatum(TR_DATUM);
     tft.setTextColor(TFT_CYAN, TFT_BLACK);
-    tft.drawString("Sats: " + String(satCount), 315, 4, 2);
+    tft.setTextDatum(TL_DATUM);      // Label: top-left
+    tft.drawString("SAT", 270, 4, 2);
+    tft.setTextDatum(TR_DATUM);      // Value: top-right
+    char buf[4];
+    sprintf(buf, "%3d", satCount);
+    tft.drawString(buf, 315, 4, 2);
 
     // speed in knots
     float speed = gps.speed.knots();
     tft.setTextDatum(MC_DATUM);
+    tft.setTextColor(TFT_BLACK, TFT_BLACK);
+    tft.drawString("      ", CX, CY - 20, 8);
     tft.setTextColor(TFT_YELLOW, TFT_BLACK);
     tft.drawString(String(speed, 1), CX, CY - 20, 8);
     tft.drawString("KNOTS", CX, CY + 40, 4);
