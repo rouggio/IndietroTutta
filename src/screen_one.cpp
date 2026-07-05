@@ -2,6 +2,7 @@
 #include <TFT_eSPI.h>
 #include <TinyGPSPlus.h>
 #include "wifi_manager.h"
+#include "config_store.h"
 
 #include "screen_one.h"
 
@@ -90,6 +91,114 @@ const uint16_t icon_wifi[256] PROGMEM = {
   0x0000, 0x0000, 0x0000, 0x0000
 };
 
+static int getConfiguredTimezoneOffsetHours()
+{
+  Config cfg = {};
+  if (loadConfig(cfg))
+  {
+    return cfg.timezoneOffsetHours;
+  }
+
+  return 0;
+}
+
+static int daysInMonth(int month, int year)
+{
+  switch (month)
+  {
+    case 2:
+      return ((year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)) ? 29 : 28);
+    case 4:
+    case 6:
+    case 9:
+    case 11:
+      return 30;
+    default:
+      return 31;
+  }
+}
+
+static void applyTimezoneOffset(int offsetHours, int &hour, int &day, int &month, int &year)
+{
+  hour += offsetHours;
+
+  while (hour < 0)
+  {
+    hour += 24;
+    day--;
+  }
+
+  while (hour >= 24)
+  {
+    hour -= 24;
+    day++;
+  }
+
+  while (day < 1)
+  {
+    month--;
+    if (month < 1)
+    {
+      month = 12;
+      year--;
+    }
+    day = daysInMonth(month, year);
+  }
+
+  while (day > daysInMonth(month, year))
+  {
+    day -= daysInMonth(month, year);
+    month++;
+    if (month > 12)
+    {
+      month = 1;
+      year++;
+    }
+  }
+}
+
+static String formatTimeWithOffset(TinyGPSPlus &gps, int offsetHours)
+{
+  if (!gps.time.isValid())
+  {
+    return "--:--:--";
+  }
+
+  int hour = gps.time.hour();
+  int minute = gps.time.minute();
+  int second = gps.time.second();
+
+  if (gps.date.isValid())
+  {
+    int day = gps.date.day();
+    int month = gps.date.month();
+    int year = gps.date.year();
+    applyTimezoneOffset(offsetHours, hour, day, month, year);
+  }
+
+  return String(hour) + ":" + String(minute) + ":" + String(second);
+}
+
+static String formatDateWithOffset(TinyGPSPlus &gps, int offsetHours)
+{
+  if (!gps.date.isValid())
+  {
+    return "--/--/----";
+  }
+
+  int day = gps.date.day();
+  int month = gps.date.month();
+  int year = gps.date.year();
+  int hour = gps.time.isValid() ? gps.time.hour() : 0;
+
+  if (gps.time.isValid())
+  {
+    applyTimezoneOffset(offsetHours, hour, day, month, year);
+  }
+
+  return String(day) + "/" + String(month) + "/" + String(year);
+}
+
 static void maybeClear(int newState)
 {
   static int lastState = -1;
@@ -171,9 +280,11 @@ void drawBottomBar(String timeStr, String dateStr)
 
 void drawScreenOne(TinyGPSPlus &gps)
 {
+  int timezoneOffsetHours = getConfiguredTimezoneOffsetHours();
+
   drawTopBar(gps);
   drawSpeed(gps.speed.isValid() ? gps.speed.knots() : 0);
   drawCourse(gps);
-  drawBottomBar(gps.time.isValid() ? String(gps.time.hour()) + ":" + String(gps.time.minute()) + ":" + String(gps.time.second()) : "--:--:--",
-                gps.date.isValid() ? String(gps.date.day()) + "/" + String(gps.date.month()) + "/" + String(gps.date.year()) : "--/--/----");
+  drawBottomBar(formatTimeWithOffset(gps, timezoneOffsetHours),
+                formatDateWithOffset(gps, timezoneOffsetHours));
 }

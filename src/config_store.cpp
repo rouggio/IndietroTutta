@@ -11,6 +11,10 @@ bool loadConfig(Config& config) {
     size_t len = prefs.getBytes("cfg", &config, sizeof(config));
     prefs.end();
 
+    if (len != sizeof(config)) {
+        config.timezoneOffsetHours = 0;
+    }
+
     return len == sizeof(config);
 }
 

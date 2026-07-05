@@ -14,7 +14,7 @@ static int cachedNetworkCount = 0;
 static unsigned long lastScanTime = 0;
 static const unsigned long scanCacheMs = 30000;
 
-static TinyGPSPlus* gpsRef = nullptr;
+static TinyGPSPlus *gpsRef = nullptr;
 
 static int getNetworkScanCount()
 {
@@ -82,8 +82,40 @@ static void handleSetupPrompt()
     }
 
     html += "<label>Password</label>"
-            "<input type='password' name='password' placeholder='Enter password'>"
-            "<input type='submit' value='Save'>"
+            "<input type='password' name='password' placeholder='Enter password'>";
+
+    html += "<label>Timezone</label>"
+            "<select name='timezoneOffset'>"
+            "<option value='0'>UTC</option>"
+            "<option value='-12'>UTC-12</option>"
+            "<option value='-11'>UTC-11</option>"
+            "<option value='-10'>UTC-10</option>"
+            "<option value='-9'>UTC-9</option>"
+            "<option value='-8'>UTC-8</option>"
+            "<option value='-7'>UTC-7</option>"
+            "<option value='-6'>UTC-6</option>"
+            "<option value='-5'>UTC-5</option>"
+            "<option value='-4'>UTC-4</option>"
+            "<option value='-3'>UTC-3</option>"
+            "<option value='-2'>UTC-2</option>"
+            "<option value='-1'>UTC-1</option>"
+            "<option value='1'>UTC+1</option>"
+            "<option value='2'>UTC+2</option>"
+            "<option value='3'>UTC+3</option>"
+            "<option value='4'>UTC+4</option>"
+            "<option value='5'>UTC+5</option>"
+            "<option value='6'>UTC+6</option>"
+            "<option value='7'>UTC+7</option>"
+            "<option value='8'>UTC+8</option>"
+            "<option value='9'>UTC+9</option>"
+            "<option value='10'>UTC+10</option>"
+            "<option value='11'>UTC+11</option>"
+            "<option value='12'>UTC+12</option>"
+            "<option value='13'>UTC+13</option>"
+            "<option value='14'>UTC+14</option>"
+            "</select>";
+
+    html += "<input type='submit' value='Save'>"
             "</form></div></body></html>";
 
     server.send(200, "text/html", html);
@@ -100,6 +132,8 @@ static void handleSetupSave()
     strncpy(cfg.password,
             server.arg("password").c_str(),
             sizeof(cfg.password) - 1);
+
+    cfg.timezoneOffsetHours = server.arg("timezoneOffset").toInt();
 
     saveConfig(cfg);
 
@@ -139,8 +173,8 @@ static void handleStatus()
     doc["mode"] = (WiFi.getMode() == WIFI_AP) ? "Access Point" : "Station";
     doc["ssid"] = WiFi.SSID();
     doc["ip"] = (WiFi.getMode() == WIFI_AP)
-                     ? WiFi.softAPIP().toString()
-                     : WiFi.localIP().toString();
+                    ? WiFi.softAPIP().toString()
+                    : WiFi.localIP().toString();
     doc["rssi"] = WiFi.RSSI();
     if (gpsRef)
     {
@@ -149,7 +183,6 @@ static void handleStatus()
         doc["gps"]["satellites"] = gpsRef->satellites.value();
         doc["gps"]["hdop"] = gpsRef->hdop.value();
     }
-
 
     String json;
     serializeJson(doc, json);
