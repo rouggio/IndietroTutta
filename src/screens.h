@@ -2,5 +2,6 @@
 #include <TFT_eSPI.h>
 #include <TinyGPSPlus.h>
 
-void drawSplash(TFT_eSPI &tft);
-void drawScreen(TFT_eSPI &tft, TinyGPSPlus &gps, int page);
+void drawSplash();
+void screenInit();
+void screenLoop(TinyGPSPlus &gps);

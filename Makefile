@@ -1,4 +1,4 @@
-PORT ?= /dev/ttyUSB1
+PORT ?= /dev/ttyUSB0
 BAUD ?= 115200
 VENV := .venv
 PY := $(VENV)/bin/python

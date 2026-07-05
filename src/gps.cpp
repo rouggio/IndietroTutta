@@ -7,15 +7,12 @@ HardwareSerial GPSSerial(2);
 #define GPS_TX 17
 #define GPS_BAUD 9600
 
-void GPS_begin()
-{
+void gpsInit() {
   GPSSerial.begin(GPS_BAUD, SERIAL_8N1, GPS_RX, GPS_TX);
 }
 
-void GPS_update(TinyGPSPlus &gps)
-{
-  while (GPSSerial.available())
-  {
+void gpsLoop(TinyGPSPlus &gps) {
+  while (GPSSerial.available()) {
     gps.encode(GPSSerial.read());
   }
 }

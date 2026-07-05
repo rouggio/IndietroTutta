@@ -1,54 +1,30 @@
-#include <TFT_eSPI.h>
 #include <TinyGPSPlus.h>
-#include <SPI.h>
 
+#include "wifi_manager.h"
 #include "gps.h"
 #include "screens.h"
+#include <WiFi.h>
 
-TFT_eSPI tft = TFT_eSPI();
 TinyGPSPlus gps;
 
-const int SCREEN_BUTTON_PIN = 22;
-const unsigned long BUTTON_DEBOUNCE_MS = 250;
-
-unsigned long lastButtonChange = 0;
-unsigned long lastUpdate = 0;
-
-int page = 0;
-const int NUM_PAGES = 2;
-bool lastButtonState = HIGH;
 
 void setup(void) {
   Serial.begin(115200);
   delay(1000);
 
-  GPS_begin();
-
-  tft.init();
-  tft.invertDisplay(false);
-  tft.setRotation(1);
-  tft.writecommand(0x36);
-  tft.writedata(0x68);
-
-  pinMode(SCREEN_BUTTON_PIN, INPUT_PULLUP);
-
-  drawSplash(tft);
+  gpsInit();
+  screenInit();
+  wifiInit();
+  drawSplash();
 }
 
 void loop() {
-  GPS_update(gps);
+  gpsLoop(gps);
+  screenLoop(gps);
+  wifiLoop();
 
-  int buttonState = digitalRead(SCREEN_BUTTON_PIN);
-  if (buttonState == LOW && lastButtonState == HIGH && millis() - lastButtonChange > BUTTON_DEBOUNCE_MS) {
-    lastButtonChange = millis();
-    page = (page + 1) % NUM_PAGES;
-    tft.fillScreen(TFT_BLACK);
-  }
-  lastButtonState = buttonState;
-
-  // refresh display
-  if (millis() - lastUpdate > 200) {
-    lastUpdate = millis();
-    drawScreen(tft, gps, page);
+  if (WiFi.isConnected()) {
+    //todo implement restLoop() to send data to endpoint
+    //restLoop();
   }
 }
