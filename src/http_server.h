@@ -1,4 +1,6 @@
 #pragma once
 
-void httpServerInit();
+#include <TinyGPSPlus.h>
+
+void httpServerInit(TinyGPSPlus &gps);
 void httpServerLoop();
