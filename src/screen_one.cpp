@@ -154,7 +154,7 @@ void drawCourse(TinyGPSPlus &gps)
   tft.setTextColor(WHITE, BG);
   tft.setTextDatum(MC_DATUM);
 
-  tft.drawString("COURSE", tft.width() / 2, 150, 2);
+  tft.drawString("COURSE", tft.width() / 2, 155, 2);
   tft.drawString(courseString, tft.width() / 2, 180, 4);
 }
 
