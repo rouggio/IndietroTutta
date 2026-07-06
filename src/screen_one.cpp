@@ -176,7 +176,7 @@ static String formatTimeWithOffset(TinyGPSPlus &gps, int offsetHours)
     applyTimezoneOffset(offsetHours, hour, day, month, year);
   }
 
-  return String(hour) + ":" + String(minute) + ":" + String(second);
+  return String(hour < 10 ? "0" : "") + String(hour) + ":" + String(minute < 10 ? "0" : "") + String(minute) + ":" + String(second < 10 ? "0" : "") + String(second);
 }
 
 static String formatDateWithOffset(TinyGPSPlus &gps, int offsetHours)
@@ -196,7 +196,7 @@ static String formatDateWithOffset(TinyGPSPlus &gps, int offsetHours)
     applyTimezoneOffset(offsetHours, hour, day, month, year);
   }
 
-  return String(day) + "/" + String(month) + "/" + String(year);
+  return String(day < 10 ? "0" : "") + String(day) + "/" + String(month < 10 ? "0" : "") + String(month) + "/" + String(year);
 }
 
 static void maybeClear(int newState)
@@ -231,7 +231,7 @@ void drawTopBar(TinyGPSPlus &gps)
   }
 
   // GPS satellites (top-right)
-  tft.pushImage(tft.width() - 45, 8, 16, 16, icon_sat, TFT_BLACK);
+  tft.pushImage(tft.width() - 57, 7, 16, 16, icon_sat, TFT_BLACK);
 
   tft.setTextColor(sats > 0 ? sats > 5 ? GREEN : TFT_YELLOW : TFT_RED, BG);
   tft.setTextDatum(TR_DATUM);
@@ -258,7 +258,7 @@ void drawCourse(TinyGPSPlus &gps)
 {
   String bearing = String((int)gps.course.deg());
   String dirName = gps.course.isValid() ? TinyGPSPlus::cardinal(gps.course.deg()) : "-";
-  String courseString = "    " + bearing + " (" + dirName + ")" + "    ";
+  String courseString = "     " + bearing + " (" + dirName + ")" + "     ";
 
   tft.setTextColor(WHITE, BG);
   tft.setTextDatum(MC_DATUM);
