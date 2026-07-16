@@ -1,4 +1,4 @@
-# GPSMarine — Local build & upload
+# IndietroTutta — Local build & upload
 
 Quick commands to automate build and upload locally.
 
