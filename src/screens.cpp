@@ -1,6 +1,7 @@
 #include "screens.h"
 #include "screen_one.h"
 #include "screen_two.h"
+#include "screen_three.h"
 #include "splash_screen.h"
 
 #include <TFT_eSPI.h>
@@ -18,7 +19,7 @@ unsigned long lastButtonChange = 0;
 unsigned long lastUpdate = 0;
 
 int page = 0;
-const int NUM_PAGES = 2;
+const int NUM_PAGES = 3;
 bool lastButtonState = HIGH;
 
 void screenInit() {
@@ -40,6 +41,7 @@ void drawScreen(TinyGPSPlus &gps, int page) {
   switch (page) {
     case 0: drawScreenOne(gps); break;
     case 1: drawScreenTwo(gps); break;
+    case 2: drawScreenThree(gps); break;
 
     default:
       tft.fillScreen(TFT_BLACK);

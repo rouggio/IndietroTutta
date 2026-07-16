@@ -1,9 +1,11 @@
 #include <TinyGPSPlus.h>
 
 #include "wifi_manager.h"
+#include "gps_debug.h"
 #include "gps.h"
 #include "screens.h"
 #include "http_server.h"
+#include "backend.h"
 #include <WiFi.h>
 
 TinyGPSPlus gps;
@@ -18,6 +20,7 @@ void setup(void) {
   screenInit();
   wifiInit(gps);
   drawSplash();
+  backendInit();
   Serial.println("Indietro Tutta - Setup Complete");
 }
 
@@ -25,9 +28,5 @@ void loop() {
   gpsLoop(gps);
   screenLoop(gps);
   wifiLoop();
-
-  if (WiFi.isConnected()) {
-    //todo implement restLoop() to send data to endpoint
-    //restLoop();
-  }
+  backendLoop(gps);
 }

@@ -3,6 +3,7 @@
 #include <TinyGPSPlus.h>
 #include "wifi_manager.h"
 #include "config_store.h"
+#include "backend.h"
 
 #include "screen_one.h"
 
@@ -15,6 +16,8 @@ extern TFT_eSPI tft;
 #define CYAN TFT_CYAN
 #define DARK_RED 0x8000
 #define GRAY 0x7BEF
+
+const int MIN_SAT_THRESHOLD = 4; // Minimum number of satellites for a good fix
 
 const uint16_t icon_no_signal[256] PROGMEM = {
   0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 
@@ -89,6 +92,25 @@ const uint16_t icon_wifi[256] PROGMEM = {
   0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 
   0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 
   0x0000, 0x0000, 0x0000, 0x0000
+};
+
+const uint8_t icon_cloud[] PROGMEM = {
+  0x00,0x00,
+  0x00,0x00,
+  0x03,0xC0,
+  0x0C,0x30,
+  0x18,0x18,
+  0x30,0x0C,
+  0x60,0x06,
+  0x60,0x06,
+  0xFF,0xFF,
+  0xFF,0xFF,
+  0x00,0x00,
+  0x00,0x00,
+  0x00,0x00,
+  0x00,0x00,
+  0x00,0x00,
+  0x00,0x00
 };
 
 static int getConfiguredTimezoneOffsetHours()
@@ -215,27 +237,58 @@ void drawTopBar(TinyGPSPlus &gps)
   int sats = gps.satellites.isValid() ? gps.satellites.value() : 0;
 
   // WiFi icon (top-left)
+  int icon_x = 2;
   if (wifiConnected())
   {
-    tft.fillRoundRect(2, 2, 23, 24, 4, TFT_DARKGREEN);
-    tft.drawRoundRect(2, 2, 23, 24, 4, GREEN);
+    tft.fillRoundRect(icon_x, 2, 23, 24, 4, TFT_DARKGREEN);
+    tft.drawRoundRect(icon_x, 2, 23, 24, 4, GREEN);
     tft.setTextColor(GREEN, TFT_DARKGREEN);
-    tft.pushImage(5, 5, 16, 16, icon_wifi, TFT_BLACK);
+    tft.pushImage(icon_x + 3, 5, 16, 16, icon_wifi, TFT_BLACK);
   }
   else
   {
-    tft.fillRoundRect(2, 2, 23, 24, 4, DARK_RED);
-    tft.drawRoundRect(2, 2, 23, 24, 4, TFT_RED);
+    tft.fillRoundRect(icon_x, 2, 23, 24, 4, DARK_RED);
+    tft.drawRoundRect(icon_x, 2, 23, 24, 4, TFT_RED);
     tft.setTextColor(TFT_RED, DARK_RED);
     tft.pushImage(5, 5, 16, 16, icon_no_signal, TFT_BLACK);
+  }
+
+  // data connection
+  icon_x += 26;
+  if (backendOnline()) {
+    tft.fillRoundRect(icon_x, 2, 23, 24, 4, TFT_DARKGREEN);
+    tft.drawRoundRect(icon_x, 2, 23, 24, 4, GREEN);
+    tft.drawBitmap(icon_x + 3, 6, icon_cloud, 16, 16, WHITE);
+  } else {
+    tft.fillRoundRect(icon_x, 2, 23, 24, 4, DARK_RED);
+    tft.drawRoundRect(icon_x, 2, 23, 24, 4, TFT_RED);
+    tft.drawBitmap(icon_x + 3, 6, icon_cloud, 16, 16, WHITE);
+    tft.drawLine(icon_x + 3,  5 + 11, 32 + 12, 5 + 2,  WHITE);
+  }
+
+
+  // Fix Icon
+  icon_x += 26;
+  if (gps.location.isValid())
+  {
+    tft.setTextColor(GREEN, BG);
+    tft.setTextDatum(TL_DATUM);
+    tft.drawString("GPS FIX", icon_x, 5, 2);
+  }
+  else
+  {
+    tft.setTextColor(TFT_RED, BG);
+    tft.setTextDatum(TL_DATUM);
+    tft.drawString("NO FIX ", icon_x, 5, 2);
   }
 
   // GPS satellites (top-right)
   tft.pushImage(tft.width() - 57, 7, 16, 16, icon_sat, TFT_BLACK);
 
-  tft.setTextColor(sats > 0 ? sats > 5 ? GREEN : TFT_YELLOW : TFT_RED, BG);
+  tft.setTextColor(sats > 0 ? sats > MIN_SAT_THRESHOLD ? GREEN : TFT_YELLOW : TFT_RED, BG);
   tft.setTextDatum(TR_DATUM);
-  tft.drawString(String(sats), tft.width() - 10, 5, 4);
+  String satStr = (sats < 10) ? "0" + String(sats) : String(sats);
+  tft.drawString(satStr, tft.width() - 10, 5, 4);
 
 
   tft.drawFastHLine(0, 30, tft.width(), GRAY);

@@ -3,6 +3,8 @@
 #include <ArduinoJson.h>
 #include <TinyGPSPlus.h>
 
+#include <esp_heap_caps.h>
+#include "gps_debug.h"
 #include "http_server.h"
 #include "config_store.h"
 
@@ -169,7 +171,7 @@ static void handleReset()
 
 static void handleStatus()
 {
-    StaticJsonDocument<512> doc;
+    StaticJsonDocument<2048> doc;
     doc["mode"] = (WiFi.getMode() == WIFI_AP) ? "Access Point" : "Station";
     doc["ssid"] = WiFi.SSID();
     doc["ip"] = (WiFi.getMode() == WIFI_AP)
@@ -183,6 +185,22 @@ static void handleStatus()
         doc["gps"]["satellites"] = gpsRef->satellites.value();
         doc["gps"]["hdop"] = gpsRef->hdop.value();
     }
+
+    JsonArray nmea = doc.createNestedArray("nmea");
+
+    int start = getNextNMEALine();
+    for (int i = 0; i < MAX_NMEA_LINES; i++)
+    {
+        int idx = (start + i) % MAX_NMEA_LINES;
+
+        if (!nmeaLines[idx].isEmpty())
+            nmea.add(nmeaLines[idx]);
+    }
+
+    JsonObject mem = doc.createNestedObject("mem");
+    mem["freeHeap"]     = ESP.getFreeHeap();
+    mem["minFreeHeap"]  = ESP.getMinFreeHeap();
+    mem["maxAllocHeap"] = ESP.getMaxAllocHeap();
 
     String json;
     serializeJson(doc, json);

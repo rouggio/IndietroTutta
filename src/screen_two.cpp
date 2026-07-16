@@ -18,13 +18,38 @@ static void maybeClear(int newState)
 
 void drawScreenTwo(TinyGPSPlus &gps)
 {
-    tft.setTextDatum(TL_DATUM);
+//    tft.fillScreen(TFT_BLACK);
     tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    tft.setTextFont(2);
+    tft.setCursor(0, 0);
 
-    tft.drawString("LAT: " + String(gps.location.lat(), 6), 10, 10, 4);
-    tft.drawString("LON: " + String(gps.location.lng(), 6), 10, 40, 4);
-    tft.drawString("Bearing: " + String(gps.course.deg(), 0), 10, 70, 4);
-    tft.drawString("SAT: " + String(gps.satellites.value()), 10, 100, 4);
-    tft.drawString("HDOP: " + String(gps.hdop.hdop(), 1), 10, 130, 4);
-    tft.drawString("ALT: " + String(gps.altitude.meters(), 0) + " m", 10, 160, 4);
+    tft.printf("GPS DIAGNOSTICS\n\n");
+
+    tft.printf("Chars : %lu\n", gps.charsProcessed());
+    tft.printf("Fix   : %s\n", gps.location.isValid() ? "YES" : "NO ");
+    tft.printf("Sats  : %d\n", gps.satellites.value() + "  ");
+
+    if (gps.hdop.isValid())
+        tft.printf("HDOP  : %.1f\n", gps.hdop.hdop());
+    else
+        tft.printf("HDOP  : --\n");
+
+    if (gps.location.isValid())
+    {
+        tft.printf("Lat   : %.6f\n", gps.location.lat());
+        tft.printf("Lon   : %.6f\n", gps.location.lng());
+    }
+    else
+    {
+        tft.printf("Lat   : --\n");
+        tft.printf("Lon   : --\n");
+    }
+
+    if (gps.altitude.isValid())
+        tft.printf("Alt   : %.1f m\n", gps.altitude.meters());
+
+    if (gps.speed.isValid())
+        tft.printf("Speed : %.1f km/h\n", gps.speed.kmph());
+
+    tft.printf("Age   : %lu ms\n", gps.location.age());
 }
