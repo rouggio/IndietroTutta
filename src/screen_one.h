@@ -2,4 +2,4 @@
 
 #include <TinyGPSPlus.h>
 
-void drawScreenOne(TinyGPSPlus &gps);
+void drawScreenOne(TinyGPSPlus &gps, bool requiresInit);

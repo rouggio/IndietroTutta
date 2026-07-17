@@ -349,8 +349,16 @@ void drawBottomBar(String timeStr, String dateStr)
   tft.drawString(bottom, tft.width() / 2, 235, 4);
 }
 
-void drawScreenOne(TinyGPSPlus &gps)
+void initScreen() {
+  prevWifiConnected = TriState::Unknown;
+  prevDataConnected = TriState::Unknown;
+  prevFix = TriState::Unknown;
+}
+
+void drawScreenOne(TinyGPSPlus &gps, bool requiresInit)
 {
+  if (requiresInit) initScreen();
+
   int timezoneOffsetHours = getConfiguredTimezoneOffsetHours();
 
   drawTopBar(gps);

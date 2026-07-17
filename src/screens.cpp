@@ -18,7 +18,9 @@ TFT_eSPI tft = TFT_eSPI();
 unsigned long lastButtonChange = 0;
 unsigned long lastUpdate = 0;
 
+int prevPage = 0;
 int page = 0;
+
 const int NUM_PAGES = 3;
 bool lastButtonState = HIGH;
 
@@ -37,9 +39,9 @@ void drawSplash() {
 }
 
 // ---------------- MAIN ROUTER ----------------
-void drawScreen(TinyGPSPlus &gps, int page) {
+void drawScreen(TinyGPSPlus &gps, bool requiresInit, int page) {
   switch (page) {
-    case 0: drawScreenOne(gps); break;
+    case 0: drawScreenOne(gps, requiresInit); break;
     case 1: drawScreenTwo(gps); break;
     case 2: drawScreenThree(gps); break;
 
@@ -65,6 +67,7 @@ void screenLoop(TinyGPSPlus &gps) {
   // refresh display
   if (millis() - lastUpdate > 200) {
     lastUpdate = millis();
-    drawScreen(gps, page);
+    drawScreen(gps, prevPage != page, page);
+    prevPage = page;
   }
 }
