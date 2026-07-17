@@ -1,4 +1,5 @@
 #include <Arduino.h>
+#include <optional>
 #include <TFT_eSPI.h>
 #include <TinyGPSPlus.h>
 #include "wifi_manager.h"
@@ -113,6 +114,16 @@ const uint8_t icon_cloud[] PROGMEM = {
   0x00,0x00
 };
 
+enum class TriState {
+    Unknown,
+    False,
+    True
+};
+
+TriState prevWifiConnected = TriState::Unknown;
+TriState prevDataConnected = TriState::Unknown;
+TriState prevFix = TriState::Unknown;
+
 static int getConfiguredTimezoneOffsetHours()
 {
   Config cfg = {};
@@ -221,66 +232,73 @@ static String formatDateWithOffset(TinyGPSPlus &gps, int offsetHours)
   return String(day < 10 ? "0" : "") + String(day) + "/" + String(month < 10 ? "0" : "") + String(month) + "/" + String(year);
 }
 
-static void maybeClear(int newState)
-{
-  static int lastState = -1;
-  if (newState != lastState)
-  {
-    lastState = newState;
-    tft.fillScreen(TFT_BLACK);
-  }
-}
-
 // ====== LAYOUT ======
 void drawTopBar(TinyGPSPlus &gps)
 {
-  int sats = gps.satellites.isValid() ? gps.satellites.value() : 0;
+  // left-aligned symbols
+
+  int icon_width = 24;
+  int icon_height = 24;
+  int icon_spacing = 3;
 
   // WiFi icon (top-left)
-  int icon_x = 2;
-  if (wifiConnected())
+  int icon_x = icon_spacing;
+  if (wifiConnected() && prevWifiConnected != TriState::True)
   {
-    tft.fillRoundRect(icon_x, 2, 23, 24, 4, TFT_DARKGREEN);
-    tft.drawRoundRect(icon_x, 2, 23, 24, 4, GREEN);
+    tft.fillRoundRect(icon_x, 2, icon_width, icon_height, 4, TFT_DARKGREEN);
+    tft.drawRoundRect(icon_x, 2, icon_width, icon_height, 4, GREEN);
     tft.setTextColor(GREEN, TFT_DARKGREEN);
     tft.pushImage(icon_x + 3, 5, 16, 16, icon_wifi, TFT_BLACK);
+    prevWifiConnected = TriState::True;
   }
-  else
+  else if (!wifiConnected() && prevWifiConnected != TriState::False)
   {
-    tft.fillRoundRect(icon_x, 2, 23, 24, 4, DARK_RED);
-    tft.drawRoundRect(icon_x, 2, 23, 24, 4, TFT_RED);
+    tft.fillRoundRect(icon_x, 2, icon_width, icon_height, 4, DARK_RED);
+    tft.drawRoundRect(icon_x, 2, icon_width, icon_height, 4, TFT_RED);
     tft.setTextColor(TFT_RED, DARK_RED);
     tft.pushImage(5, 5, 16, 16, icon_no_signal, TFT_BLACK);
+    prevWifiConnected = TriState::False;
   }
 
   // data connection
-  icon_x += 26;
-  if (backendOnline()) {
-    tft.fillRoundRect(icon_x, 2, 23, 24, 4, TFT_DARKGREEN);
-    tft.drawRoundRect(icon_x, 2, 23, 24, 4, GREEN);
-    tft.drawBitmap(icon_x + 3, 6, icon_cloud, 16, 16, WHITE);
-  } else {
-    tft.fillRoundRect(icon_x, 2, 23, 24, 4, DARK_RED);
-    tft.drawRoundRect(icon_x, 2, 23, 24, 4, TFT_RED);
-    tft.drawBitmap(icon_x + 3, 6, icon_cloud, 16, 16, WHITE);
-    tft.drawLine(icon_x + 3,  5 + 11, 32 + 12, 5 + 2,  WHITE);
+  icon_x += icon_width + icon_spacing;
+  if (backendOnline() && prevDataConnected != TriState::True) {
+    tft.fillRoundRect(icon_x, 2, icon_width, icon_height, 4, TFT_DARKGREEN);
+    tft.drawRoundRect(icon_x, 2, icon_width, icon_height, 4, GREEN);
+    tft.drawBitmap(icon_x + 3, 8, icon_cloud, 16, 16, WHITE);
+    prevDataConnected = TriState::True;
+  } else if (!backendOnline() && prevDataConnected != TriState::False) {
+    tft.fillRoundRect(icon_x, 2, icon_width, icon_height, 4, DARK_RED);
+    tft.drawRoundRect(icon_x, 2, icon_width, icon_height, 4, TFT_RED);
+    tft.drawBitmap(icon_x + 3, 8, icon_cloud, 16, 16, WHITE);
+    prevDataConnected = TriState::False;
   }
-
 
   // Fix Icon
-  icon_x += 26;
-  if (gps.location.isValid())
+  icon_x += icon_width + icon_spacing;
+  if (gps.location.isValid() && prevFix != TriState::True)
   {
-    tft.setTextColor(GREEN, BG);
+    tft.fillRoundRect(icon_x, 2, icon_width, icon_height, 4, TFT_DARKGREEN);
+    tft.drawRoundRect(icon_x, 2, icon_width, icon_height, 4, GREEN);
+    tft.setTextColor(WHITE, TFT_DARKGREEN);
     tft.setTextDatum(TL_DATUM);
-    tft.drawString("GPS FIX", icon_x, 5, 2);
+    tft.drawString("FX", icon_x + 4, 6, 2);
+    prevFix = TriState::True;
   }
-  else
+  else if (!gps.location.isValid() && prevFix != TriState::False)
   {
-    tft.setTextColor(TFT_RED, BG);
+    tft.fillRoundRect(icon_x, 2, icon_width, icon_height, 4, DARK_RED);
+    tft.drawRoundRect(icon_x, 2, icon_width, icon_height, 4, TFT_RED);
+    tft.setTextColor(WHITE, DARK_RED);
     tft.setTextDatum(TL_DATUM);
-    tft.drawString("NO FIX ", icon_x, 5, 2);
+    tft.drawString("FX", icon_x + 4, 6, 2);
+    prevFix = TriState::False;
   }
+
+
+  // Right aligned symbols
+
+  int sats = gps.satellites.isValid() ? gps.satellites.value() : 0;
 
   // GPS satellites (top-right)
   tft.pushImage(tft.width() - 57, 7, 16, 16, icon_sat, TFT_BLACK);
@@ -311,7 +329,7 @@ void drawCourse(TinyGPSPlus &gps)
 {
   String bearing = String((int)gps.course.deg());
   String dirName = gps.course.isValid() ? TinyGPSPlus::cardinal(gps.course.deg()) : "-";
-  String courseString = "     " + bearing + " (" + dirName + ")" + "     ";
+  String courseString = "       " + bearing + " (" + dirName + ")" + "       ";
 
   tft.setTextColor(WHITE, BG);
   tft.setTextDatum(MC_DATUM);
