@@ -41,6 +41,7 @@ bool backendSendPosition(
         return false;
 
     http.addHeader("Content-Type", "application/json");
+    http.addHeader("DeviceId", String(WiFi.macAddress()));
 
     String body = "{";
     body += "\"lat\":" + String(lat, 7);
@@ -91,6 +92,7 @@ void healthCheckLoop()
 
     if (http.begin(client, HEALTH_URL))
     {
+        http.addHeader("DeviceId", String(WiFi.macAddress()));
         online = (http.GET() == HTTP_CODE_OK);
         http.end();
     }
