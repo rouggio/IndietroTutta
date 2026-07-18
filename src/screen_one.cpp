@@ -237,61 +237,64 @@ void drawTopBar(TinyGPSPlus &gps)
 {
   // left-aligned symbols
 
-  int icon_width = 24;
-  int icon_height = 24;
-  int icon_spacing = 3;
+  int tile_width = 24;
+  int tile_height = 24;
+  int tile_spacing = 3;
+  int icon_width = 16;
+  int icon_height = 16;
+  int icont_offset_x = (tile_width - icon_width) / 2;
 
   // WiFi icon (top-left)
-  int icon_x = icon_spacing;
+  int icon_x = tile_spacing;
   if (wifiConnected() && prevWifiConnected != TriState::True)
   {
-    tft.fillRoundRect(icon_x, 2, icon_width, icon_height, 4, TFT_DARKGREEN);
-    tft.drawRoundRect(icon_x, 2, icon_width, icon_height, 4, GREEN);
+    tft.fillRoundRect(icon_x, 2, tile_width, tile_height, 4, TFT_DARKGREEN);
+    tft.drawRoundRect(icon_x, 2, tile_width, tile_height, 4, GREEN);
     tft.setTextColor(GREEN, TFT_DARKGREEN);
-    tft.pushImage(icon_x + 3, 5, 16, 16, icon_wifi, TFT_BLACK);
+    tft.pushImage(icon_x + icont_offset_x, 5, icon_width, icon_height, icon_wifi, TFT_BLACK);
     prevWifiConnected = TriState::True;
   }
   else if (!wifiConnected() && prevWifiConnected != TriState::False)
   {
-    tft.fillRoundRect(icon_x, 2, icon_width, icon_height, 4, DARK_RED);
-    tft.drawRoundRect(icon_x, 2, icon_width, icon_height, 4, TFT_RED);
+    tft.fillRoundRect(icon_x, 2, tile_width, tile_height, 4, DARK_RED);
+    tft.drawRoundRect(icon_x, 2, tile_width, tile_height, 4, TFT_RED);
     tft.setTextColor(TFT_RED, DARK_RED);
-    tft.pushImage(5, 5, 16, 16, icon_no_signal, TFT_BLACK);
+    tft.pushImage(icon_x + icont_offset_x, 5, icon_width, icon_height, icon_no_signal, TFT_BLACK);
     prevWifiConnected = TriState::False;
   }
 
   // data connection
-  icon_x += icon_width + icon_spacing;
+  icon_x += tile_width + tile_spacing;
   if (backendOnline() && prevDataConnected != TriState::True) {
-    tft.fillRoundRect(icon_x, 2, icon_width, icon_height, 4, TFT_DARKGREEN);
-    tft.drawRoundRect(icon_x, 2, icon_width, icon_height, 4, GREEN);
-    tft.drawBitmap(icon_x + 3, 8, icon_cloud, 16, 16, WHITE);
+    tft.fillRoundRect(icon_x, 2, tile_width, tile_height, 4, TFT_DARKGREEN);
+    tft.drawRoundRect(icon_x, 2, tile_width, tile_height, 4, GREEN);
+    tft.drawBitmap(icon_x + icont_offset_x, 7, icon_cloud, icon_width, icon_height, WHITE);
     prevDataConnected = TriState::True;
   } else if (!backendOnline() && prevDataConnected != TriState::False) {
-    tft.fillRoundRect(icon_x, 2, icon_width, icon_height, 4, DARK_RED);
-    tft.drawRoundRect(icon_x, 2, icon_width, icon_height, 4, TFT_RED);
-    tft.drawBitmap(icon_x + 3, 8, icon_cloud, 16, 16, WHITE);
+    tft.fillRoundRect(icon_x, 2, tile_width, tile_height, 4, DARK_RED);
+    tft.drawRoundRect(icon_x, 2, tile_width, tile_height, 4, TFT_RED);
+    tft.drawBitmap(icon_x + icont_offset_x, 7, icon_cloud, icon_width, icon_height, WHITE);
     prevDataConnected = TriState::False;
   }
 
   // Fix Icon
-  icon_x += icon_width + icon_spacing;
+  icon_x += tile_width + tile_spacing;
   if (gps.location.isValid() && prevFix != TriState::True)
   {
-    tft.fillRoundRect(icon_x, 2, icon_width, icon_height, 4, TFT_DARKGREEN);
-    tft.drawRoundRect(icon_x, 2, icon_width, icon_height, 4, GREEN);
+    tft.fillRoundRect(icon_x, 2, tile_width, tile_height, 4, TFT_DARKGREEN);
+    tft.drawRoundRect(icon_x, 2, tile_width, tile_height, 4, GREEN);
     tft.setTextColor(WHITE, TFT_DARKGREEN);
     tft.setTextDatum(TL_DATUM);
-    tft.drawString("FX", icon_x + 4, 6, 2);
+    tft.drawString("FX", icon_x + icont_offset_x, 7, 2);
     prevFix = TriState::True;
   }
   else if (!gps.location.isValid() && prevFix != TriState::False)
   {
-    tft.fillRoundRect(icon_x, 2, icon_width, icon_height, 4, DARK_RED);
-    tft.drawRoundRect(icon_x, 2, icon_width, icon_height, 4, TFT_RED);
+    tft.fillRoundRect(icon_x, 2, tile_width, tile_height, 4, DARK_RED);
+    tft.drawRoundRect(icon_x, 2, tile_width, tile_height, 4, TFT_RED);
     tft.setTextColor(WHITE, DARK_RED);
     tft.setTextDatum(TL_DATUM);
-    tft.drawString("FX", icon_x + 4, 6, 2);
+    tft.drawString("FX", icon_x + icont_offset_x, 6, 2);
     prevFix = TriState::False;
   }
 
@@ -312,24 +315,28 @@ void drawTopBar(TinyGPSPlus &gps)
   tft.drawFastHLine(0, 30, tft.width(), GRAY);
 }
 
-void drawSpeed(float speedKn)
+void drawSpeed(TinyGPSPlus &gps)
 {
-
   tft.setTextDatum(MC_DATUM);
 
   tft.setTextColor(WHITE, BG);
   tft.drawString("SPEED (kn)", tft.width() / 2, 50, 2);
 
   tft.setTextColor(TFT_YELLOW, BG);
-  String spd = " " + String(speedKn, 1) + " ";
-  tft.drawString(spd, tft.width() / 2, 100, 8);
+  if (gps.speed.isValid()) {
+    String spd = " " + String(gps.speed.knots(), 1) + " ";
+    tft.drawString(spd, tft.width() / 2, 100, 8);
+  } else {
+    String spd = "  ---  ";
+    tft.drawString(spd, tft.width() / 2, 100, 8);
+  }
 }
 
 void drawCourse(TinyGPSPlus &gps)
 {
-  String bearing = String((int)gps.course.deg());
-  String dirName = gps.course.isValid() ? TinyGPSPlus::cardinal(gps.course.deg()) : "-";
-  String courseString = "       " + bearing + " (" + dirName + ")" + "       ";
+  String bearing = gps.course.isValid() ? String((int)gps.course.deg()) : "---";
+  String dirName = gps.course.isValid() ? "(" + String(TinyGPSPlus::cardinal(gps.course.deg())) + ")" : "";
+  String courseString = "       " + bearing + dirName + "       ";
 
   tft.setTextColor(WHITE, BG);
   tft.setTextDatum(MC_DATUM);
@@ -362,7 +369,7 @@ void drawScreenOne(TinyGPSPlus &gps, bool requiresInit)
   int timezoneOffsetHours = getConfiguredTimezoneOffsetHours();
 
   drawTopBar(gps);
-  drawSpeed(gps.speed.isValid() ? gps.speed.knots() : 0);
+  drawSpeed(gps);
   drawCourse(gps);
   drawBottomBar(formatTimeWithOffset(gps, timezoneOffsetHours),
                 formatDateWithOffset(gps, timezoneOffsetHours));
