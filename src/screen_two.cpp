@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <TFT_eSPI.h>
 #include <TinyGPSPlus.h>
+#include "config.h"
 
 #include "screen_two.h"
 
@@ -52,4 +53,9 @@ void drawScreenTwo(TinyGPSPlus &gps)
         tft.printf("Speed : %.1f km/h\n", gps.speed.kmph());
 
     tft.printf("Age   : %lu ms\n", gps.location.age());
+
+
+    tft.printf("\n");
+    tft.print("Version: " BUILD_VERSION "\n");
+
 }

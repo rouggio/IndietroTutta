@@ -6,6 +6,7 @@
 #include "screens.h"
 #include "http_server.h"
 #include "backend.h"
+#include "ota.h"
 #include <WiFi.h>
 
 TinyGPSPlus gps;
@@ -21,6 +22,7 @@ void setup(void) {
   wifiInit(gps);
   drawSplash();
   backendInit();
+  otaInit();
   Serial.println("Indietro Tutta - Setup Complete");
 }
 
@@ -29,4 +31,5 @@ void loop() {
   screenLoop(gps);
   wifiLoop();
   backendLoop(gps);
+  otaLoop();
 }

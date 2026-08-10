@@ -1,4 +1,4 @@
-PORT ?= /dev/ttyUSB1
+PORT ?= /dev/ttyUSB0
 BAUD ?= 115200
 VENV := .venv
 PY := $(VENV)/bin/python
@@ -28,6 +28,9 @@ clean:
 deploy: build upload
 
 all: build upload monitor
+
+dist: 
+	./dist_firmware.sh
 
 watch:
 	@command -v entr >/dev/null 2>&1 || (echo "Please install 'entr' or use scripts/watch.sh" && exit 1)

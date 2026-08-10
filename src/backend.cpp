@@ -1,13 +1,13 @@
-#define BASE_URL   "https://indietrotutta.onrender.com"
-#define HEALTH_URL BASE_URL "/health"
-#define GPS_URL    BASE_URL "/gps"
-
+#include "config.h"
 #include "backend.h"
 
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 #include <TinyGPS++.h>
+
+#define HEALTH_URL BASE_URL "/health"
+#define GPS_URL    BASE_URL "/gps"
 
 static bool online = false;
 static unsigned long healthLastCheck = 0;
