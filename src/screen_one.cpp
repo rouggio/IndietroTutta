@@ -5,6 +5,7 @@
 #include "wifi_manager.h"
 #include "config_store.h"
 #include "backend.h"
+#include "buttons.h"
 
 #include "screen_one.h"
 
@@ -357,6 +358,7 @@ void drawBottomBar(String timeStr, String dateStr)
 }
 
 void initScreen() {
+  tft.fillScreen(TFT_BLACK);
   prevWifiConnected = TriState::Unknown;
   prevDataConnected = TriState::Unknown;
   prevFix = TriState::Unknown;
@@ -373,4 +375,28 @@ void drawScreenOne(TinyGPSPlus &gps, bool requiresInit)
   drawCourse(gps);
   drawBottomBar(formatTimeWithOffset(gps, timezoneOffsetHours),
                 formatDateWithOffset(gps, timezoneOffsetHours));
+}
+
+void screenOneButton(
+    Button button,
+    ButtonEvent event
+) {
+
+    if (button == Button::Left &&
+        event == ButtonEvent::ShortPress) {
+
+        // Screen 1: left button
+    }
+
+    if (button == Button::Right &&
+        event == ButtonEvent::ShortPress) {
+
+        // Screen 1: right button
+    }
+
+    if (button == Button::Left &&
+        event == ButtonEvent::LongPress) {
+
+        // Screen 1: left long press
+    }
 }

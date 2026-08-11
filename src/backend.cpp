@@ -109,6 +109,9 @@ void gpsTransmissionLoop(TinyGPSPlus &gps)
 
     gpsTransmissionLastCheck = millis();
 
+    if (!gps.location.isValid())
+        return;
+        
     backendSendPosition(
         gps.location.lat(), 
         gps.location.lng(), 

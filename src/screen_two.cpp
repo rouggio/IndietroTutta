@@ -59,3 +59,27 @@ void drawScreenTwo(TinyGPSPlus &gps)
     tft.print("Version: " BUILD_VERSION "\n");
 
 }
+
+void screenTwoButton(
+    Button button,
+    ButtonEvent event
+) {
+
+    if (button == Button::Left &&
+        event == ButtonEvent::ShortPress) {
+
+        // Screen 2: left button
+    }
+
+    if (button == Button::Right &&
+        event == ButtonEvent::ShortPress) {
+
+        // Screen 2: right button
+    }
+
+    if (button == Button::Left &&
+        event == ButtonEvent::LongPress) {
+
+        // Screen 2: left long press
+    }
+}

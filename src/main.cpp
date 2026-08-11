@@ -3,11 +3,12 @@
 #include "wifi_manager.h"
 #include "gps_debug.h"
 #include "gps.h"
-#include "screens.h"
 #include "http_server.h"
 #include "backend.h"
 #include "ota.h"
 #include <WiFi.h>
+#include "buttons.h"
+#include "screens.h"
 
 TinyGPSPlus gps;
 
@@ -17,16 +18,19 @@ void setup(void) {
   delay(1000); // Wait for Serial to initialize
   
   Serial.println("Indietro Tutta");
-  gpsInit();
   screenInit();
-  wifiInit(gps);
   drawSplash();
+  gpsInit();
+  buttonsInit();
+  buttonsSetCallback(screenButtonEvent);
+  wifiInit(gps);
   backendInit();
   otaInit();
   Serial.println("Indietro Tutta - Setup Complete");
 }
 
 void loop() {
+  buttonsUpdate();
   gpsLoop(gps);
   screenLoop(gps);
   wifiLoop();
