@@ -3,7 +3,7 @@
 #include <TinyGPSPlus.h>
 #include "config.h"
 #include "ota.h"
-
+#include <WiFi.h>
 #include "screen_two.h"
 
 extern TFT_eSPI tft;
@@ -20,16 +20,14 @@ static void maybeClear(int newState)
 
 void drawScreenTwo(TinyGPSPlus &gps)
 {
-//    tft.fillScreen(TFT_BLACK);
     tft.setTextColor(TFT_WHITE, TFT_BLACK);
     tft.setTextFont(2);
     tft.setCursor(0, 0);
 
-    tft.printf("GPS DIAGNOSTICS\n\n");
+    tft.printf("DIAGNOSTICS\n\n");
 
+    tft.printf("GPS\n");
     tft.printf("Chars : %lu\n", gps.charsProcessed());
-    tft.printf("Fix   : %s\n", gps.location.isValid() ? "YES" : "NO ");
-    tft.printf("Sats  : %d\n", gps.satellites.value() + "  ");
 
     if (gps.hdop.isValid())
         tft.printf("HDOP  : %.1f\n", gps.hdop.hdop());
@@ -50,14 +48,16 @@ void drawScreenTwo(TinyGPSPlus &gps)
     if (gps.altitude.isValid())
         tft.printf("Alt   : %.1f m\n", gps.altitude.meters());
 
-    if (gps.speed.isValid())
-        tft.printf("Speed : %.1f km/h\n", gps.speed.kmph());
+    if (gps.location.isValid()) {
+        tft.printf("Age   : %lu ms\n", gps.location.age());
+    } else {
+        tft.printf("Age   :--\n");
+    }
 
-    tft.printf("Age   : %lu ms\n", gps.location.age());
 
-
-    tft.printf("\n");
+    tft.printf("\nSystem\n");
     tft.print("Version: " BUILD_VERSION "\n");
+    tft.print("IP: " + WiFi.localIP().toString() + "\n");
 
 }
 

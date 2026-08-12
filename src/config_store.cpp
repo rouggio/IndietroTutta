@@ -2,6 +2,8 @@
 
 #include "config_store.h"
 
+Config config;
+
 bool loadConfig(Config& config) {
     Preferences prefs;
     if (!prefs.begin("wifi", true)) {

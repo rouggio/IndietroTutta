@@ -4,8 +4,7 @@
 #include <TFT_eSPI.h>
 
 #include "config.h"
-
-#define CHECK_ON_BOOT true
+#include "config_store.h"
 
 extern TFT_eSPI tft;
 
@@ -440,8 +439,7 @@ void checkForUpdate() {
 // --------------------------------------------------
 
 void otaInit() {
-
-  if (CHECK_ON_BOOT) {
+  if (config.otaCheckOnStart) {
     checkForUpdate();
   }
 }

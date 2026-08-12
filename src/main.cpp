@@ -16,6 +16,7 @@ TinyGPSPlus gps;
 void setup(void) {
   Serial.begin(115200);
   delay(1000); // Wait for Serial to initialize
+  loadConfig(config);
   
   Serial.println("Indietro Tutta");
   gpsInit();

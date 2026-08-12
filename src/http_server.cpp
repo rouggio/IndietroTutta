@@ -7,6 +7,7 @@
 #include "gps_debug.h"
 #include "http_server.h"
 #include "config_store.h"
+#include "config.h"
 
 static WebServer server(80);
 
@@ -125,17 +126,40 @@ static void handleSetupPrompt()
 
 static void handleSetupSave()
 {
-    Config cfg = {};
+    Config cfg;
 
-    strncpy(cfg.ssid,
+    loadConfig(cfg);
+
+    if (server.hasArg("ssid") && server.arg("ssid").length() > 0) {
+        strncpy(
+            cfg.ssid,
             server.arg("ssid").c_str(),
-            sizeof(cfg.ssid) - 1);
+            sizeof(cfg.ssid) - 1
+        );
+        cfg.ssid[sizeof(cfg.ssid) - 1] = '\0';
+    }
 
-    strncpy(cfg.password,
+    if (server.hasArg("password") && server.arg("password").length() > 0) {
+        strncpy(
+            cfg.password,
             server.arg("password").c_str(),
-            sizeof(cfg.password) - 1);
+            sizeof(cfg.password) - 1
+        );
+        cfg.password[sizeof(cfg.password) - 1] = '\0';
+    }
 
-    cfg.timezoneOffsetHours = server.arg("timezoneOffset").toInt();
+    if (server.hasArg("timezoneOffset") &&
+        server.arg("timezoneOffset").length() > 0) {
+
+        cfg.timezoneOffsetHours =
+            server.arg("timezoneOffset").toInt();
+    }
+
+    if (server.hasArg("otaCheckOnStart")) {
+        cfg.otaCheckOnStart = true;
+    } else {
+        cfg.otaCheckOnStart = false;
+    }
 
     saveConfig(cfg);
 
@@ -201,6 +225,10 @@ static void handleStatus()
     mem["freeHeap"]     = ESP.getFreeHeap();
     mem["minFreeHeap"]  = ESP.getMinFreeHeap();
     mem["maxAllocHeap"] = ESP.getMaxAllocHeap();
+
+    JsonObject sys = doc.createNestedObject("sys");
+    sys["version"] = BUILD_VERSION;
+    sys["otaCheckOnStart"] = config.otaCheckOnStart;
 
     String json;
     serializeJson(doc, json);

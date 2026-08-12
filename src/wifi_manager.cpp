@@ -7,7 +7,6 @@
 #include <TinyGPSPlus.h>
 
 DNSServer dns;
-static Config config;
 static bool wifiConfigured = false;
 static bool wifiConnectedFlag = false;
 static unsigned long lastRetry = 0;
