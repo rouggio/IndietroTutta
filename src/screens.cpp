@@ -8,6 +8,8 @@
 #include <TFT_eSPI.h>
 #include <SPI.h>
 
+static UIState uiState = UIState::Screens;
+
 static const int CX = 160;
 static const int CY = 120;
 
@@ -61,26 +63,10 @@ void screenButtonEvent(
     Button button,
     ButtonEvent event
 ) {
-    if (event == ButtonEvent::ShortPress) {
-      switch (button) {
-          case Button::Left:
-              nextScreen();
-              break;
-      }
-    } else if (event == ButtonEvent::LongPress) {
-      switch (page) {
-          case 0:
-              screenOneButton(button, event);
-              break;
-
-          case 1:
-              screenTwoButton(button, event);
-              break;
-
-          case 2:
-              screenThreeButton(button, event);
-              break;
-      }
+    switch(page) {
+        case 0: screenOneButton(button, event); break;
+        case 1: screenTwoButton(button, event); break;
+        case 2: screenThreeButton(button, event); break;
     }
 }
 

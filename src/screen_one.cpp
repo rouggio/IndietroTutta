@@ -6,6 +6,7 @@
 #include "config_store.h"
 #include "backend.h"
 #include "buttons.h"
+#include "screens.h"
 
 #include "screen_one.h"
 
@@ -386,6 +387,7 @@ void screenOneButton(
         event == ButtonEvent::ShortPress) {
 
         // Screen 1: left button
+        nextScreen();
     }
 
     if (button == Button::Right &&

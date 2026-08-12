@@ -30,7 +30,7 @@ bump-version:
 compile:
 	$(PY) -m platformio run
 
-build: bump-version compile
+build: bump-version compile dist
 
 upload:
 	$(PY) -m platformio run -t upload --upload-port $(PORT)

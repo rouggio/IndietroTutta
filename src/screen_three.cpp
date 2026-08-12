@@ -4,6 +4,7 @@
 
 #include "gps_debug.h"
 #include "screen_two.h"
+#include "screens.h"
 #include "buttons.h"
 
 extern TFT_eSPI tft;
@@ -33,6 +34,7 @@ void screenThreeButton(
         event == ButtonEvent::ShortPress) {
 
         // Screen 3: left button
+        nextScreen();
     }
 
     if (button == Button::Right &&

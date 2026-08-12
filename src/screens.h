@@ -3,9 +3,15 @@
 #include <TinyGPSPlus.h>
 #include "buttons.h"
 
+enum class UIState {
+    Screens,
+    Menu
+};
+
 void drawSplash();
 void screenInit();
 void screenLoop(TinyGPSPlus &gps);
+void nextScreen();
 
 void drawScreen(
     TinyGPSPlus &gps,
