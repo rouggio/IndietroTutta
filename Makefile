@@ -1,5 +1,5 @@
 SHELL := /bin/bash
-PORT ?= /dev/ttyUSB0
+PORT ?= /dev/ttyUSB1
 BAUD ?= 115200
 VENV := .venv
 PY := $(VENV)/bin/python
@@ -9,7 +9,7 @@ BACKEND := ../backend
 OTA_DIR := $(BACKEND)/public/ota
 FIRMWARE := .pio/build/esp32dev/firmware.bin
 
-.PHONY: venv install build bump-version dist upload monitor clean watch
+.PHONY: venv install compile build bump-version dist upload monitor clean watch
 
 venv:
 	python3 -m venv $(VENV)
@@ -27,8 +27,10 @@ bump-version:
 	sed -i -E "s/(^[[:space:]]*#define[[:space:]]+BUILD_VERSION[[:space:]]+\")[^\"]*(\".*$$)/\1$$NEW_VERSION\2/" $(CONFIG); \
 	echo "Firmware version: $$VERSION -> $$NEW_VERSION"
 
-build: bump-version
+compile:
 	$(PY) -m platformio run
+
+build: bump-version compile
 
 upload:
 	$(PY) -m platformio run -t upload --upload-port $(PORT)
@@ -39,9 +41,9 @@ monitor:
 clean:
 	$(PY) -m platformio run -t clean
 
-deploy: build upload
+deploy: compile upload
 
-all: build upload monitor
+all: compile upload monitor
 
 dist:
 	@VERSION=$$(grep -E '^[[:space:]]*#define[[:space:]]+BUILD_VERSION[[:space:]]+"' $(CONFIG) | sed -E 's/.*BUILD_VERSION[[:space:]]+"([^"]+)".*/\1/'); \

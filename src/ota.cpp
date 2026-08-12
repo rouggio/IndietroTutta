@@ -31,15 +31,6 @@ void drawOTAProgress(int progress) {
 
     int y = tft.height() - 40;
 
-    // Clear only progress area
-    tft.fillRect(
-        0,
-        y - 5,
-        tft.width(),
-        40,
-        TFT_BLACK
-    );
-
     tft.setTextDatum(TL_DATUM);
     tft.setTextColor(TFT_BLUE, TFT_BLACK);
 
@@ -224,8 +215,6 @@ String fetchServerVersion() {
   client.setInsecure();
 
   String url = baseURL() + "/latest.txt";
-
-  appendOTAScreen("Checking version...");
 
   http.begin(client, url);
 
@@ -416,11 +405,11 @@ void checkForUpdate() {
 
 
   appendOTAScreen(
-    "Current: " + String(BUILD_VERSION)
+    "Current : " + String(BUILD_VERSION)
   );
 
   appendOTAScreen(
-    "Server:  " + serverVer
+    "Server  :  " + serverVer
   );
 
 
@@ -455,9 +444,4 @@ void otaInit() {
   if (CHECK_ON_BOOT) {
     checkForUpdate();
   }
-}
-
-
-void otaLoop() {
-
 }

@@ -18,12 +18,12 @@ void setup(void) {
   delay(1000); // Wait for Serial to initialize
   
   Serial.println("Indietro Tutta");
+  gpsInit();
+  wifiInit(gps);
   screenInit();
   drawSplash();
-  gpsInit();
   buttonsInit();
   buttonsSetCallback(screenButtonEvent);
-  wifiInit(gps);
   backendInit();
   otaInit();
   Serial.println("Indietro Tutta - Setup Complete");
@@ -35,5 +35,4 @@ void loop() {
   screenLoop(gps);
   wifiLoop();
   backendLoop(gps);
-  otaLoop();
 }

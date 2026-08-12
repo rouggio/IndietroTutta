@@ -2,6 +2,7 @@
 #include <TFT_eSPI.h>
 #include <TinyGPSPlus.h>
 #include "config.h"
+#include "ota.h"
 
 #include "screen_two.h"
 
@@ -80,6 +81,8 @@ void screenTwoButton(
     if (button == Button::Left &&
         event == ButtonEvent::LongPress) {
 
-        // Screen 2: left long press
+        // Screen 2: left long press - check for OTA update
+        checkForUpdate();
+        tft.fillScreen(TFT_BLACK);
     }
 }

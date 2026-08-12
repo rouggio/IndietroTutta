@@ -2,4 +2,4 @@
 
 void otaInit();
 
-void otaLoop();
+void checkForUpdate();
