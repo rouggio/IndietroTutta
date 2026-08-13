@@ -125,6 +125,7 @@ enum class TriState {
 TriState prevWifiConnected = TriState::Unknown;
 TriState prevDataConnected = TriState::Unknown;
 TriState prevFix = TriState::Unknown;
+static TinyGPSPlus* screenOneGPS = nullptr;
 
 static int getConfiguredTimezoneOffsetHours()
 {
@@ -367,6 +368,8 @@ void initScreen() {
 
 void drawScreenOne(TinyGPSPlus &gps, bool requiresInit)
 {
+  screenOneGPS = &gps;
+
   if (requiresInit) initScreen();
 
   int timezoneOffsetHours = getConfiguredTimezoneOffsetHours();
@@ -400,5 +403,13 @@ void screenOneButton(
         event == ButtonEvent::LongPress) {
 
         // Screen 1: left long press
+    }
+
+    if (button == Button::Right &&
+        event == ButtonEvent::LongPress) {
+
+        if (screenOneGPS) {
+            backendSendFlaggedPosition(*screenOneGPS);
+        }
     }
 }

@@ -7,3 +7,5 @@ bool backendOnline();
 void backendInit();
 
 void backendLoop(TinyGPSPlus &gps);
+
+bool backendSendFlaggedPosition(TinyGPSPlus &gps);

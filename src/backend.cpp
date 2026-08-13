@@ -21,13 +21,14 @@ bool backendOnline()
     return online;
 }
 
-bool backendSendPosition(
+static bool backendSendPosition(
     double lat,
     double lon,
     double speed,
     double course,
     double altitude,
-    int sats)
+    int sats,
+    bool flagged = false)
 {
     if (WiFi.status() != WL_CONNECTED)
         return false;
@@ -50,6 +51,7 @@ bool backendSendPosition(
     body += ",\"course\":" + String(course, 1);
     body += ",\"altitude\":" + String(altitude, 1);
     body += ",\"sats\":" + String(sats);
+    body += ",\"flagged\":" + String(flagged ? "true" : "false");
     body += "}";
 
     int code = http.POST(body);
@@ -64,6 +66,29 @@ bool backendSendPosition(
 
     online = false;
     return false;
+}
+
+bool backendSendFlaggedPosition(TinyGPSPlus &gps)
+{
+    if (!gps.location.isValid())
+    {
+        Serial.println("[GPS] Cannot flag position: no valid GPS fix");
+        return false;
+    }
+
+    const bool sent = backendSendPosition(
+        gps.location.lat(),
+        gps.location.lng(),
+        gps.speed.knots(),
+        gps.course.deg(),
+        gps.altitude.meters(),
+        gps.satellites.value(),
+        true
+    );
+
+    Serial.println(sent ? "[GPS] Flagged position sent" :
+                          "[GPS] Failed to send flagged position");
+    return sent;
 }
 
 void backendInit()
@@ -118,7 +143,8 @@ void gpsTransmissionLoop(TinyGPSPlus &gps)
         gps.speed.knots(), 
         gps.course.deg(), 
         gps.altitude.meters(), 
-        gps.satellites.value()
+        gps.satellites.value(),
+        false
     );
 }
 
