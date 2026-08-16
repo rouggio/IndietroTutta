@@ -126,6 +126,101 @@ TriState prevWifiConnected = TriState::Unknown;
 TriState prevDataConnected = TriState::Unknown;
 TriState prevFix = TriState::Unknown;
 static TinyGPSPlus* screenOneGPS = nullptr;
+struct FlaggedMarker {
+  double lat;
+  double lon;
+  unsigned long startedAt;
+};
+
+static constexpr int MAX_FLAGGED_MARKERS = 10;
+static FlaggedMarker flaggedMarkers[MAX_FLAGGED_MARKERS];
+static int flaggedMarkerCount = 0;
+// -1 means the normal GPS time/date is shown. Otherwise this is the marker
+// whose elapsed timer is currently displayed.
+static int displayedMarker = -1;
+
+// Screen 1 interaction modes
+enum class ScreenOneMode {
+  Normal,
+  Menu,
+  WaypointList
+};
+static ScreenOneMode screenOneMode = ScreenOneMode::Normal;
+// When true, next draw will perform a full static redraw for the active mode.
+static bool screenOneNeedsRedraw = true;
+
+static String twoDigits(unsigned long value)
+{
+  return value < 10 ? "0" + String(value) : String(value);
+}
+
+static String markerElapsed(unsigned long startedAt)
+{
+  const unsigned long elapsed = (millis() - startedAt) / 1000;
+  const unsigned long hours = elapsed / 3600;
+  const unsigned long minutes = (elapsed % 3600) / 60;
+  const unsigned long seconds = elapsed % 60;
+
+  return twoDigits(hours) + ":" + twoDigits(minutes) + ":" + twoDigits(seconds);
+}
+
+static void rememberFlaggedMarker(TinyGPSPlus &gps)
+{
+  if (flaggedMarkerCount == MAX_FLAGGED_MARKERS)
+  {
+    for (int i = 1; i < MAX_FLAGGED_MARKERS; i++)
+      flaggedMarkers[i - 1] = flaggedMarkers[i];
+
+    flaggedMarkerCount--;
+  }
+
+  flaggedMarkers[flaggedMarkerCount++] = {
+    gps.location.lat(),
+    gps.location.lng(),
+    millis()
+  };
+
+  // When a new marker is remembered, show it
+  displayedMarker = flaggedMarkerCount - 1;
+  screenOneNeedsRedraw = true; // refresh UI minimally on next draw
+}
+
+static void rotateDisplayedMarker()
+{
+  if (flaggedMarkerCount == 0)
+  {
+    displayedMarker = -1;
+    return;
+  }
+
+  if (displayedMarker < 0)
+    displayedMarker = flaggedMarkerCount - 1;
+  else if (displayedMarker == 0)
+    displayedMarker = -1;
+  else
+    displayedMarker--;
+}
+
+static void deleteDisplayedMarker()
+{
+  if (displayedMarker < 0 || displayedMarker >= flaggedMarkerCount)
+    return;
+
+  // Shift later markers down to overwrite the deleted one
+  for (int i = displayedMarker + 1; i < flaggedMarkerCount; i++) {
+    flaggedMarkers[i - 1] = flaggedMarkers[i];
+  }
+
+  flaggedMarkerCount--;
+
+  if (flaggedMarkerCount == 0) {
+    displayedMarker = -1;
+  } else if (displayedMarker >= flaggedMarkerCount) {
+    displayedMarker = flaggedMarkerCount - 1;
+  }
+
+  screenOneNeedsRedraw = true; // update list view/headers
+}
 
 static int getConfiguredTimezoneOffsetHours()
 {
@@ -374,11 +469,94 @@ void drawScreenOne(TinyGPSPlus &gps, bool requiresInit)
 
   int timezoneOffsetHours = getConfiguredTimezoneOffsetHours();
 
+  // Mode: Menu
+  if (screenOneMode == ScreenOneMode::Menu) {
+    if (screenOneNeedsRedraw) {
+      tft.fillScreen(BG);
+      drawTopBar(gps);
+      tft.setTextColor(WHITE, BG);
+      tft.setTextDatum(MC_DATUM);
+      tft.drawString("MENU", tft.width() / 2, 50, 4);
+      tft.drawString("> Waypoints", tft.width() / 2, 120, 2);
+
+      // Bottom labels: left-aligned LB, right-aligned RLC
+      tft.setTextDatum(BC_DATUM);
+      tft.setTextColor(WHITE, BG);
+      tft.drawString("LB: Exit", 8, 235, 2);
+      tft.setTextDatum(BR_DATUM);
+      tft.drawString("RLC: List", tft.width() - 8, 235, 2);
+
+      screenOneNeedsRedraw = false;
+    }
+
+    // Menu has no rapidly changing content; return quickly.
+    return;
+  }
+
+  // Mode: Waypoint list
+  if (screenOneMode == ScreenOneMode::WaypointList) {
+    if (screenOneNeedsRedraw) {
+      tft.fillScreen(BG);
+      drawTopBar(gps);
+
+      tft.setTextColor(WHITE, BG);
+      tft.setTextDatum(MC_DATUM);
+
+      if (flaggedMarkerCount == 0) {
+        tft.drawString("No waypoints", tft.width() / 2, 110, 4);
+        tft.setTextDatum(BC_DATUM);
+        tft.drawString("LB: Back", 8, 235, 2);
+        screenOneNeedsRedraw = false;
+        return;
+      }
+
+      int idx = displayedMarker >= 0 ? displayedMarker : (flaggedMarkerCount - 1);
+      if (idx < 0) idx = 0;
+
+      String header = "Waypoint " + String(idx + 1) + "/" + String(flaggedMarkerCount);
+      tft.drawString(header, tft.width() / 2, 60, 4);
+
+      tft.setTextDatum(MC_DATUM);
+      tft.setTextSize(1);
+      String lat = "Lat: " + String(flaggedMarkers[idx].lat, 6);
+      String lon = "Lon: " + String(flaggedMarkers[idx].lon, 6);
+      tft.drawString(lat, tft.width() / 2, 120, 2);
+      tft.drawString(lon, tft.width() / 2, 150, 2);
+
+      // Bottom labels: left LB, right RB/RLB
+      tft.setTextDatum(BC_DATUM);
+      tft.drawString("LB: Back", 8, 235, 2);
+      tft.setTextDatum(BR_DATUM);
+      tft.drawString("RB: Next  RLB: Delete", tft.width() - 8, 235, 2);
+
+      // Show elapsed in bottom bar
+      drawBottomBar("WP " + String(idx + 1), markerElapsed(flaggedMarkers[idx].startedAt));
+
+      screenOneNeedsRedraw = false;
+      return;
+    }
+
+    // If not a full redraw, only refresh dynamic bottom bar (elapsed)
+    int idx = displayedMarker >= 0 ? displayedMarker : (flaggedMarkerCount - 1);
+    if (idx < 0) idx = 0;
+    drawBottomBar("WP " + String(idx + 1), markerElapsed(flaggedMarkers[idx].startedAt));
+    return;
+  }
+
+  // Normal display
   drawTopBar(gps);
   drawSpeed(gps);
   drawCourse(gps);
-  drawBottomBar(formatTimeWithOffset(gps, timezoneOffsetHours),
-                formatDateWithOffset(gps, timezoneOffsetHours));
+  if (displayedMarker >= 0 && displayedMarker < flaggedMarkerCount)
+  {
+    drawBottomBar("MARK " + String(displayedMarker + 1),
+                  markerElapsed(flaggedMarkers[displayedMarker].startedAt));
+  }
+  else
+  {
+    drawBottomBar(formatTimeWithOffset(gps, timezoneOffsetHours),
+                  formatDateWithOffset(gps, timezoneOffsetHours));
+  }
 }
 
 void screenOneButton(
@@ -386,30 +564,64 @@ void screenOneButton(
     ButtonEvent event
 ) {
 
-    if (button == Button::Left &&
-        event == ButtonEvent::ShortPress) {
-
-        // Screen 1: left button
-        nextScreen();
-    }
-
-    if (button == Button::Right &&
-        event == ButtonEvent::ShortPress) {
-
-        // Screen 1: right button
-    }
-
-    if (button == Button::Left &&
-        event == ButtonEvent::LongPress) {
-
-        // Screen 1: left long press
-    }
-
-    if (button == Button::Right &&
-        event == ButtonEvent::LongPress) {
-
-        if (screenOneGPS) {
-            backendSendFlaggedPosition(*screenOneGPS);
+    // Left short: next screen, or exit menu
+    if (button == Button::Left && event == ButtonEvent::ShortPress) {
+        if (screenOneMode == ScreenOneMode::Menu || screenOneMode == ScreenOneMode::WaypointList) {
+            screenOneMode = ScreenOneMode::Normal;
+            screenOneNeedsRedraw = true;
+        } else {
+            nextScreen();
         }
+        return;
+    }
+
+    // Right short: cycle markers (works in normal and list)
+    if (button == Button::Right && event == ButtonEvent::ShortPress) {
+        rotateDisplayedMarker();
+        return;
+    }
+
+    // Left long: open/close menu when on normal
+    if (button == Button::Left && event == ButtonEvent::LongPress) {
+        if (screenOneMode == ScreenOneMode::Normal) {
+            screenOneMode = ScreenOneMode::Menu;
+            screenOneNeedsRedraw = true;
+        } else {
+            screenOneMode = ScreenOneMode::Normal;
+            screenOneNeedsRedraw = true;
+        }
+        return;
+    }
+
+    // Right long: context-sensitive
+    if (button == Button::Right && event == ButtonEvent::LongPress) {
+        if (screenOneMode == ScreenOneMode::Menu) {
+            // From the menu, RLC lists waypoints
+            if (flaggedMarkerCount > 0) {
+                screenOneMode = ScreenOneMode::WaypointList;
+                displayedMarker = flaggedMarkerCount - 1;
+                screenOneNeedsRedraw = true;
+            } else {
+                // nothing to list; return to normal
+                screenOneMode = ScreenOneMode::Normal;
+                screenOneNeedsRedraw = true;
+            }
+            return;
+        }
+
+        if (screenOneMode == ScreenOneMode::WaypointList) {
+            // Long press in list deletes current waypoint
+            deleteDisplayedMarker();
+            screenOneNeedsRedraw = true;
+            return;
+        }
+
+        // Normal behavior: send flagged waypoint
+        if (screenOneGPS) {
+            if (backendSendFlaggedPosition(*screenOneGPS)) {
+                rememberFlaggedMarker(*screenOneGPS);
+            }
+        }
+        return;
     }
 }

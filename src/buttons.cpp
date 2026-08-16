@@ -13,8 +13,8 @@ static const unsigned long DEBOUNCE_MS = 50;
 static const unsigned long LONG_PRESS_MS = 1000;
 
 static ButtonState buttons[] = {
-    { .pin = 22, .pressed = false, .longPressDetected = false, .pressStart = 0, .lastDebounce = 0 }, // Left
-    { .pin = 21, .pressed = false, .longPressDetected = false, .pressStart = 0, .lastDebounce = 0 }  // Right
+    { .pin = 21, .pressed = false, .longPressDetected = false, .pressStart = 0, .lastDebounce = 0 }, // Left
+    { .pin = 22, .pressed = false, .longPressDetected = false, .pressStart = 0, .lastDebounce = 0 }  // Right
 };
 
 static const int NUM_BUTTONS =

@@ -19,7 +19,7 @@ static ScreenTwoState state = ScreenTwoState::Display;
 
 static const char* menuItems[] = {
     "Check for OTA update",
-    "Auto OTA check",
+    "OTA update on boot",
     "Reboot device"
 };
 
