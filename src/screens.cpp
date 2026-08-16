@@ -24,7 +24,7 @@ const int NUM_PAGES = 3;
 
 void screenInit() {
   tft.init();
-  tft.invertDisplay(true);
+  tft.invertDisplay(false);
   tft.setRotation(3);
   tft.writecommand(0x36);
   tft.writedata(0x68);
