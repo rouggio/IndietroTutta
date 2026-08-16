@@ -1,6 +1,6 @@
 # IndietroTutta — Local build & upload
 
-Quick commands to automate build and upload locally.
+Quick commands to automate build and upload locally..
 
 - **Setup virtualenv and install PlatformIO:**
 
