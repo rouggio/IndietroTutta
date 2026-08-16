@@ -27,7 +27,7 @@ void screenInit() {
   tft.invertDisplay(false);
   tft.setRotation(3);
   tft.writecommand(0x36);
-  tft.writedata(0x68);
+  tft.writedata(0x60);
 }
 
 void drawSplash() {
