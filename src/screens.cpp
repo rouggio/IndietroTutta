@@ -1,7 +1,7 @@
 #include "screens.h"
 #include "screen_one.h"
+#include "screen_map.h"
 #include "screen_two.h"
-#include "screen_three.h"
 #include "splash_screen.h"
 #include "buttons.h"
 
@@ -25,9 +25,9 @@ const int NUM_PAGES = 3;
 void screenInit() {
   tft.init();
   tft.invertDisplay(false);
+  // Try rotation 3 (opposite landscape) and use MADCTL 0x68 (MX|MV|BGR)
+  // Use TFT_eSPI's setRotation only; avoid manual MADCTL to prevent conflicts
   tft.setRotation(3);
-  tft.writecommand(0x36);
-  tft.writedata(0x60);
 }
 
 void drawSplash() {
@@ -38,8 +38,8 @@ void drawSplash() {
 void drawScreen(TinyGPSPlus &gps, bool requiresInit, int page) {
   switch (page) {
     case 0: drawScreenOne(gps, requiresInit); break;
-    case 1: drawScreenTwo(gps); break;
-    case 2: drawScreenThree(gps); break;
+    case 1: drawScreenMap(gps, requiresInit); break;
+    case 2: drawScreenTwo(gps); break;
 
     default:
       tft.fillScreen(TFT_BLACK);
@@ -65,8 +65,8 @@ void screenButtonEvent(
 ) {
     switch(page) {
         case 0: screenOneButton(button, event); break;
-        case 1: screenTwoButton(button, event); break;
-        case 2: screenThreeButton(button, event); break;
+        case 1: screenMapButton(button, event); break;
+        case 2: screenTwoButton(button, event); break;
     }
 }
 

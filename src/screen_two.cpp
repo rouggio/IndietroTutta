@@ -87,6 +87,14 @@ void drawScreenTwoMain(TinyGPSPlus &gps)
     tft.print("Version: " BUILD_VERSION "\n");
     tft.print("IP: " + WiFi.localIP().toString() + "\n");
 
+    // Show connected SSID if available
+    String ssid = WiFi.SSID();
+    if (ssid.length() > 0) {
+        tft.print("SSID: " + ssid + "\n");
+    } else {
+        tft.print("SSID: --\n");
+    }
+
 }
 
 // --------------------------------------------------
