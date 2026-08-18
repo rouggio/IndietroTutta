@@ -575,9 +575,9 @@ void screenOneButton(
         return;
     }
 
-    // Right short: cycle markers (works in normal and list)
+    // Right short: open map screen
     if (button == Button::Right && event == ButtonEvent::ShortPress) {
-        rotateDisplayedMarker();
+        setCurrentPage(1); // go to map
         return;
     }
 

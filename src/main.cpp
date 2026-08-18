@@ -9,6 +9,7 @@
 #include <WiFi.h>
 #include "buttons.h"
 #include "screens.h"
+#include "serial_buffer.h"
 
 TinyGPSPlus gps;
 
@@ -18,7 +19,7 @@ void setup(void) {
   delay(1000); // Wait for Serial to initialize
   loadConfig(config);
   
-  Serial.println("Indietro Tutta");
+  bufferedSerialPrintln("Indietro Tutta");
   gpsInit();
   wifiInit(gps);
   screenInit();
@@ -27,10 +28,11 @@ void setup(void) {
   buttonsSetCallback(screenButtonEvent);
   backendInit();
   otaInit();
-  Serial.println("Indietro Tutta - Setup Complete");
+  bufferedSerialPrintln("Indietro Tutta - Setup Complete");
 }
 
 void loop() {
+  serialBufferLoop();
   buttonsUpdate();
   gpsLoop(gps);
   screenLoop(gps);

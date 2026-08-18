@@ -1,6 +1,7 @@
 #include "wifi_manager.h"
 #include "config_store.h"
 #include "http_server.h"
+#include "serial_buffer.h"
 
 #include <WiFi.h>
 #include <DNSServer.h>
@@ -20,12 +21,12 @@ static void startAccessPoint()
 
     if (!WiFi.softAP("IndietroTutta"))
     {
-        Serial.println("[WiFi] Failed to start AP");
+        bufferedSerialPrintln("[WiFi] Failed to start AP");
         return;
     }
 
-    Serial.print("[WiFi] AP IP: ");
-    Serial.println(WiFi.softAPIP());
+    bufferedSerialPrint("[WiFi] AP IP: ");
+    bufferedSerialPrintln(WiFi.softAPIP().toString());
 
     dns.start(53, "*", WiFi.softAPIP());
 }
@@ -35,15 +36,15 @@ static void startStation()
     if (!wifiConfigured)
         return;
 
-    Serial.print("[WiFi] Connecting to ");
-    Serial.println(config.ssid);
+    bufferedSerialPrint("[WiFi] Connecting to ");
+    bufferedSerialPrintln(String(config.ssid));
 
     WiFi.begin(config.ssid, config.password);
 }
 
 void wifiInit(TinyGPSPlus &gps)
 {
-    Serial.println("[WiFi] Initializing");
+    bufferedSerialPrintln("[WiFi] Initializing");
 
     memset(&config, 0, sizeof(config));
     wifiConfigured = loadConfig(config);
@@ -76,9 +77,9 @@ void wifiLoop()
             connectionAttempts = 0;
             connectionRetryExhausted = false;
 
-            Serial.println("[WiFi] Connected");
-            Serial.print("[WiFi] STA IP: ");
-            Serial.println(WiFi.localIP());
+            bufferedSerialPrintln("[WiFi] Connected");
+            bufferedSerialPrint("[WiFi] STA IP: ");
+            bufferedSerialPrintln(WiFi.localIP().toString());
         }
 
         return;
@@ -94,24 +95,21 @@ void wifiLoop()
         lastRetry = millis();
         connectionAttempts++;
 
-        Serial.print("[WiFi] Retry attempt ");
-        Serial.print(connectionAttempts);
-        Serial.print(" of ");
-        Serial.println(maxConnectionAttempts);
+        bufferedSerialPrintln(String("[WiFi] Retry attempt ") + String(connectionAttempts) + String(" of ") + String(maxConnectionAttempts));
 
         if (connectionAttempts >= maxConnectionAttempts)
         {
-            Serial.println("[WiFi] Max retries reached; clearing saved SSID and password");
+            bufferedSerialPrintln("[WiFi] Max retries reached; clearing saved SSID and password");
             memset(config.ssid, 0, sizeof(config.ssid));
             memset(config.password, 0, sizeof(config.password));
 
             if (!saveConfig(config))
             {
-                Serial.println("[WiFi] Failed to persist cleared credentials");
+                bufferedSerialPrintln("[WiFi] Failed to persist cleared credentials");
             }
             else
             {
-                Serial.println("[WiFi] Saved SSID and password cleared");
+                bufferedSerialPrintln("[WiFi] Saved SSID and password cleared");
             }
 
             wifiConfigured = false;

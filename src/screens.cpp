@@ -51,7 +51,20 @@ void drawScreen(TinyGPSPlus &gps, bool requiresInit, int page) {
 }
 
 void nextScreen() {
-    page = (page + 1) % NUM_PAGES;
+    // Advance to next page but skip the map page (index 1) so the Left-button cycle
+    // does not include the map. The map remains reachable via its dedicated button.
+    int start = page;
+    do {
+        page = (page + 1) % NUM_PAGES;
+    } while (page == 1 && page != start);
+    tft.fillScreen(TFT_BLACK);
+}
+
+void setCurrentPage(int p) {
+    if (p < 0 || p >= NUM_PAGES) return;
+    page = p;
+    // force a redraw on next loop
+    prevPage = -1;
     tft.fillScreen(TFT_BLACK);
 }
 

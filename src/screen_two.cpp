@@ -7,6 +7,7 @@
 #include <WiFi.h>
 #include "screens.h"
 #include "screen_two.h"
+#include "serial_buffer.h"
 
 extern TFT_eSPI tft;
 
@@ -224,7 +225,7 @@ static void executeMenuItem()
             config.otaCheckOnStart = !previousValue;
 
             if (!saveConfig(config)) {
-                Serial.println("[OTA] Failed to save auto-check preference");
+                bufferedSerialPrintln("[OTA] Failed to save auto-check preference");
                 config.otaCheckOnStart = previousValue;
             }
 

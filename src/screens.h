@@ -23,3 +23,6 @@ void screenButtonEvent(
     Button button,
     ButtonEvent event
 );
+
+// Programmatically set the current page (0-based). Safe-guards against invalid pages.
+void setCurrentPage(int p);

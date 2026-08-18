@@ -8,6 +8,7 @@
 #include "http_server.h"
 #include "config_store.h"
 #include "config.h"
+#include "serial_buffer.h"
 
 static WebServer server(80);
 
@@ -177,11 +178,11 @@ static void handleReset()
     Config emptyConfig = {};
     if (!saveConfig(emptyConfig))
     {
-        Serial.println("[HTTP] Failed to clear stored Wi-Fi config");
+        bufferedSerialPrintln("[HTTP] Failed to clear stored Wi-Fi config");
     }
     else
     {
-        Serial.println("[HTTP] Stored Wi-Fi config cleared");
+        bufferedSerialPrintln("[HTTP] Stored Wi-Fi config cleared");
     }
 
     server.send(200,
@@ -190,6 +191,20 @@ static void handleReset()
                 "<p>Rebooting...</p>");
 
     delay(1000);
+    ESP.restart();
+}
+
+// Simple reboot endpoint (POST) to remotely restart the device
+static void handleReboot()
+{
+    bufferedSerialPrintln("[HTTP] Reboot requested via /reboot");
+
+    server.send(200,
+                "text/html",
+                "<h2>Rebooting device</h2>\n<p>Device will restart shortly.</p>");
+
+    // small delay to allow the response to be sent
+    delay(500);
     ESP.restart();
 }
 
@@ -262,6 +277,20 @@ void httpServerInit(TinyGPSPlus &gps)
     server.on("/config", HTTP_GET, handleSetupPrompt);
     server.on("/save", HTTP_POST, handleSetupSave);
     server.on("/reset", HTTP_POST, handleReset);
+    server.on("/reboot", HTTP_POST, handleReboot);
+
+    // Expose serial buffer as plain text at /serial
+    server.on("/serial", HTTP_GET, []() {
+        int total = serialLinesCount();
+        String out;
+        out.reserve(total * 40); // heuristic reserve
+        for (int i = 0; i < total; ++i) {
+            out += serialLine(i);
+            out += '\n';
+        }
+        server.send(200, "text/plain", out);
+    });
+
     server.onNotFound(handleRedirect);
 
     server.begin();

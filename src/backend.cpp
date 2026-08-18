@@ -1,5 +1,6 @@
 #include "config.h"
 #include "backend.h"
+#include "serial_buffer.h"
 
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
@@ -72,7 +73,7 @@ bool backendSendFlaggedPosition(TinyGPSPlus &gps)
 {
     if (!gps.location.isValid())
     {
-        Serial.println("[GPS] Cannot flag position: no valid GPS fix");
+        bufferedSerialPrintln("[GPS] Cannot flag position: no valid GPS fix");
         return false;
     }
 
@@ -86,7 +87,7 @@ bool backendSendFlaggedPosition(TinyGPSPlus &gps)
         true
     );
 
-    Serial.println(sent ? "[GPS] Flagged position sent" :
+    bufferedSerialPrintln(sent ? "[GPS] Flagged position sent" :
                           "[GPS] Failed to send flagged position");
     return sent;
 }
