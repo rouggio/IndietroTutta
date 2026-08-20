@@ -25,9 +25,11 @@ void drawScreenMap(TinyGPSPlus &gps, bool requiresInit)
 {
     const int W = 320;
     const int H = 240;
+    const int ROWS_PER_CHUNK = 10;
+    const int CHUNK_SIZE = W * ROWS_PER_CHUNK * 2;
 
     if (requiresInit) {
-        // fetch raw rgb565 from backend
+
         if (WiFi.status() != WL_CONNECTED) {
             tft.fillScreen(TFT_BLACK);
             tft.setTextDatum(MC_DATUM);
@@ -37,99 +39,160 @@ void drawScreenMap(TinyGPSPlus &gps, bool requiresInit)
         }
 
         drawPlaceholder();
-
         mapLoading = true;
 
         WiFiClientSecure client;
         client.setInsecure();
+
         HTTPClient http;
 
-        String url = String(BASE_URL) + String("/map/device.rgb565?width=320&height=240");
+        String url = String(BASE_URL) +
+                     "/map/device.rgb565?width=320&height=240";
 
-        if (http.begin(client, url)) {
-            int code = http.GET();
-            if (code == HTTP_CODE_OK) {
-                    int len = http.getSize();
-                int expected = W * H * 2;
-                // allow unknown content-length (chunked) or content-length mismatch
-                if (len <= 0) {
-                    len = expected;
-                }
+        bufferedSerialPrintf("[Map] URL: %s\n", url.c_str());
 
-                if (len > 0 && len <= expected * 2) {
-                    uint8_t *buf = (uint8_t*)malloc(expected);
-                    if (buf) {
-                        WiFiClient *stream = http.getStreamPtr();
-                        int read = 0;
-                        unsigned long start = millis();
-                        const unsigned long timeout = 5000; // ms
+        if (!http.begin(client, url)) {
+            bufferedSerialPrintf("[Map] HTTP init failed\n");
 
-                        while (read < expected && (millis() - start) < timeout) {
-                            int avail = stream->available();
-                            if (avail > 0) {
-                                int toRead = min(avail, expected - read);
-                                int r = stream->readBytes((char*)buf + read, toRead);
-                                if (r > 0) {
-                                    read += r;
-                                    continue;
-                                }
-                            }
-                            delay(10);
-                        }
-
-                        if (read == expected) {
-                            // interpret buffer as little-endian uint16_t array
-                            uint16_t *pixels = (uint16_t*)buf;
-                            tft.setSwapBytes(false); // device little-endian
-                            tft.pushImage(0, 0, W, H, pixels);
-                            free(buf);
-                        } else {
-                            free(buf);
-                            bufferedSerialPrintf("[Map] expected %d bytes but read %d\n", expected, read);
-                            tft.fillScreen(TFT_BLACK);
-                            tft.setTextDatum(MC_DATUM);
-                            tft.setTextColor(TFT_RED, TFT_BLACK);
-                            tft.drawString("Map read error", 160, 120, 4);
-                        }
-                    } else {
-                        tft.fillScreen(TFT_BLACK);
-                        tft.setTextDatum(MC_DATUM);
-                        tft.setTextColor(TFT_RED, TFT_BLACK);
-                        tft.drawString("No mem for map", 160, 120, 4);
-                    }
-                } else {
-                    bufferedSerialPrintf("[Map] bad content-length %d expected %d\n", len, expected);
-                    tft.fillScreen(TFT_BLACK);
-                    tft.setTextDatum(MC_DATUM);
-                    tft.setTextColor(TFT_RED, TFT_BLACK);
-                    tft.drawString("Bad map size", 160, 120, 4);
-                }
-            } else {
-                tft.fillScreen(TFT_BLACK);
-                tft.setTextDatum(MC_DATUM);
-                tft.setTextColor(TFT_RED, TFT_BLACK);
-                tft.drawString("Map fetch fail", 160, 120, 4);
-            }
-            http.end();
-        } else {
             tft.fillScreen(TFT_BLACK);
             tft.setTextDatum(MC_DATUM);
             tft.setTextColor(TFT_RED, TFT_BLACK);
             tft.drawString("HTTP init fail", 160, 120, 4);
+
+            mapLoading = false;
+            return;
         }
 
+        int code = http.GET();
+
+        bufferedSerialPrintf("[Map] HTTP code: %d\n", code);
+
+        if (code != HTTP_CODE_OK) {
+
+            tft.fillScreen(TFT_BLACK);
+            tft.setTextDatum(MC_DATUM);
+            tft.setTextColor(TFT_RED, TFT_BLACK);
+            tft.drawString("Map fetch fail", 160, 100, 4);
+
+            tft.setTextColor(TFT_WHITE, TFT_BLACK);
+            tft.drawString(String(code), 160, 140, 4);
+
+            http.end();
+            mapLoading = false;
+            return;
+        }
+
+        WiFiClient *stream = http.getStreamPtr();
+
+        uint8_t *buffer = (uint8_t *)malloc(CHUNK_SIZE);
+
+        if (!buffer) {
+
+            bufferedSerialPrintf(
+                "[Map] Cannot allocate %d bytes\n",
+                CHUNK_SIZE
+            );
+
+            tft.fillScreen(TFT_BLACK);
+            tft.setTextDatum(MC_DATUM);
+            tft.setTextColor(TFT_RED, TFT_BLACK);
+            tft.drawString("No mem for map", 160, 120, 4);
+
+            http.end();
+            mapLoading = false;
+            return;
+        }
+
+        const int expectedBytes = W * H * 2;
+        int totalRead = 0;
+
+        unsigned long lastData = millis();
+        const unsigned long timeout = 5000;
+
+        tft.setSwapBytes(false);
+
+        while (totalRead < expectedBytes) {
+
+            int rows = min(
+                ROWS_PER_CHUNK,
+                H - (totalRead / (W * 2))
+            );
+
+            int bytesToRead = W * rows * 2;
+            int chunkRead = 0;
+
+            while (chunkRead < bytesToRead) {
+
+                if (stream->available()) {
+
+                    int available = stream->available();
+
+                    int remaining = bytesToRead - chunkRead;
+
+                    int toRead = min(available, remaining);
+
+                    int r = stream->readBytes(
+                        (char *)buffer + chunkRead,
+                        toRead
+                    );
+
+                    if (r > 0) {
+                        chunkRead += r;
+                        totalRead += r;
+                        lastData = millis();
+                    }
+                }
+                else {
+                    delay(5);
+                }
+
+                if (millis() - lastData > timeout) {
+                    bufferedSerialPrintf(
+                        "[Map] Timeout: %d/%d bytes\n",
+                        totalRead,
+                        expectedBytes
+                    );
+
+                    free(buffer);
+                    http.end();
+
+                    tft.fillScreen(TFT_BLACK);
+                    tft.setTextDatum(MC_DATUM);
+                    tft.setTextColor(TFT_RED, TFT_BLACK);
+                    tft.drawString("Map timeout", 160, 120, 4);
+
+                    mapLoading = false;
+                    return;
+                }
+            }
+
+            int y = (totalRead - chunkRead) / (W * 2);
+
+            tft.pushImage(
+                0,
+                y,
+                W,
+                rows,
+                (uint16_t *)buffer
+            );
+        }
+
+        bufferedSerialPrintf(
+            "[Map] Received %d bytes\n",
+            totalRead
+        );
+
+        free(buffer);
+        http.end();
+
         mapLoading = false;
+
         return;
     }
 
-    // simple static display while not reloading: draw last known status
+    // No reload: keep the already displayed map.
     if (mapLoading) {
         drawPlaceholder();
-    } else {
-        // small indicator
-        tft.setTextDatum(TR_DATUM);
-        tft.setTextColor(TFT_GREEN, TFT_BLACK);
-        tft.drawString("Map", 315, 5, 2);
     }
 }
 
