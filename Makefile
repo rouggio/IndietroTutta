@@ -9,7 +9,7 @@ BACKEND := ../backend
 OTA_DIR := $(BACKEND)/public/ota
 FIRMWARE := .pio/build/esp32dev/firmware.bin
 
-.PHONY: venv install compile build bump-version dist upload monitor clean watch
+.PHONY: venv install compile build bump-version dist upload monitor clean watch git-push deploy all
 
 venv:
 	python3 -m venv $(VENV)
@@ -30,7 +30,7 @@ bump-version:
 compile:
 	$(PY) -m platformio run
 
-build: bump-version compile dist
+dist: bump-version compile git-push
 
 upload:
 	$(PY) -m platformio run -t upload --upload-port $(PORT)
@@ -45,7 +45,7 @@ deploy: compile upload
 
 all: compile upload monitor
 
-dist:
+git-push:
 	@VERSION=$$(grep -E '^[[:space:]]*#define[[:space:]]+BUILD_VERSION[[:space:]]+"' $(CONFIG) | sed -E 's/.*BUILD_VERSION[[:space:]]+"([^"]+)".*/\1/'); \
 	if [ -z "$$VERSION" ]; then \
 		echo "ERROR: BUILD_VERSION not found"; \

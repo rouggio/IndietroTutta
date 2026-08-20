@@ -9,6 +9,7 @@
 #include "config_store.h"
 #include "config.h"
 #include "serial_buffer.h"
+#include "wifi_manager.h"
 
 static WebServer server(80);
 
@@ -37,36 +38,71 @@ static void handleSetupPrompt()
     int n = getNetworkScanCount();
     bool haveNetworks = (n > 0);
 
+    int savedCount = wifiNetworkCount();
+
     String html;
 
     html += "<!DOCTYPE html><html><head>"
             "<meta charset='utf-8'>"
             "<meta name='viewport' content='width=device-width, initial-scale=1, viewport-fit=cover'>"
             "<style>"
-            "html, body { margin: 0; padding: 0; width: 100%; height: 100%; background: #0f172a; color: #f8fafc; font-family: Arial, sans-serif; }"
-            "body { display: flex; align-items: center; justify-content: center; }"
+            "html, body { margin: 0; padding: 0; width: 100%; min-height: 100%; background: #0f172a; color: #f8fafc; font-family: Arial, sans-serif; }"
+            "body { display: flex; align-items: center; justify-content: center; padding: 20px 0; }"
             ".card { width: min(92vw, 460px); padding: 24px; box-sizing: border-box; background: #111827; border: 1px solid #334155; border-radius: 18px; box-shadow: 0 10px 30px rgba(0,0,0,0.35); }"
             "h2 { margin: 0 0 16px; font-size: 1.35rem; text-align: center; }"
+            "h3 { margin: 24px 0 12px; font-size: 1.05rem; color: #cbd5e1; }"
             "label { display: block; font-size: 0.95rem; margin-bottom: 6px; color: #cbd5e1; }"
             "input, select { width: 100%; box-sizing: border-box; padding: 12px; margin-bottom: 14px; border-radius: 10px; border: 1px solid #475569; background: #1f2937; color: #f8fafc; font-size: 1rem; }"
             "input[type='submit'] { background: #2563eb; border: none; font-weight: 700; margin-top: 6px; }"
+            ".saved { background: #1f2937; border: 1px solid #334155; border-radius: 10px; padding: 10px 12px; margin-bottom: 8px; display: flex; align-items: center; justify-content: space-between; gap: 10px; }"
+            ".saved-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }"
+            ".remove { background: #991b1b; color: white; border: none; border-radius: 7px; padding: 7px 10px; font-size: 0.85rem; }"
+            ".empty { color: #94a3b8; font-size: 0.9rem; }"
+            ".separator { margin: 22px 0; border-top: 1px solid #334155; }"
             "@media (max-height: 640px) { .card { padding: 18px; } h2 { margin-bottom: 10px; } input, select { padding: 10px; margin-bottom: 10px; } }"
             "</style></head><body>"
             "<div class='card'>"
             "<h2>Indietro Tutta Setup</h2>"
+
             "<form method='POST' action='/save'>"
             "<label>WiFi Network</label>";
+
+    // -----------------------------------------------------
+    // Available networks
+    // -----------------------------------------------------
 
     if (haveNetworks)
     {
         html += "<select name='ssid'>";
+
         for (int i = 0; i < n; i++)
         {
+            String scannedSSID = WiFi.SSID(i);
+
+            bool saved = false;
+
+            for (int j = 0; j < savedCount; j++)
+            {
+                char savedSSID[33];
+
+                if (wifiGetNetwork(
+                        j,
+                        savedSSID,
+                        sizeof(savedSSID)))
+                {
+                    if (scannedSSID == savedSSID)
+                    {
+                        saved = true;
+                        break;
+                    }
+                }
+            }
+
             html += "<option value='";
-            html += WiFi.SSID(i);
+            html += scannedSSID;
             html += "'>";
 
-            html += WiFi.SSID(i);
+            html += scannedSSID;
             html += " (";
             html += WiFi.RSSI(i);
             html += " dBm)";
@@ -76,8 +112,12 @@ static void handleSetupPrompt()
             else
                 html += " 🔒";
 
+            if (saved)
+                html += " ✓";
+
             html += "</option>";
         }
+
         html += "</select>";
     }
     else
@@ -87,6 +127,10 @@ static void handleSetupPrompt()
 
     html += "<label>Password</label>"
             "<input type='password' name='password' placeholder='Enter password'>";
+
+    // -----------------------------------------------------
+    // Timezone
+    // -----------------------------------------------------
 
     html += "<label>Timezone</label>"
             "<select name='timezoneOffset'>"
@@ -120,54 +164,135 @@ static void handleSetupPrompt()
             "</select>";
 
     html += "<input type='submit' value='Save'>"
-            "</form></div></body></html>";
+            "</form>";
+
+    // -----------------------------------------------------
+    // Saved networks
+    // -----------------------------------------------------
+
+    html += "<div class='separator'></div>"
+            "<h3>Saved WiFi networks</h3>";
+
+    if (savedCount == 0)
+    {
+        html += "<div class='empty'>No saved networks.</div>";
+    }
+    else
+    {
+        for (int i = 0; i < savedCount; i++)
+        {
+            char savedSSID[33];
+
+            if (!wifiGetNetwork(
+                    i,
+                    savedSSID,
+                    sizeof(savedSSID)))
+            {
+                continue;
+            }
+
+            html += "<div class='saved'>"
+                    "<span class='saved-name'>✓ ";
+
+            html += savedSSID;
+
+            html += "</span>"
+                    "<form method='POST' action='/wifi/remove' style='margin:0;'>"
+                    "<input type='hidden' name='ssid' value='";
+
+            html += savedSSID;
+
+            html += "'>"
+                    "<button class='remove' type='submit'>Remove</button>"
+                    "</form>"
+                    "</div>";
+        }
+    }
+
+    html += "</div></body></html>";
 
     server.send(200, "text/html", html);
 }
 
 static void handleSetupSave()
 {
-    Config cfg;
+    Config cfg{};
 
     loadConfig(cfg);
 
-    if (server.hasArg("ssid") && server.arg("ssid").length() > 0) {
-        strncpy(
-            cfg.ssid,
-            server.arg("ssid").c_str(),
-            sizeof(cfg.ssid) - 1
-        );
-        cfg.ssid[sizeof(cfg.ssid) - 1] = '\0';
-    }
+    bool wifiSaved = false;
 
-    if (server.hasArg("password") && server.arg("password").length() > 0) {
-        strncpy(
-            cfg.password,
-            server.arg("password").c_str(),
-            sizeof(cfg.password) - 1
+    if (server.hasArg("ssid") &&
+        server.arg("ssid").length() > 0)
+    {
+        String ssid = server.arg("ssid");
+        String password = "";
+
+        if (server.hasArg("password"))
+        {
+            password = server.arg("password");
+        }
+
+        wifiSaved = wifiAddNetwork(
+            ssid.c_str(),
+            password.c_str()
         );
-        cfg.password[sizeof(cfg.password) - 1] = '\0';
     }
 
     if (server.hasArg("timezoneOffset") &&
-        server.arg("timezoneOffset").length() > 0) {
-
+        server.arg("timezoneOffset").length() > 0)
+    {
         cfg.timezoneOffsetHours =
             server.arg("timezoneOffset").toInt();
     }
 
-    if (server.hasArg("otaCheckOnStart")) {
+    if (server.hasArg("otaCheckOnStart"))
+    {
         cfg.otaCheckOnStart = true;
-    } else {
+    }
+    else
+    {
         cfg.otaCheckOnStart = false;
     }
 
-    saveConfig(cfg);
+    if (!saveConfig(cfg))
+    {
+        bufferedSerialPrintln(
+            "[HTTP] Failed to save configuration"
+        );
 
-    server.send(200,
-                "text/html",
-                "<h2>Configuration saved.</h2>"
-                "<p>Rebooting...</p>");
+        server.send(
+            500,
+            "text/html",
+            "<h2>Configuration save failed.</h2>"
+        );
+
+        return;
+    }
+
+    // Keep global configuration synchronized
+    config = cfg;
+
+    if (server.hasArg("ssid") &&
+        server.arg("ssid").length() > 0 &&
+        !wifiSaved)
+    {
+        server.send(
+            500,
+            "text/html",
+            "<h2>WiFi configuration failed.</h2>"
+            "<p>Maximum number of networks may have been reached.</p>"
+        );
+
+        return;
+    }
+
+    server.send(
+        200,
+        "text/html",
+        "<h2>Configuration saved.</h2>"
+        "<p>Rebooting...</p>"
+    );
 
     delay(1000);
     ESP.restart();
@@ -175,20 +300,29 @@ static void handleSetupSave()
 
 static void handleReset()
 {
-    Config emptyConfig = {};
+    wifiClearNetworks();
+
+    Config emptyConfig{};
+
     if (!saveConfig(emptyConfig))
     {
-        bufferedSerialPrintln("[HTTP] Failed to clear stored Wi-Fi config");
+        bufferedSerialPrintln(
+            "[HTTP] Failed to clear stored configuration"
+        );
     }
     else
     {
-        bufferedSerialPrintln("[HTTP] Stored Wi-Fi config cleared");
+        bufferedSerialPrintln(
+            "[HTTP] Stored configuration cleared"
+        );
     }
 
-    server.send(200,
-                "text/html",
-                "<h2>Resetting configuration.</h2>"
-                "<p>Rebooting...</p>");
+    server.send(
+        200,
+        "text/html",
+        "<h2>Resetting configuration.</h2>"
+        "<p>Rebooting...</p>"
+    );
 
     delay(1000);
     ESP.restart();
@@ -262,6 +396,47 @@ static void handleRedirect()
     server.send(302, "text/plain", "");
 }
 
+static void handleWiFiRemove()
+{
+    if (!server.hasArg("ssid") ||
+        server.arg("ssid").length() == 0)
+    {
+        server.send(
+            400,
+            "text/plain",
+            "Missing SSID"
+        );
+        return;
+    }
+
+    String ssid = server.arg("ssid");
+
+    if (!wifiRemoveNetwork(ssid.c_str()))
+    {
+        server.send(
+            404,
+            "text/plain",
+            "WiFi network not found"
+        );
+        return;
+    }
+
+    bufferedSerialPrint("[HTTP] Removed WiFi network: ");
+    bufferedSerialPrintln(ssid);
+
+    server.sendHeader(
+        "Location",
+        "/config",
+        true
+    );
+
+    server.send(
+        303,
+        "text/plain",
+        ""
+    );
+}
+
 void httpServerInit(TinyGPSPlus &gps)
 {
     if (started)
@@ -276,6 +451,7 @@ void httpServerInit(TinyGPSPlus &gps)
     server.on("/health", HTTP_GET, handleHealth);
     server.on("/config", HTTP_GET, handleSetupPrompt);
     server.on("/save", HTTP_POST, handleSetupSave);
+    server.on("/wifi/remove", HTTP_POST, handleWiFiRemove);
     server.on("/reset", HTTP_POST, handleReset);
     server.on("/reboot", HTTP_POST, handleReboot);
 
