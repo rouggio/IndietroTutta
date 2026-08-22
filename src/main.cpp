@@ -15,6 +15,8 @@ TinyGPSPlus gps;
 
 
 void setup(void) {
+  screenInit();
+  drawSplash();
   Serial.begin(115200);
   delay(1000); // Wait for Serial to initialize
   loadConfig(config);
@@ -22,8 +24,6 @@ void setup(void) {
   bufferedSerialPrintln("Indietro Tutta");
   gpsInit();
   wifiInit(gps);
-  screenInit();
-  drawSplash();
   buttonsInit();
   buttonsSetCallback(screenButtonEvent);
   backendInit();
