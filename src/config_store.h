@@ -2,9 +2,13 @@
 
 #include <stddef.h>
 
+constexpr size_t MAX_USERNAME_LEN = 32;
+
 struct Config
 {
-    char endpoint[128];
+    // Display name shown on the map, transmitted to the backend
+    // alongside the DeviceId (MAC address)
+    char username[MAX_USERNAME_LEN + 1];
 
     int timezoneOffsetHours;
 

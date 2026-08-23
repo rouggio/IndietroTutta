@@ -21,6 +21,69 @@ static const unsigned long scanCacheMs = 30000;
 
 static TinyGPSPlus *gpsRef = nullptr;
 
+// ---------------------------------------------------------
+// Username helpers
+// ---------------------------------------------------------
+
+// Usernames must match the backend whitelist so they are safe
+// to render in the browser without escaping: letters, digits,
+// space, dot, underscore, dash. Max 32 chars.
+static void sanitizeUsername(
+    const char *input,
+    char *output,
+    size_t outputSize)
+{
+    size_t out = 0;
+    bool atStart = true;
+
+    for (const char *p = (input ? input : ""); *p != '\0'; ++p)
+    {
+        char c = *p;
+
+        bool allowed = (c >= 'A' && c <= 'Z') ||
+                       (c >= 'a' && c <= 'z') ||
+                       (c >= '0' && c <= '9') ||
+                       c == ' ' || c == '.' || c == '_' || c == '-';
+
+        if (!allowed)
+            continue;
+
+        if (atStart && c == ' ')
+            continue;
+
+        if (out >= outputSize - 1)
+            break;
+
+        output[out++] = c;
+        atStart = false;
+    }
+
+    while (out > 0 && output[out - 1] == ' ')
+        out--;
+
+    output[out] = '\0';
+}
+
+static String escapeHtml(const char *text)
+{
+    String escaped;
+
+    for (const char *p = (text ? text : ""); *p != '\0'; ++p)
+    {
+        switch (*p)
+        {
+        case '&':  escaped += "&amp;";  break;
+        case '<':  escaped += "&lt;";   break;
+        case '>':  escaped += "&gt;";   break;
+        case '"':  escaped += "&quot;"; break;
+        case '\'': escaped += "&#39;";  break;
+        default:   escaped += *p;       break;
+        }
+    }
+
+    return escaped;
+}
+
 static int getNetworkScanCount()
 {
     if (!scanCached || (millis() - lastScanTime) > scanCacheMs)
@@ -127,6 +190,18 @@ static void handleSetupPrompt()
 
     html += "<label>Password</label>"
             "<input type='password' name='password' placeholder='Enter password'>";
+
+    // -----------------------------------------------------
+    // Device name
+    // -----------------------------------------------------
+
+    html += "<label>Device name</label>"
+            "<input type='text' name='username' maxlength='32' "
+            "placeholder='Shown on the map (letters, numbers, . _ -)' value='";
+
+    html += escapeHtml(config.username);
+
+    html += "'>";
 
     // -----------------------------------------------------
     // Timezone
@@ -244,6 +319,26 @@ static void handleSetupSave()
     {
         cfg.timezoneOffsetHours =
             server.arg("timezoneOffset").toInt();
+    }
+
+    // -----------------------------------------------------
+    // Device name (blank keeps the current one)
+    // -----------------------------------------------------
+
+    if (server.hasArg("username"))
+    {
+        char sanitized[MAX_USERNAME_LEN + 1];
+
+        sanitizeUsername(
+            server.arg("username").c_str(),
+            sanitized,
+            sizeof(sanitized)
+        );
+
+        if (sanitized[0] != '\0')
+        {
+            strlcpy(cfg.username, sanitized, sizeof(cfg.username));
+        }
     }
 
     if (server.hasArg("otaCheckOnStart"))
@@ -378,6 +473,7 @@ static void handleStatus()
     JsonObject sys = doc.createNestedObject("sys");
     sys["version"] = BUILD_VERSION;
     sys["otaCheckOnStart"] = config.otaCheckOnStart;
+    sys["username"] = config.username;
 
     String json;
     serializeJson(doc, json);

@@ -1,5 +1,6 @@
 #include "config.h"
 #include "backend.h"
+#include "config_store.h"
 #include "serial_buffer.h"
 
 #include <WiFi.h>
@@ -53,6 +54,12 @@ static bool backendSendPosition(
     body += ",\"altitude\":" + String(altitude, 1);
     body += ",\"sats\":" + String(sats);
     body += ",\"flagged\":" + String(flagged ? "true" : "false");
+
+    if (config.username[0] != '\0')
+    {
+        body += ",\"username\":\"" + String(config.username) + "\"";
+    }
+
     body += "}";
 
     int code = http.POST(body);
@@ -119,6 +126,12 @@ void healthCheckLoop()
     if (http.begin(client, HEALTH_URL))
     {
         http.addHeader("DeviceId", String(WiFi.macAddress()));
+
+        if (config.username[0] != '\0')
+        {
+            http.addHeader("Username", String(config.username));
+        }
+
         online = (http.GET() == HTTP_CODE_OK);
         http.end();
     }

@@ -51,13 +51,15 @@ Base URL compiled in (`src/config.h`): `https://indietrotutta.onrender.com`.
 
 | Call | Direction | When | Notes |
 |---|---|---|---|
-| `GET {BASE}/health` | out | every 30 s | Header `DeviceId: <WiFi MAC>` ⇒ sets online flag |
-| `POST {BASE}/gps` | out | every 40 s with valid fix | JSON: lat/lon (7 dp), speed (kn), course, altitude, sats, flagged |
+| `GET {BASE}/health` | out | every 30 s | Headers `DeviceId: <WiFi MAC>` + `Username: <name>` ⇒ sets online flag and re-registers the device |
+| `POST {BASE}/gps` | out | every 40 s with valid fix | JSON: lat/lon (7 dp), speed (kn), course, altitude, sats, flagged, username |
 | Flagged post | out | Right-long on main screen | Same payload with `"flagged": true` |
 | `GET {BASE}/map/device.rgb565?width=320&height=240` | in | entering map page | Raw framebuffer rendered directly |
 
-No authentication: identity is only the `DeviceId` MAC header. All TLS uses
-`WiFiClientSecure::setInsecure()` everywhere (backend, OTA, map).
+No authentication: identity is the `DeviceId` MAC header; the username is a
+display label attached to that identity on the backend (whitelist-sanitized on
+both sides). All TLS uses `WiFiClientSecure::setInsecure()` everywhere
+(backend, OTA, map).
 
 ## Device web portal (port 80)
 
@@ -67,7 +69,7 @@ to `/config`. Routes (`src/http_server.cpp`):
 
 | Route | Purpose |
 |---|---|
-| `/config` | Provisioning page: WiFi scan dropdown (RSSI, lock icon), password, manual SSID fallback, timezone select, saved-network list with remove buttons |
+| `/config` | Provisioning page: WiFi scan dropdown (RSSI, lock icon), password, device name field (shown on the map), manual SSID fallback, timezone select, saved-network list with remove buttons |
 | `/save` | Persists SSID/password/timezone/OTA flag, then reboots after 1 s |
 | `/wifi/remove` | Removes one saved network |
 | `/reset` | Clears ALL WiFi networks and wipes stored config, reboots |
@@ -106,8 +108,10 @@ Global: redraw every 200 ms; button events routed to the active page.
 
 NVS (`Preferences`, namespace `"wifi"`):
 
-- Blob key `cfg`: `Config { endpoint[128], timezoneOffsetHours, otaCheckOnStart }`
-  (size-checked load; mismatched blobs are deleted and zeroed)
+- Blob key `cfg`: `Config { username[33], timezoneOffsetHours, otaCheckOnStart }`
+  (size-checked load; mismatched blobs are deleted and zeroed — a firmware
+  update that changes the struct resets timezone/OTA flag once; WiFi networks
+  are stored under separate keys and survive)
 - Per-network keys `wifi_%d_ssid` / `wifi_%d_pass` plus `wifi_count`, max 10
 
 Compiled in (`src/config.h`): `BASE_URL`, `OTA_BASE_URL`, `BUILD_VERSION`.
@@ -118,6 +122,10 @@ Pins are hardcoded in `include/User_Setup.h` and module sources.
 - Saving via the web portal always resets `otaCheckOnStart=false` because the
   form omits the field while the handler treats absence as false
   (`http_server.cpp`)
+- Blank device name in the portal keeps the stored username (only non-empty
+  sanitized values overwrite it)
+- Usernames are restricted to `[A-Za-z0-9 ._-]`, max 32 chars, on both device
+  and backend, so they are safe to render unescaped in the browser
 - WiFi reconnect uses `wifiMulti.run(5000)` — each retry can block the whole
   loop up to 5 s (UI freezes during reconnects)
 - The stored `endpoint` NVS field is dead weight — URLs are compile-time only
@@ -125,3 +133,6 @@ Pins are hardcoded in `include/User_Setup.h` and module sources.
 - Splash blocks for 2 s; OTA and map streaming also block the loop
 - All web routes unauthenticated; TLS validation disabled everywhere
 - Backend "online" tile reflects only the last health/post result
+- Backend device registry (`store/deviceStore.js`) and GPS points are
+  in-memory — a backend restart loses usernames until the next health poll
+  (~30 s) or GPS post re-registers the device
