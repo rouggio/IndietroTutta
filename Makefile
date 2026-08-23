@@ -1,42 +1,74 @@
-SHELL := /bin/bash
-PORT ?= /dev/ttyUSB1
+# Cross-platform settings (Linux/macOS and Windows)
+# On Windows, GNU Make drives Git-for-Windows' bash, which provides
+# sed/grep/cp used by the version-bump and publish recipes.
+ifeq ($(OS),Windows_NT)
+	# ezwinports make is a 32-bit binary, so $(PROGRAMFILES) can resolve to
+	# "Program Files (x86)" under WoW64. Use 8.3 short names (space-free,
+	# redirection-proof) and verify the path really exists via $(wildcard).
+	GIT_BASH := $(firstword $(foreach d,C:/PROGRA~1 C:/PROGRA~2,$(wildcard $d/Git/usr/bin/bash.exe)))
+	ifeq ($(strip $(GIT_BASH)),)
+		GIT_BASH := bash.exe
+	endif
+	SHELL := $(GIT_BASH)
+	# make-spawned bash doesn't get Git's Unix tools on PATH by itself
+	export PATH := $(patsubst %/,%,$(dir $(GIT_BASH)));$(PATH)
+	PORT ?=
+	VENV_SUBDIR := Scripts
+	BASE_PYTHON ?= python
+else
+	SHELL := /bin/bash
+	PORT ?= /dev/ttyUSB1
+	VENV_SUBDIR := bin
+	BASE_PYTHON ?= python3
+endif
+
 BAUD ?= 115200
 VENV := .venv
-PY := $(VENV)/bin/python
-PIP := $(VENV)/bin/pip
+PY := $(VENV)/$(VENV_SUBDIR)/python
 CONFIG := src/config.h
-BACKEND := ../backend
+BACKEND := $(firstword $(wildcard ../backend ../IndietroTuttaBackend))
 OTA_DIR := $(BACKEND)/public/ota
 FIRMWARE := .pio/build/esp32dev/firmware.bin
+
+ifneq ($(strip $(PORT)),)
+	UPLOAD_ARGS := --upload-port $(PORT)
+	MONITOR_ARGS := --port $(PORT)
+endif
 
 .PHONY: venv install compile build bump-version dist upload monitor clean watch git-push deploy all
 
 venv:
-	python3 -m venv $(VENV)
-	$(PIP) install -U pip setuptools wheel
+	$(BASE_PYTHON) -m venv $(VENV)
+	$(PY) -m pip install -U pip setuptools wheel
 
 install: venv
-	$(PIP) install platformio
+	$(PY) -m pip install platformio
 
 bump-version:
 	@echo "Incrementing firmware version..."
-	@VERSION=$$(grep -E '^[[:space:]]*#define[[:space:]]+BUILD_VERSION[[:space:]]+"' $(CONFIG) | sed -E 's/.*BUILD_VERSION[[:space:]]+"([^"]+)".*/\1/'); \
+	@VERSION=$$(grep -E '^[[:space:]]*#[[:space:]]*define[[:space:]]+BUILD_VERSION[[:space:]]+"' $(CONFIG) | sed -E 's/.*BUILD_VERSION[[:space:]]+"([^"]+)".*/\1/'); \
 	IFS='.' read -r MAJOR MINOR PATCH <<< "$$VERSION"; \
 	PATCH=$$((PATCH + 1)); \
 	NEW_VERSION="$$MAJOR.$$MINOR.$$PATCH"; \
-	sed -i -E "s/(^[[:space:]]*#define[[:space:]]+BUILD_VERSION[[:space:]]+\")[^\"]*(\".*$$)/\1$$NEW_VERSION\2/" $(CONFIG); \
+	if [ -z "$$MAJOR" ]; then \
+		echo "ERROR: BUILD_VERSION not found in $(CONFIG)"; \
+		exit 1; \
+	fi; \
+	sed -i -E "s/(^[[:space:]]*#[[:space:]]*define[[:space:]]+BUILD_VERSION[[:space:]]+\")[^\"]*(\".*$$)/\1$$NEW_VERSION\2/" $(CONFIG); \
 	echo "Firmware version: $$VERSION -> $$NEW_VERSION"
 
 compile:
 	$(PY) -m platformio run
 
+build: compile
+
 dist: bump-version compile git-push
 
 upload:
-	$(PY) -m platformio run -t upload --upload-port $(PORT)
+	$(PY) -m platformio run -t upload $(UPLOAD_ARGS)
 
 monitor:
-	$(PY) -m platformio device monitor --port $(PORT) --baud $(BAUD)
+	$(PY) -m platformio device monitor $(MONITOR_ARGS) --baud $(BAUD)
 
 clean:
 	$(PY) -m platformio run -t clean
@@ -46,7 +78,8 @@ deploy: compile upload
 all: compile upload monitor
 
 git-push:
-	@VERSION=$$(grep -E '^[[:space:]]*#define[[:space:]]+BUILD_VERSION[[:space:]]+"' $(CONFIG) | sed -E 's/.*BUILD_VERSION[[:space:]]+"([^"]+)".*/\1/'); \
+	@set -e; \
+	VERSION=$$(grep -E '^[[:space:]]*#[[:space:]]*define[[:space:]]+BUILD_VERSION[[:space:]]+"' $(CONFIG) | sed -E 's/.*BUILD_VERSION[[:space:]]+"([^"]+)".*/\1/'); \
 	if [ -z "$$VERSION" ]; then \
 		echo "ERROR: BUILD_VERSION not found"; \
 		exit 1; \
