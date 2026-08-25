@@ -10,7 +10,7 @@ struct ButtonState {
 };
 
 static const unsigned long DEBOUNCE_MS = 50;
-static const unsigned long LONG_PRESS_MS = 1000;
+static const unsigned long LONG_PRESS_MS = 500;
 
 static ButtonState buttons[] = {
     { .pin = 21, .pressed = false, .longPressDetected = false, .pressStart = 0, .lastDebounce = 0 }, // Left

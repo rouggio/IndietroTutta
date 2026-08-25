@@ -1,7 +1,8 @@
 #include "screens.h"
 #include "screen_one.h"
-#include "screen_map.h"
 #include "screen_two.h"
+#include "screen_waypoints.h"
+#include "screen_timers.h"
 #include "splash_screen.h"
 #include "buttons.h"
 
@@ -18,9 +19,7 @@ TFT_eSPI tft = TFT_eSPI();
 unsigned long lastUpdate = 0;
 
 int prevPage = -1;
-int page = 0;
-
-const int NUM_PAGES = 3;
+ScreenPage page = PageMain;
 
 void screenInit() {
   tft.init();
@@ -30,16 +29,42 @@ void screenInit() {
   tft.setRotation(3);
 }
 
-void drawSplash() {
+// --------------------------------------------------
+// NON-BLOCKING SPLASH
+// Drawn once in setup(); screenLoop() and the button
+// router keep it on screen while setup runs, and it
+// is released by endSplash() as soon as the main loop
+// is ready (minimum display time keeps it from being
+// a single-frame flash).
+// --------------------------------------------------
+
+static constexpr unsigned long SPLASH_MIN_MS = 500;
+static unsigned long splashShownAt = 0;
+static bool splashDone = false;
+
+void beginSplash() {
   drawSplashScreen();
+  splashShownAt = millis();
+  splashDone = false;
+}
+
+void endSplash() {
+  splashDone = true;
+}
+
+bool splashActive() {
+  return !splashDone &&
+         splashShownAt != 0 &&
+         (millis() - splashShownAt) < SPLASH_MIN_MS;
 }
 
 // ---------------- MAIN ROUTER ----------------
-void drawScreen(TinyGPSPlus &gps, bool requiresInit, int page) {
+void drawScreen(TinyGPSPlus &gps, bool requiresInit, ScreenPage page) {
   switch (page) {
-    case 0: drawScreenOne(gps, requiresInit); break;
-    case 1: drawScreenMap(gps, requiresInit); break;
-    case 2: drawScreenTwo(gps); break;
+    case PageMain: drawScreenOne(gps, requiresInit); break;
+    case PageDiagnostics: drawScreenTwo(gps); break;
+    case PageWaypoints: drawScreenWaypoints(gps, requiresInit); break;
+    case PageTimers: drawScreenTimers(requiresInit); break;
 
     default:
       tft.fillScreen(TFT_BLACK);
@@ -51,23 +76,17 @@ void drawScreen(TinyGPSPlus &gps, bool requiresInit, int page) {
 }
 
 void nextScreen() {
-    // Advance to the next page, skipping the map page (index 1):
-    // the map stays reachable via its dedicated Right button.
-    // 0 -> 2, 2 -> 0, 1 -> 2
-    page = (page + 1) % NUM_PAGES;
-
-    if (page == 1) {
-        page = 2;
-    }
-
+    // Cycle between the top-level pages
+    page = (ScreenPage)(((int)page + 1) % PAGE_CYCLE);
     tft.fillScreen(TFT_BLACK);
 }
 
-void setCurrentPage(int p) {
-    if (p < 0 || p >= NUM_PAGES) return;
+void setCurrentPage(ScreenPage p) {
+    if (p < PageMain || p > PageDiagnostics) return;
     page = p;
-    // force a redraw on next loop
-    prevPage = -1;
+    // Clear immediately: no stale pixels may survive a page
+    // switch, even before the next redraw pass.
+    prevPage = (p == PageMain) ? PageDiagnostics : PageMain;
     tft.fillScreen(TFT_BLACK);
 }
 
@@ -79,14 +98,25 @@ void screenButtonEvent(
     Button button,
     ButtonEvent event
 ) {
+    // Swallow presses while the boot splash is on screen
+    if (splashActive()) {
+        return;
+    }
+
     switch(page) {
-        case 0: screenOneButton(button, event); break;
-        case 1: screenMapButton(button, event); break;
-        case 2: screenTwoButton(button, event); break;
+        case PageMain: screenOneButton(button, event); break;
+        case PageDiagnostics: screenTwoButton(button, event); break;
+        case PageWaypoints: screenWaypointsButton(button, event); break;
+        case PageTimers: screenTimersButton(button, event); break;
     }
 }
 
 void screenLoop(TinyGPSPlus &gps) {
+    // Hold the splash on screen; everything else keeps running
+    if (splashActive()) {
+        return;
+    }
+
     if (millis() - lastUpdate > 200) {
         lastUpdate = millis();
         drawScreen(

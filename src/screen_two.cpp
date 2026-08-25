@@ -252,11 +252,10 @@ void screenTwoButton(
 
     if (state == ScreenTwoState::Display) {
 
-        // Left short → next screen
+        // Left short → next page (back to MAIN)
         if (button == Button::Left &&
             event == ButtonEvent::ShortPress) {
 
-            // Screen 1: left button
             nextScreen();
         }
         

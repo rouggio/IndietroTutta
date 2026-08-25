@@ -10,6 +10,4 @@ void drawSplashScreen() {
   tft.setTextColor(TFT_BLUE, TFT_BLACK);
   tft.setTextDatum(MC_DATUM);
   tft.drawString("Indietro Tutta!", 160, 120, 4);
-  delay(2000);
-  tft.fillScreen(TFT_BLACK);
 }

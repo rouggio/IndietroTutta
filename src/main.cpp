@@ -16,7 +16,7 @@ TinyGPSPlus gps;
 
 void setup(void) {
   screenInit();
-  drawSplash();
+  beginSplash();
   Serial.begin(115200);
   delay(1000); // Wait for Serial to initialize
   loadConfig(config);
@@ -28,6 +28,7 @@ void setup(void) {
   buttonsSetCallback(screenButtonEvent);
   backendInit();
   otaInit();
+  endSplash(); // setup done: release the splash on the next loop pass
   bufferedSerialPrintln("Indietro Tutta - Setup Complete");
 }
 
