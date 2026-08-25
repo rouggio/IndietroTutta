@@ -238,6 +238,19 @@ static void handleSetupPrompt()
             "<option value='14'>UTC+14</option>"
             "</select>";
 
+    // -----------------------------------------------------
+    // OTA on boot
+    // -----------------------------------------------------
+
+    html += "<label style='display:flex; align-items:center; gap:10px;'>"
+            "<input type='checkbox' name='otaCheckOnStart' "
+            "style='width:auto; margin:0;'";
+
+    if (config.otaCheckOnStart)
+        html += " checked";
+
+    html += "> Check for OTA update on boot</label>";
+
     html += "<input type='submit' value='Save'>"
             "</form>";
 

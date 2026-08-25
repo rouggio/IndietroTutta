@@ -195,15 +195,12 @@ static void drawScreenTwoMenu()
 void drawScreenTwo(TinyGPSPlus &gps)
 {
     if (state == ScreenTwoState::Menu) {
+        // The menu paints itself when opened and after item
+        // changes; skip the periodic 200 ms refresh
         return;
     }
 
-    if (state == ScreenTwoState::Menu) {
-        drawScreenTwoMenu();
-    }
-    else {
-        drawScreenTwoMain(gps);
-    }
+    drawScreenTwoMain(gps);
 }
 
 // --------------------------------------------------

@@ -39,7 +39,7 @@ server → backend.
 | `buttons.cpp` | Polling driver emitting Press/LongPress/Release events to one callback |
 | `backend.cpp` | Health GET every 30 s; position POST every 40 s when fix is valid; immediate flagged-position POST on demand |
 | `ota.cpp` | Version check vs `latest.txt` (semver via sscanf), HTTPS firmware download with on-screen progress bar and log |
-| `wifi_manager.cpp` | AP+STA management over WiFiMulti, add/remove/list saved networks, reconnect loop |
+| `wifi_manager.cpp` | AP+STA management; add/remove/list saved networks; non-blocking reconnect state machine (rotates credentials with `WiFi.begin()`, polls `WiFi.status()`, no blocking calls in the loop) |
 | `http_server.cpp` | On-device WebServer (port 80): provisioning portal + diagnostics endpoints |
 | `config_store.cpp` | NVS persistence (`Preferences`, namespace `"wifi"`) |
 | `gps.cpp` / `gps_debug.cpp` | UART ingest into TinyGPSPlus + 30-line NMEA ring buffer |
@@ -119,15 +119,18 @@ Pins are hardcoded in `include/User_Setup.h` and module sources.
 
 ## Known quirks / gotchas
 
-- Saving via the web portal always resets `otaCheckOnStart=false` because the
-  form omits the field while the handler treats absence as false
-  (`http_server.cpp`)
+- The portal form includes an "OTA update on boot" checkbox, so saving no
+  longer silently resets the flag (fixed 2026-08)
+- Timezone comes from the in-memory `config` loaded at boot and synced on
+  portal save — the old per-frame NVS re-read is gone (fixed 2026-08)
 - Blank device name in the portal keeps the stored username (only non-empty
   sanitized values overwrite it)
 - Usernames are restricted to `[A-Za-z0-9 ._-]`, max 32 chars, on both device
   and backend, so they are safe to render unescaped in the browser
-- WiFi reconnect uses `wifiMulti.run(5000)` — each retry can block the whole
-  loop up to 5 s (UI freezes during reconnects)
+- WiFi reconnection is fully non-blocking: a credential that fails to
+  associate within 5 s is rotated out on the next loop pass, so the UI/GPS
+  never stall while searching for networks (fixed 2026-08; it used to freeze
+  up to 5 s per retry via `WiFiMulti::run(5000)`)
 - The stored `endpoint` NVS field is dead weight — URLs are compile-time only
 - Timezone offset is re-read from NVS on every 200 ms UI frame
 - Splash blocks for 2 s; OTA and map streaming also block the loop

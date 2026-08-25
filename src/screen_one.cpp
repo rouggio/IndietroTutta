@@ -222,17 +222,6 @@ static void deleteDisplayedMarker()
   screenOneNeedsRedraw = true; // update list view/headers
 }
 
-static int getConfiguredTimezoneOffsetHours()
-{
-  Config cfg = {};
-  if (loadConfig(cfg))
-  {
-    return cfg.timezoneOffsetHours;
-  }
-
-  return 0;
-}
-
 static int daysInMonth(int month, int year)
 {
   switch (month)
@@ -467,7 +456,9 @@ void drawScreenOne(TinyGPSPlus &gps, bool requiresInit)
 
   if (requiresInit) initScreen();
 
-  int timezoneOffsetHours = getConfiguredTimezoneOffsetHours();
+  // Global config is loaded once at boot and kept in sync
+  // when the portal saves a new configuration
+  int timezoneOffsetHours = config.timezoneOffsetHours;
 
   // Mode: Menu
   if (screenOneMode == ScreenOneMode::Menu) {

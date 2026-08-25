@@ -4,17 +4,75 @@
 #include "serial_buffer.h"
 
 #include <WiFi.h>
-#include <WiFiMulti.h>
 #include <DNSServer.h>
 #include <TinyGPSPlus.h>
 
 DNSServer dns;
-WiFiMulti wifiMulti;
+
+// ---------------------------------------------------------
+// Non-blocking reconnection state machine.
+//
+// We never call blocking connect APIs from the main loop:
+// wifiLoop() starts association attempts with WiFi.begin()
+// (which returns immediately) and just polls WiFi.status().
+// A candidate that has not associated within
+// WIFI_ATTEMPT_TIMEOUT_MS is considered failed and the next
+// saved credential is tried on a following pass.
+// ---------------------------------------------------------
 
 static bool wifiConnectedFlag = false;
-static unsigned long lastRetry = 0;
+static int retryIndex = -1;
+static unsigned long attemptStartedAt = 0;
 
-static const unsigned long wifiRetryInterval = 10000;
+static const unsigned long WIFI_ATTEMPT_TIMEOUT_MS = 5000;
+
+// ---------------------------------------------------------
+// Start associating with the next saved network.
+// Returns false when there is nothing to try.
+// ---------------------------------------------------------
+
+static bool beginNextNetwork()
+{
+    int count = wifiNetworkCount();
+
+    if (count <= 0)
+        return false;
+
+    retryIndex = (retryIndex + 1) % count;
+
+    char ssid[33];
+    char password[65];
+
+    if (!loadWiFiNetwork(
+            retryIndex,
+            ssid,
+            sizeof(ssid),
+            password,
+            sizeof(password)))
+    {
+        // Broken slot: let the timeout move us to the next one
+        attemptStartedAt = millis();
+        return false;
+    }
+
+    bufferedSerialPrint("[WiFi] Trying: ");
+    bufferedSerialPrintln(ssid);
+
+    // Non-blocking: returns immediately
+    WiFi.begin(ssid, password);
+
+    attemptStartedAt = millis();
+
+    return true;
+}
+
+// Point the rotation at a specific saved index so it is tried
+// on the next pass (used when a network is added/updated).
+static void preferNetwork(int index)
+{
+    retryIndex = index - 1;
+    attemptStartedAt = 0;
+}
 
 static void startAccessPoint()
 {
@@ -62,8 +120,6 @@ static void loadSavedNetworks()
 
         bufferedSerialPrint("[WiFi] Adding network: ");
         bufferedSerialPrintln(ssid);
-
-        wifiMulti.addAP(ssid, password);
     }
 }
 
@@ -114,12 +170,8 @@ bool wifiAddNetwork(
                     "[WiFi] Password unchanged"
                 );
 
-                // Re-register the existing credentials
-                // with WiFiMulti.
-                wifiMulti.addAP(
-                    existingSSID,
-                    existingPassword
-                );
+                // Try this network on the next pass
+                preferNetwork(i);
 
                 return true;
             }
@@ -141,10 +193,7 @@ bool wifiAddNetwork(
                 return false;
             }
 
-            wifiMulti.addAP(
-                ssid,
-                password
-            );
+            preferNetwork(i);
 
             return true;
         }
@@ -178,10 +227,7 @@ bool wifiAddNetwork(
         return false;
     }
 
-    wifiMulti.addAP(
-        ssid,
-        password
-    );
+    preferNetwork(count);
 
     return true;
 }
@@ -215,7 +261,12 @@ bool wifiRemoveNetwork(const char* ssid)
             bufferedSerialPrint("[WiFi] Removing network: ");
             bufferedSerialPrintln(ssid);
 
-            return deleteWiFiNetwork(i);
+            bool removed = deleteWiFiNetwork(i);
+
+            // Indices shifted: restart the rotation cleanly
+            retryIndex = -1;
+
+            return removed;
         }
     }
 
@@ -227,6 +278,8 @@ bool wifiRemoveNetwork(const char* ssid)
 void wifiClearNetworks()
 {
     clearWiFiNetworks();
+
+    retryIndex = -1;
 
     bufferedSerialPrintln("[WiFi] All saved networks cleared");
 }
@@ -276,7 +329,8 @@ void wifiInit(TinyGPSPlus& gps)
     }
 
     wifiConnectedFlag = false;
-    lastRetry = 0;
+    retryIndex = -1;
+    attemptStartedAt = 0;
 
     startAccessPoint();
 
@@ -288,7 +342,9 @@ void wifiInit(TinyGPSPlus& gps)
             "[WiFi] Attempting connection..."
         );
 
-        wifiMulti.run(5000);
+        // Non-blocking: association continues while the
+        // splash screen and main loop run
+        beginNextNetwork();
     }
     else
     {
@@ -354,29 +410,14 @@ void wifiLoop()
     }
 
     // -----------------------------------------------------
-    // Let WiFiMulti find another available network
+    // Rotate to the next saved credential once the current
+    // attempt has run out of time. WiFi.begin() is
+    // non-blocking, so this never stalls the main loop.
     // -----------------------------------------------------
 
-    if (millis() - lastRetry >= 1000)
+    if (millis() - attemptStartedAt >= WIFI_ATTEMPT_TIMEOUT_MS)
     {
-        lastRetry = millis();
-
-        uint8_t result = wifiMulti.run(5000);
-
-        if (result == WL_CONNECTED)
-        {
-            bufferedSerialPrintln(
-                "[WiFi] Switched to saved network"
-            );
-
-            bufferedSerialPrint("[WiFi] SSID: ");
-            bufferedSerialPrintln(WiFi.SSID());
-
-            bufferedSerialPrint("[WiFi] STA IP: ");
-            bufferedSerialPrintln(
-                WiFi.localIP().toString()
-            );
-        }
+        beginNextNetwork();
     }
 }
 
