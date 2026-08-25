@@ -4,6 +4,9 @@
 
 constexpr size_t MAX_USERNAME_LEN = 32;
 
+// 0 = knots, 1 = km/h, 2 = mph
+constexpr int SPEED_UNITS = 3;
+
 struct Config
 {
     // Display name shown on the map, transmitted to the backend
@@ -11,6 +14,7 @@ struct Config
     char username[MAX_USERNAME_LEN + 1];
 
     int timezoneOffsetHours;
+    int speedUnit;
 
     bool otaCheckOnStart;
 };

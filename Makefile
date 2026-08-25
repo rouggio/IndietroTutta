@@ -28,6 +28,7 @@ PY := $(VENV)/$(VENV_SUBDIR)/python
 CONFIG := src/config.h
 BACKEND := $(firstword $(wildcard ../backend ../IndietroTuttaBackend))
 OTA_DIR := $(BACKEND)/public/ota
+OTA_LATEST_URL ?= https://indietrotutta.onrender.com/ota/latest.txt
 FIRMWARE := .pio/build/esp32dev/firmware.bin
 
 ifneq ($(strip $(PORT)),)
@@ -99,7 +100,20 @@ git-push:
 	git -C "$(BACKEND)" commit -m "Update OTA firmware to version $$VERSION"; \
 	echo "Pushing..."; \
 	git -C "$(BACKEND)" push; \
-	echo "Firmware version $$VERSION published successfully."
+	echo "Waiting for the server to serve version $$VERSION..."; \
+	for i in $$(seq 1 30); do \
+		sleep 10; \
+		served=$$(curl -fsS "$(OTA_LATEST_URL)" 2>/dev/null | tr -d '[:space:]'); \
+		if [ "$$served" = "$$VERSION" ]; then \
+			echo "Server is serving version $$VERSION"; \
+			echo "Firmware version $$VERSION published successfully."; \
+			exit 0; \
+		fi; \
+		echo "  attempt $$i/30: server still serves '$$served'"; \
+	done; \
+	echo "ERROR: server did not serve version $$VERSION within 5 minutes."; \
+	echo "Check the Render dashboard - autodeploy may have missed the push."; \
+	exit 1
 
 watch:
 	@command -v entr >/dev/null 2>&1 || (echo "Please install 'entr' or use scripts/watch.sh" && exit 1)

@@ -1,0 +1,15 @@
+meta {
+  name: OTA on boot DISABLE (reboots)
+  type: http
+  seq: 10
+}
+
+post {
+  url: {{baseUrl}}/save
+  body: formUrlEncoded
+  auth: none
+}
+
+body:form-urlencoded {
+  keepalive: 1
+}

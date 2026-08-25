@@ -92,6 +92,12 @@ void setCurrentPage(ScreenPage p) {
     tft.fillScreen(TFT_BLACK);
 }
 
+void redrawCurrentPage() {
+    tft.fillScreen(TFT_BLACK);
+    // Force a full (requiresInit) redraw on the next pass
+    prevPage = (page == PageMain) ? PageDiagnostics : PageMain;
+}
+
 // --------------------------------------------------
 // BUTTON EVENT ROUTER
 // --------------------------------------------------

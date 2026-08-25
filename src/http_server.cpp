@@ -4,7 +4,6 @@
 #include <TinyGPSPlus.h>
 
 #include <esp_heap_caps.h>
-#include "gps_debug.h"
 #include "http_server.h"
 #include "config_store.h"
 #include "config.h"
@@ -204,39 +203,48 @@ static void handleSetupPrompt()
     html += "'>";
 
     // -----------------------------------------------------
-    // Timezone
+    // Timezone (preselects the stored value)
     // -----------------------------------------------------
 
+    int tz = config.timezoneOffsetHours;
+
     html += "<label>Timezone</label>"
-            "<select name='timezoneOffset'>"
-            "<option value='0'>UTC</option>"
-            "<option value='-12'>UTC-12</option>"
-            "<option value='-11'>UTC-11</option>"
-            "<option value='-10'>UTC-10</option>"
-            "<option value='-9'>UTC-9</option>"
-            "<option value='-8'>UTC-8</option>"
-            "<option value='-7'>UTC-7</option>"
-            "<option value='-6'>UTC-6</option>"
-            "<option value='-5'>UTC-5</option>"
-            "<option value='-4'>UTC-4</option>"
-            "<option value='-3'>UTC-3</option>"
-            "<option value='-2'>UTC-2</option>"
-            "<option value='-1'>UTC-1</option>"
-            "<option value='1'>UTC+1</option>"
-            "<option value='2'>UTC+2</option>"
-            "<option value='3'>UTC+3</option>"
-            "<option value='4'>UTC+4</option>"
-            "<option value='5'>UTC+5</option>"
-            "<option value='6'>UTC+6</option>"
-            "<option value='7'>UTC+7</option>"
-            "<option value='8'>UTC+8</option>"
-            "<option value='9'>UTC+9</option>"
-            "<option value='10'>UTC+10</option>"
-            "<option value='11'>UTC+11</option>"
-            "<option value='12'>UTC+12</option>"
-            "<option value='13'>UTC+13</option>"
-            "<option value='14'>UTC+14</option>"
-            "</select>";
+            "<select name='timezoneOffset'>";
+
+    for (int off = -12; off <= 14; ++off)
+    {
+        if (off == 0)
+        {
+            html += "<option value='0'";
+            if (tz == 0) html += " selected";
+            html += ">UTC</option>";
+            continue;
+        }
+
+        html += "<option value='" + String(off) + "'";
+        if (tz == off) html += " selected";
+        html += ">UTC" + String(off > 0 ? "+" : "") + String(off) + "</option>";
+    }
+
+    html += "</select>";
+
+    // -----------------------------------------------------
+    // Speed unit
+    // -----------------------------------------------------
+
+    static const char* speedUnitLabels[SPEED_UNITS] = { "kn", "km/h", "mph" };
+
+    html += "<label>Speed unit</label>"
+            "<select name='speedUnit'>";
+
+    for (int u = 0; u < SPEED_UNITS; ++u)
+    {
+        html += "<option value='" + String(u) + "'";
+        if (config.speedUnit == u) html += " selected";
+        html += ">" + String(speedUnitLabels[u]) + "</option>";
+    }
+
+    html += "</select>";
 
     // -----------------------------------------------------
     // OTA on boot
@@ -332,6 +340,16 @@ static void handleSetupSave()
     {
         cfg.timezoneOffsetHours =
             server.arg("timezoneOffset").toInt();
+    }
+
+    if (server.hasArg("speedUnit"))
+    {
+        int unit = server.arg("speedUnit").toInt();
+
+        if (unit < 0 || unit >= SPEED_UNITS)
+            unit = 0;
+
+        cfg.speedUnit = unit;
     }
 
     // -----------------------------------------------------
@@ -465,17 +483,6 @@ static void handleStatus()
         doc["gps"]["location"]["lng"] = gpsRef->location.isValid() ? gpsRef->location.lng() : 0.0;
         doc["gps"]["satellites"] = gpsRef->satellites.value();
         doc["gps"]["hdop"] = gpsRef->hdop.value();
-    }
-
-    JsonArray nmea = doc.createNestedArray("nmea");
-
-    int start = getNextNMEALine();
-    for (int i = 0; i < MAX_NMEA_LINES; i++)
-    {
-        int idx = (start + i) % MAX_NMEA_LINES;
-
-        if (!nmeaLines[idx].isEmpty())
-            nmea.add(nmeaLines[idx]);
     }
 
     JsonObject mem = doc.createNestedObject("mem");

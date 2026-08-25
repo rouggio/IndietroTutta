@@ -1,5 +1,11 @@
 #include "serial_buffer.h"
 
+#include <freertos/FreeRTOS.h>
+
+// The backend worker task logs from a different thread than the main
+// loop, so buffer access is guarded by a short critical section.
+static portMUX_TYPE bufMux = portMUX_INITIALIZER_UNLOCKED;
+
 static const int MAX_LINES = 200;
 static const int MAX_LINE_LEN = 256;
 
@@ -9,6 +15,7 @@ static String curLine = "";
 
 void pushLine(const String &s) {
     if (s.length() == 0) return;
+    portENTER_CRITICAL(&bufMux);
     if (lineCount == MAX_LINES) {
         // drop oldest
         for (int i = 1; i < MAX_LINES; ++i) lines[i-1] = lines[i];
@@ -16,6 +23,7 @@ void pushLine(const String &s) {
     } else {
         lines[lineCount++] = s;
     }
+    portEXIT_CRITICAL(&bufMux);
 }
 
 void serialBufferLoop() {
@@ -39,18 +47,27 @@ void serialBufferLoop() {
 }
 
 // Expose current buffer state
-int serialLinesCount() { return lineCount; }
+int serialLinesCount() {
+    portENTER_CRITICAL(&bufMux);
+    int c = lineCount;
+    portEXIT_CRITICAL(&bufMux);
+    return c;
+}
 
 String serialLine(int index) {
     if (index < 0) return String();
-    if (index >= lineCount) return String();
-    return lines[index];
+    portENTER_CRITICAL(&bufMux);
+    String s = (index < lineCount) ? lines[index] : String();
+    portEXIT_CRITICAL(&bufMux);
+    return s;
 }
 
 void clearSerialBuffer() {
+    portENTER_CRITICAL(&bufMux);
     for (int i = 0; i < lineCount; ++i) lines[i] = String();
     lineCount = 0;
     curLine = String();
+    portEXIT_CRITICAL(&bufMux);
 }
 
 // Push a line programmatically into the buffer

@@ -211,14 +211,23 @@ void drawTopBar(TinyGPSPlus &gps)
 
 void drawSpeed(TinyGPSPlus &gps)
 {
+  static const char* unitLabels[SPEED_UNITS] = { "kn", "km/h", "mph" };
+
+  const double knots = gps.speed.isValid() ? gps.speed.knots() : 0.0;
+
+  double value = knots;
+  if (config.speedUnit == 1) value = knots * 1.852;      // km/h
+  else if (config.speedUnit == 2) value = knots * 1.15078; // mph
+
   tft.setTextDatum(MC_DATUM);
 
   tft.setTextColor(WHITE, BG);
-  tft.drawString("SPEED (kn)", tft.width() / 2, 50, 2);
+  String label = "SPEED (" + String(unitLabels[config.speedUnit]) + ")";
+  tft.drawString(label, tft.width() / 2, 50, 2);
 
   tft.setTextColor(TFT_YELLOW, BG);
   if (gps.speed.isValid()) {
-    String spd = " " + String(gps.speed.knots(), 1) + " ";
+    String spd = " " + String(value, 1) + " ";
     tft.drawString(spd, tft.width() / 2, 100, 8);
   } else {
     String spd = "  ---  ";
@@ -258,9 +267,9 @@ void drawScreenOne(TinyGPSPlus &gps, bool requiresInit)
   // Button hints in the bottom bar
   tft.setTextColor(WHITE, BG);
   tft.setTextDatum(BL_DATUM);
-  tft.drawString("l Page", 8, 235, 2);
+  tft.drawString("L - Next", 8, 235, 2);
   tft.setTextDatum(BR_DATUM);
-  tft.drawString("L Cfg  RL Diag", tft.width() - 8, 235, 2);
+  tft.drawString("LL Cfg  RR Diag", tft.width() - 8, 235, 2);
 }
 
 void screenOneButton(

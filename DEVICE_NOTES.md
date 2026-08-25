@@ -31,21 +31,21 @@ server → backend.
 
 | Module | Role |
 |---|---|
-| `screens.cpp` | Owns global `TFT_eSPI`; page router (`ScreenPage` enum); 200 ms redraw throttle; L-short cycle across the four top-level pages; `setCurrentPage()` clears the display to avoid stale pixels |
-| `screen_one.cpp` | MAIN instrument: big speed, course/cardinal, status tiles (WiFi/cloud/GPS fix), satellite count, hint bar. No submodes. |
+| `screens.cpp` | Owns global `TFT_eSPI`; page router (`ScreenPage` enum); 200 ms redraw throttle; L-short cycle across the four top-level pages; `setCurrentPage()`/`redrawCurrentPage()` full-clear helpers |
+| `screen_one.cpp` | MAIN instrument: big speed (unit-selectable kn/km/h via `config.speedUnit`), course/cardinal, status tiles (WiFi/cloud/GPS fix), satellite count, hint bar. No submodes. |
 | `screen_waypoints.cpp` | WAYPOINTS screen: flag current position (L-long), cycle/delete markers, per-marker elapsed timer |
-| `screen_timers.cpp` | TIMERS chronograph: start/stop/lap/clear, big time readout, last-four lap list |
-| `screen_two.cpp` | DIAGNOSTICS page: GPS stats, IP, SSID, version (menus removed 2026-08 — portal covers those actions) |
-| `screen_config.cpp` | CONFIG page: shows how to reach the portal (AP name + URL), live connection status line; jump target from MAIN |
-| `splash_screen.cpp` | Static title, blocking `delay(2000)` |
+| `screen_timers.cpp` | TIMERS chronograph: start/stop (R), lap while running / reset when stopped (RR), big time readout, laps in a right-hand column; status/time lines consciously cleared to avoid ghosting |
+| `screen_two.cpp` | DIAGNOSTICS page: two-column layout (GPS | SYSTEM), title font consistent with other screens |
+| `screen_config.cpp` | CONFIG page: WiFi SSID/IP status, selectable rows — OTA-on-boot toggle, speed unit cycle (R select, RR apply); LL runs an immediate OTA check |
+| `splash_screen.cpp` | Static title, non-blocking (held by `screens.cpp` until setup completes) |
 | `buttons.cpp` | Polling driver emitting Press/LongPress/Release events to one callback |
-| `backend.cpp` | Health GET every 30 s; position POST every 40 s when fix is valid; immediate flagged-position POST on demand |
-| `ota.cpp` | Version check vs `latest.txt` (semver via sscanf), HTTPS firmware download with on-screen progress bar and log |
+| `backend.cpp` | Dedicated FreeRTOS task owns ALL network I/O: health GET every 30 s plus a 4-deep work queue of position POSTs; the UI thread only snapshots GPS values and enqueues — never blocks on DNS/TLS/server round-trips |
+| `ota.cpp` | Version check vs `latest.txt` (semver via sscanf), HTTPS firmware download with on-screen progress bar and log; on-boot check waits for WiFi (60 s timeout); when done the underlying page is restored with a clean clear |
 | `wifi_manager.cpp` | AP+STA management; add/remove/list saved networks; non-blocking reconnect state machine (rotates credentials with `WiFi.begin()`, polls `WiFi.status()`, no blocking calls in the loop) |
 | `http_server.cpp` | On-device WebServer (port 80): provisioning portal + diagnostics endpoints |
 | `config_store.cpp` | NVS persistence (`Preferences`, namespace `"wifi"`) |
-| `gps.cpp` / `gps_debug.cpp` | UART ingest into TinyGPSPlus + 30-line NMEA ring buffer |
-| `serial_buffer.cpp` | 200-line log capture so `/serial` can mirror the device log |
+| `gps.cpp` | UART ingest into TinyGPSPlus (NMEA debug ring buffer removed 2026-08) |
+| `serial_buffer.cpp` | Thread-safe 200-line log capture (mutex-guarded — the backend task logs from another thread) so `/serial` can mirror the device log |
 
 The map feature (device RGB565 screen + backend renderer `/map/*`) was removed
 in 2026-08.
@@ -73,12 +73,12 @@ to `/config`. Routes (`src/http_server.cpp`):
 
 | Route | Purpose |
 |---|---|
-| `/config` | Provisioning page: WiFi scan dropdown (RSSI, lock icon), password, device name field (shown on the backend map/browser view), manual SSID fallback, timezone select, OTA-on-boot checkbox, saved-network list with remove buttons |
+| `/config` | Provisioning page: WiFi scan dropdown (RSSI, lock icon), password, device name field, manual SSID fallback, timezone select (preselects stored value), speed-unit select, OTA-on-boot checkbox, saved-network list with remove buttons |
 | `/save` | Persists SSID/password/timezone/device name/OTA flag, then reboots after 1 s |
 | `/wifi/remove` | Removes one saved network |
 | `/reset` | Clears ALL WiFi networks and wipes stored config, reboots |
 | `/reboot` | Remote restart |
-| `/status` | JSON diagnostics: WiFi state, GPS data, last 30 NMEA lines, heap, version, username |
+| `/status` | JSON diagnostics: WiFi state, GPS data, heap, version, username |
 | `/health` | Plain-text liveness |
 | `/serial` | Dumps captured serial log (200 lines) |
 
@@ -105,27 +105,27 @@ A Bruno request collection covering every portal route lives in `bruno/`
 Four pages in the L-short cycle: MAIN → DIAGNOSTICS → WAYPOINTS → TIMERS → MAIN.
 CONFIG is a jump target, not part of the cycle.
 
-Grammar (hints use `l` = short click, `L` = long click):
+Grammar (hints use `L` = left click, `LL` = long left, `R` = right click,
+`RR` = long right):
 
 - **Left-short** — leave any submode, else advance to the next page
   (on CONFIG: back to MAIN)
 - **Right-short** — contextual: advance selection in menus/lists,
   start/stop on TIMERS
-- **Left-long** — contextual menu / special action:
-  on MAIN jump to CONFIG; flag position on WAYPOINTS; clear-all on TIMERS;
-  open menu on DIAGNOSTICS… *(diagnostics menu removed — L-long unused there)*
+- **Left-long** — MAIN: jump to CONFIG · WAYPOINTS: flag position ·
+  TIMERS: clear-all · CONFIG: immediate OTA check
 - **Right-long** — run the selected entry (menus), delete waypoint (WAYPOINTS),
-  lap/reset on TIMERS
+  lap/reset on TIMERS · MAIN: jump to DIAGNOSTICS
 
 Per screen:
 
 | Screen | Actions |
 |---|---|
-| MAIN | `l` next page · `L` CONFIG · `RL` DIAGNOSTICS |
-| DIAGNOSTICS | `l` next page (pure stats, no menus) |
-| WAYPOINTS | `l` next page · `R` cycle waypoints · `L` flag here · `RL` delete shown |
-| TIMERS | `l` next page · `R` start/stop · `RL` lap while running / reset-all when stopped |
-| CONFIG | `l` back to MAIN |
+| MAIN | `L` next page · `LL` CONFIG · `RR` DIAGNOSTICS |
+| DIAGNOSTICS | `L` next page (pure stats, two columns) |
+| WAYPOINTS | `L` next page · `R` cycle waypoints · `LL` flag here · `RR` delete shown |
+| TIMERS | `L` next page · `R` start/stop · `RR` lap while running / reset-all when stopped |
+| CONFIG | `L` back to MAIN · `R` select row (OTA-on-boot / speed unit) · `RR` apply · `LL` force OTA now |
 
 Every page switch fills the display black before redrawing (no stale pixels).
 
@@ -133,10 +133,10 @@ Every page switch fills the display black before redrawing (no stale pixels).
 
 NVS (`Preferences`, namespace `"wifi"`):
 
-- Blob key `cfg`: `Config { username[33], timezoneOffsetHours, otaCheckOnStart }`
+- Blob key `cfg`: `Config { username[33], timezoneOffsetHours, speedUnit, otaCheckOnStart }`
   (size-checked load; mismatched blobs are deleted and zeroed — a firmware
-  update that changes the struct resets timezone/OTA flag once; WiFi networks
-  are stored under separate keys and survive)
+  update that changes the struct resets timezone/name/speed-unit/OTA flag once;
+  WiFi networks are stored under separate keys and survive)
 - Per-network keys `wifi_%d_ssid` / `wifi_%d_pass` plus `wifi_count`, max 10
 
 Compiled in (`src/config.h`): `BASE_URL`, `OTA_BASE_URL`, `BUILD_VERSION`.
@@ -155,6 +155,9 @@ Waypoints and chronograph laps live in RAM only — they are lost on reboot.
   never stall while searching for networks
 - Splash is non-blocking: drawn at boot, it stays while setup runs and is
   released by `endSplash()` as soon as the main loop is ready (500 ms minimum)
+- An OTA check that finds no update used to leave its log lines painted over
+  the current page (pre-1.0.78); `checkForUpdate()` now waits ~1.5 s and then
+  restores the underlying screen via `redrawCurrentPage()` (full clear)
 - OTA download blocks the loop until finished
 - All web routes unauthenticated; TLS validation disabled everywhere
 - Backend "online" tile reflects only the last health/post result

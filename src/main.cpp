@@ -1,7 +1,6 @@
 #include <TinyGPSPlus.h>
 
 #include "wifi_manager.h"
-#include "gps_debug.h"
 #include "gps.h"
 #include "http_server.h"
 #include "backend.h"

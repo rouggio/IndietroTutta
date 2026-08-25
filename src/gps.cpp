@@ -1,6 +1,5 @@
 #include <Arduino.h>
 #include <TinyGPSPlus.h>
-#include "gps_debug.h"
 
 HardwareSerial GPSSerial(2);
 
@@ -19,6 +18,5 @@ void gpsLoop(TinyGPSPlus &gps)
   {
     char c = GPSSerial.read();
     gps.encode(c);
-    processNMEAChar(c);
   }
 }

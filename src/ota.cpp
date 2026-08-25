@@ -7,6 +7,7 @@
 #include "config_store.h"
 #include "wifi_manager.h"
 #include "serial_buffer.h"
+#include "screens.h"
 
 extern TFT_eSPI tft;
 
@@ -372,7 +373,7 @@ void doUpdate() {
 // CHECK FOR UPDATE
 // --------------------------------------------------
 
-void checkForUpdate() {
+static void runUpdateCheck() {
 
   initOTAScreen();
 
@@ -433,6 +434,16 @@ void checkForUpdate() {
       "Up to date"
     );
   }
+}
+
+void checkForUpdate() {
+  runUpdateCheck();
+
+  // Let the final message be readable, then hand the display back
+  // to the underlying page: full clear, full redraw next pass.
+  // (On successful installs the board reboots before reaching this.)
+  delay(1500);
+  redrawCurrentPage();
 }
 
 

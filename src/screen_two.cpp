@@ -1,70 +1,110 @@
 #include <Arduino.h>
 #include <TFT_eSPI.h>
 #include <TinyGPSPlus.h>
-#include "config.h"
 #include <WiFi.h>
+
+#include "config.h"
+#include "config_store.h"
 #include "screens.h"
 #include "screen_two.h"
 
 extern TFT_eSPI tft;
 
+// ==== COLORS ====
+#define BG TFT_BLACK
+#define WHITE TFT_WHITE
+#define GRAY 0x7BEF
+
+static const int COL_L_X = 10;
+static const int COL_R_X = 166;
+static const int DIVIDER_X = 156;
+
+// Fixed-width lines so shrinking values never leave stale pixels
+static String padRight(String s, int len)
+{
+  while ((int)s.length() < len) s += " ";
+  return s;
+}
+
 void drawScreenTwoMain(TinyGPSPlus &gps)
 {
-    tft.setTextColor(TFT_WHITE, TFT_BLACK);
-    tft.setTextFont(2);
-    tft.setCursor(0, 0);
+  // Page title, consistent with the other screens
+  tft.setTextColor(WHITE, BG);
+  tft.setTextDatum(MC_DATUM);
+  tft.drawString("DIAGNOSTICS", tft.width() / 2, 20, 4);
 
-    tft.printf("DIAGNOSTICS\n\n");
+  tft.drawFastHLine(20, 44, tft.width() - 40, GRAY);
+  tft.drawFastVLine(DIVIDER_X, 52, 152, GRAY);
 
-    tft.printf("GPS\n");
-    tft.printf("Chars : %lu\n", gps.charsProcessed());
+  char buf[24];
 
-    if (gps.hdop.isValid())
-        tft.printf("HDOP  : %.1f\n", gps.hdop.hdop());
-    else
-        tft.printf("HDOP  : --\n");
+  // ---- Left column: GPS ----
+  tft.setTextDatum(TL_DATUM);
 
-    if (gps.location.isValid())
-    {
-        tft.printf("Lat   : %.6f\n", gps.location.lat());
-        tft.printf("Lon   : %.6f\n", gps.location.lng());
-    }
-    else
-    {
-        tft.printf("Lat   : --\n");
-        tft.printf("Lon   : --\n");
-    }
+  tft.setTextColor(GRAY, BG);
+  tft.drawString("GPS", COL_L_X, 56, 2);
 
-    if (gps.altitude.isValid())
-        tft.printf("Alt   : %.1f m\n", gps.altitude.meters());
+  tft.setTextColor(WHITE, BG);
 
-    if (gps.location.isValid()) {
-        tft.printf("Age   : %lu ms\n", gps.location.age());
-    } else {
-        tft.printf("Age   :--\n");
-    }
+  snprintf(buf, sizeof(buf), "Chars %lu", (unsigned long)gps.charsProcessed());
+  tft.drawString(padRight(buf, 16), COL_L_X, 80, 2);
 
-    tft.printf("\nSystem\n");
-    tft.print("Version: " BUILD_VERSION "\n");
-    tft.print("IP: " + WiFi.localIP().toString() + "\n");
+  if (gps.hdop.isValid())
+    snprintf(buf, sizeof(buf), "HDOP %.1f", gps.hdop.hdop());
+  else
+    snprintf(buf, sizeof(buf), "HDOP --");
+  tft.drawString(padRight(buf, 16), COL_L_X, 104, 2);
 
-    // Show connected SSID if available
-    String ssid = WiFi.SSID();
-    if (ssid.length() > 0) {
-        tft.print("SSID: " + ssid + "\n");
-    } else {
-        tft.print("SSID: --\n");
-    }
+  if (gps.location.isValid())
+    snprintf(buf, sizeof(buf), "Lat %.5f", gps.location.lat());
+  else
+    snprintf(buf, sizeof(buf), "Lat --");
+  tft.drawString(padRight(buf, 16), COL_L_X, 128, 2);
 
-    // Hint bar
-    tft.setTextColor(TFT_WHITE, TFT_BLACK);
-    tft.setTextDatum(BL_DATUM);
-    tft.drawString("l Page", 8, 235, 2);
+  if (gps.location.isValid())
+    snprintf(buf, sizeof(buf), "Lon %.5f", gps.location.lng());
+  else
+    snprintf(buf, sizeof(buf), "Lon --");
+  tft.drawString(padRight(buf, 16), COL_L_X, 152, 2);
+
+  if (gps.altitude.isValid())
+    snprintf(buf, sizeof(buf), "Alt %.1fm", gps.altitude.meters());
+  else
+    snprintf(buf, sizeof(buf), "Alt --");
+  tft.drawString(padRight(buf, 16), COL_L_X, 176, 2);
+
+  if (gps.location.isValid())
+    snprintf(buf, sizeof(buf), "Age %lums", (unsigned long)gps.location.age());
+  else
+    snprintf(buf, sizeof(buf), "Age --");
+  tft.drawString(padRight(buf, 16), COL_L_X, 200, 2);
+
+  // ---- Right column: SYSTEM ----
+  tft.setTextColor(GRAY, BG);
+  tft.drawString("SYSTEM", COL_R_X, 56, 2);
+
+  tft.setTextColor(WHITE, BG);
+  tft.drawString(padRight("VER " BUILD_VERSION, 14), COL_R_X, 80, 2);
+
+  tft.drawString(padRight("IP " + WiFi.localIP().toString(), 14), COL_R_X, 104, 2);
+
+  String ssid = WiFi.SSID();
+  if (ssid.length() > 10) ssid = ssid.substring(0, 10);
+  tft.drawString(padRight("SSID " + ssid, 14), COL_R_X, 128, 2);
+
+  String user = config.username;
+  if (user.length() > 9) user = user.substring(0, 9);
+  tft.drawString(padRight("User " + user, 14), COL_R_X, 152, 2);
+
+  // Hint bar
+  tft.setTextColor(WHITE, BG);
+  tft.setTextDatum(BL_DATUM);
+  tft.drawString("L - Next", 8, 235, 2);
 }
 
 void drawScreenTwo(TinyGPSPlus &gps)
 {
-    drawScreenTwoMain(gps);
+  drawScreenTwoMain(gps);
 }
 
 void screenTwoButton(

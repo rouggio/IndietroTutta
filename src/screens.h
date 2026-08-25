@@ -46,3 +46,8 @@ void screenButtonEvent(
 // Programmatically set the current page. Clears the display and forces
 // a full redraw on the next loop pass.
 void setCurrentPage(ScreenPage p);
+
+// Full-clear the display and force a complete redraw of whatever
+// page is active. Used by fullscreen takeovers (e.g. OTA) when they
+// hand the display back.
+void redrawCurrentPage();

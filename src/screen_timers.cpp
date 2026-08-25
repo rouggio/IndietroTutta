@@ -34,6 +34,13 @@ static constexpr int MAX_LAPS = 10;
 static Lap laps[MAX_LAPS];
 static int lapCount = 0;
 
+// Ghost-prevention: these lines are repainted every frame, but when the
+// new content is narrower than what was drawn before, the leftover
+// pixels are consciously wiped first.
+static bool statusDrawn = false;
+static ChronoState drawnState = ChronoState::Idle;
+static String lastBigTime = "";
+
 // Layout: time lives on the left half, laps in a column on the
 // right side so neither overflows into the bottom hint bar.
 static constexpr int TIME_CENTER_X = 78;
@@ -91,6 +98,13 @@ void drawScreenTimers(bool requiresInit)
   const unsigned long now = chronoNow();
 
   // ---- Left half: status + time ----
+
+  if (!statusDrawn || drawnState != chronoState) {
+    tft.fillRect(TIME_CENTER_X - 55, 24, 110, 22, BG);
+    drawnState = chronoState;
+    statusDrawn = true;
+  }
+
   tft.setTextDatum(MC_DATUM);
   if (chronoState == ChronoState::Running) {
     tft.setTextColor(TFT_GREEN, BG);
@@ -103,8 +117,15 @@ void drawScreenTimers(bool requiresInit)
     tft.drawString("READY", TIME_CENTER_X, 35, 2);
   }
 
+  String bigTime = formatBig(now);
+
+  if (bigTime.length() < lastBigTime.length()) {
+    tft.fillRect(TIME_CENTER_X - 85, 62, 170, 58, BG);
+  }
+  lastBigTime = bigTime;
+
   tft.setTextColor(WHITE, BG);
-  tft.drawString(formatBig(now), TIME_CENTER_X, 95, 6);
+  tft.drawString(bigTime, TIME_CENTER_X, 95, 6);
 
   char cs[3];
   snprintf(cs, sizeof(cs), "%02lu", (now % 1000) / 10);
@@ -134,7 +155,7 @@ void drawScreenTimers(bool requiresInit)
   // ---- Hint bar ----
   tft.setTextColor(WHITE, BG);
   tft.setTextDatum(BL_DATUM);
-  tft.drawString("l Page", 8, 235, 2);
+  tft.drawString("L - Next", 8, 235, 2);
   tft.setTextDatum(BR_DATUM);
   tft.drawString("R Run/Stop  RL Lap/Rst", tft.width() - 8, 235, 2);
 }

@@ -1,0 +1,15 @@
+meta {
+  name: OTA on boot ENABLE (reboots)
+  type: http
+  seq: 9
+}
+
+post {
+  url: {{baseUrl}}/save
+  body: formUrlEncoded
+  auth: none
+}
+
+body:form-urlencoded {
+  otaCheckOnStart: on
+}
