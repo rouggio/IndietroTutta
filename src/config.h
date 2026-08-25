@@ -3,4 +3,4 @@
 
 // OTA configuration
 #define OTA_BASE_URL    "https://indietrotutta.onrender.com/ota"
-#define BUILD_VERSION   "1.0.76"
+#define BUILD_VERSION   "1.0.77"

@@ -3,6 +3,7 @@
 #include "screen_two.h"
 #include "screen_waypoints.h"
 #include "screen_timers.h"
+#include "screen_config.h"
 #include "splash_screen.h"
 #include "buttons.h"
 
@@ -65,6 +66,7 @@ void drawScreen(TinyGPSPlus &gps, bool requiresInit, ScreenPage page) {
     case PageDiagnostics: drawScreenTwo(gps); break;
     case PageWaypoints: drawScreenWaypoints(gps, requiresInit); break;
     case PageTimers: drawScreenTimers(requiresInit); break;
+    case PageConfig: drawScreenConfig(requiresInit); break;
 
     default:
       tft.fillScreen(TFT_BLACK);
@@ -82,7 +84,7 @@ void nextScreen() {
 }
 
 void setCurrentPage(ScreenPage p) {
-    if (p < PageMain || p > PageDiagnostics) return;
+    if (p < PageMain || p > PageConfig) return;
     page = p;
     // Clear immediately: no stale pixels may survive a page
     // switch, even before the next redraw pass.
@@ -108,6 +110,7 @@ void screenButtonEvent(
         case PageDiagnostics: screenTwoButton(button, event); break;
         case PageWaypoints: screenWaypointsButton(button, event); break;
         case PageTimers: screenTimersButton(button, event); break;
+        case PageConfig: screenConfigButton(button, event); break;
     }
 }
 

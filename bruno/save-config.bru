@@ -1,0 +1,19 @@
+meta {
+  name: Save config (REBOOTS device)
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/save
+  body: form
+  auth: none
+}
+
+body:form-urlencoded {
+  ssid: {{ssid}}
+  password: {{password}}
+  username: {{username}}
+  timezoneOffset: {{timezoneOffset}}
+  otaCheckOnStart: on
+}

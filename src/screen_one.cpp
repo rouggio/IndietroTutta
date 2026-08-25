@@ -258,17 +258,30 @@ void drawScreenOne(TinyGPSPlus &gps, bool requiresInit)
   // Button hints in the bottom bar
   tft.setTextColor(WHITE, BG);
   tft.setTextDatum(BL_DATUM);
-  tft.drawString("L: Page", 8, 235, 2);
+  tft.drawString("l Page", 8, 235, 2);
+  tft.setTextDatum(BR_DATUM);
+  tft.drawString("L Cfg  RL Diag", tft.width() - 8, 235, 2);
 }
 
 void screenOneButton(
     Button button,
     ButtonEvent event
 ) {
-    // Left short: advance to the next page.
-    // The main screen has no submodes; every other event is ignored.
+    // Left short: advance to the next page
     if (button == Button::Left && event == ButtonEvent::ShortPress) {
         nextScreen();
+        return;
+    }
+
+    // Left long: jump to the config screen
+    if (button == Button::Left && event == ButtonEvent::LongPress) {
+        setCurrentPage(PageConfig);
+        return;
+    }
+
+    // Right long: jump to the diagnostics screen
+    if (button == Button::Right && event == ButtonEvent::LongPress) {
+        setCurrentPage(PageDiagnostics);
         return;
     }
 }

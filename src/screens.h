@@ -9,11 +9,14 @@ enum class UIState {
 };
 
 // The top-level pages cycle with a left short click.
+// The config page is a jump target from MAIN (left long) and is
+// exited with a left short click back to MAIN.
 enum ScreenPage {
     PageMain = 0,
     PageDiagnostics = 1,
     PageWaypoints = 2,
-    PageTimers = 3
+    PageTimers = 3,
+    PageConfig = 4
 };
 
 static constexpr int PAGE_CYCLE = 4; // number of pages in the L-short cycle

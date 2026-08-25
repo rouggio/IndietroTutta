@@ -5,6 +5,8 @@
 
 #include "config.h"
 #include "config_store.h"
+#include "wifi_manager.h"
+#include "serial_buffer.h"
 
 extern TFT_eSPI tft;
 
@@ -438,8 +440,33 @@ void checkForUpdate() {
 // OTA INIT / LOOP
 // --------------------------------------------------
 
+// On-boot updates must wait for the WiFi association to complete,
+// so the check is armed here and fired from otaLoop().
+static bool bootCheckPending = false;
+static unsigned long bootCheckArmedAt = 0;
+
+static constexpr unsigned long OTA_BOOT_WIFI_TIMEOUT_MS = 60000;
+
 void otaInit() {
-  if (config.otaCheckOnStart) {
+  bootCheckPending = config.otaCheckOnStart;
+  bootCheckArmedAt = millis();
+}
+
+void otaLoop() {
+  if (!bootCheckPending) {
+    return;
+  }
+
+  if (wifiConnected()) {
+    bootCheckPending = false;
+    bufferedSerialPrintln("[OTA] WiFi ready, checking for on-boot update");
     checkForUpdate();
+    return;
+  }
+
+  // No connection in time: give up quietly (offline use is valid)
+  if (millis() - bootCheckArmedAt > OTA_BOOT_WIFI_TIMEOUT_MS) {
+    bootCheckPending = false;
+    bufferedSerialPrintln("[OTA] Skipping on-boot update: no WiFi connection");
   }
 }

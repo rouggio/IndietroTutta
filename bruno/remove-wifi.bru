@@ -1,0 +1,15 @@
+meta {
+  name: Remove WiFi network
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/wifi/remove
+  body: form
+  auth: none
+}
+
+body:form-urlencoded {
+  ssid: {{ssid}}
+}

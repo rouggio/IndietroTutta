@@ -35,7 +35,8 @@ server → backend.
 | `screen_one.cpp` | MAIN instrument: big speed, course/cardinal, status tiles (WiFi/cloud/GPS fix), satellite count, hint bar. No submodes. |
 | `screen_waypoints.cpp` | WAYPOINTS screen: flag current position (L-long), cycle/delete markers, per-marker elapsed timer |
 | `screen_timers.cpp` | TIMERS chronograph: start/stop/lap/clear, big time readout, last-four lap list |
-| `screen_two.cpp` | DIAGNOSTICS page (GPS stats, IP, version) + menu: check OTA now, OTA-on-boot toggle, reboot |
+| `screen_two.cpp` | DIAGNOSTICS page: GPS stats, IP, SSID, version (menus removed 2026-08 — portal covers those actions) |
+| `screen_config.cpp` | CONFIG page: shows how to reach the portal (AP name + URL), live connection status line; jump target from MAIN |
 | `splash_screen.cpp` | Static title, blocking `delay(2000)` |
 | `buttons.cpp` | Polling driver emitting Press/LongPress/Release events to one callback |
 | `backend.cpp` | Health GET every 30 s; position POST every 40 s when fix is valid; immediate flagged-position POST on demand |
@@ -84,40 +85,47 @@ to `/config`. Routes (`src/http_server.cpp`):
 No route requires authentication — anyone on the LAN or device AP can wipe or
 reboot the device.
 
+A Bruno request collection covering every portal route lives in `bruno/`
+(environments: `access-point` = `192.168.4.1`, `local-network` = editable LAN IP).
+
 ## OTA updates
 
 - Server: `{OTA_BASE_URL}` = `https://indietrotutta.onrender.com/ota`
 - Check: `GET latest.txt`, trimmed to digits/dots, compared as semver
 - Download: `HTTPUpdate` of `firmware.bin`, reboot on success, progress bar on TFT
-- Triggers: at boot if `config.otaCheckOnStart` is set, or manually from the
-  diagnostics menu
+- Triggers: at boot if `config.otaCheckOnStart` is set — armed by `otaInit()`
+  and fired from `otaLoop()` only once WiFi is connected (gives up silently
+  after 60 s offline)
 - Release pipeline: `make dist` bumps `BUILD_VERSION` in `src/config.h`,
   rebuilds, copies `firmware.bin` + writes `latest.txt` into the sibling
   backend repo's `public/ota/`, commits and pushes — devices then self-update
 
 ## UI navigation
 
-Four top-level pages cycled with **left-short**:
-MAIN → DIAGNOSTICS → WAYPOINTS → TIMERS → MAIN
+Four pages in the L-short cycle: MAIN → DIAGNOSTICS → WAYPOINTS → TIMERS → MAIN.
+CONFIG is a jump target, not part of the cycle.
 
-Grammar:
+Grammar (hints use `l` = short click, `L` = long click):
 
-- **Left-short** — leave any submode/menu, else advance to the next page
-- **Right-short** — contextual: advance selection inside menus/lists;
+- **Left-short** — leave any submode, else advance to the next page
+  (on CONFIG: back to MAIN)
+- **Right-short** — contextual: advance selection in menus/lists,
   start/stop on TIMERS
-- **Left-long** — open/close contextual menus; FLAG position on WAYPOINTS;
-  clear-all on TIMERS
+- **Left-long** — contextual menu / special action:
+  on MAIN jump to CONFIG; flag position on WAYPOINTS; clear-all on TIMERS;
+  open menu on DIAGNOSTICS… *(diagnostics menu removed — L-long unused there)*
 - **Right-long** — run the selected entry (menus), delete waypoint (WAYPOINTS),
-  record lap (TIMERS)
+  lap/reset on TIMERS
 
 Per screen:
 
 | Screen | Actions |
 |---|---|
-| MAIN | L-short next page. Speed/course/status only, hint bar at the bottom |
-| DIAGNOSTICS | L-long menu (OTA check / OTA-on-boot toggle / reboot); R-short select; R-long execute; L-short exit/back |
-| WAYPOINTS | L-long flag here · R-short cycle waypoints · R-long delete shown · elapsed timer per marker (max 10, FIFO) |
-| TIMERS | R-short start/stop · R-long lap (while running) · L-long clear all · shows big MM:SS(.cc) + last 4 laps |
+| MAIN | `l` next page · `L` CONFIG · `RL` DIAGNOSTICS |
+| DIAGNOSTICS | `l` next page (pure stats, no menus) |
+| WAYPOINTS | `l` next page · `R` cycle waypoints · `L` flag here · `RL` delete shown |
+| TIMERS | `l` next page · `R` start/stop · `RL` lap while running / reset-all when stopped |
+| CONFIG | `l` back to MAIN |
 
 Every page switch fills the display black before redrawing (no stale pixels).
 

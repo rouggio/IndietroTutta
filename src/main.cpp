@@ -39,4 +39,5 @@ void loop() {
   screenLoop(gps);
   wifiLoop();
   backendLoop(gps);
+  otaLoop();
 }
