@@ -187,6 +187,10 @@ void screenTimersButton(Button button, ButtonEvent event)
       chronoElapsedMs = 0;
       chronoSegmentStart = 0;
       lapCount = 0;
+      // Reset ghost-prevention state so the next frame repaints cleanly
+      statusDrawn = false;
+      drawnState = ChronoState::Idle;
+      lastBigTime = "";
       tft.fillScreen(BG);
       return;
     }

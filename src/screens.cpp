@@ -1,5 +1,5 @@
 #include "screens.h"
-#include "screen_one.h"
+#include "screen_speed.h"
 #include "screen_two.h"
 #include "screen_waypoints.h"
 #include "screen_timers.h"
@@ -62,7 +62,7 @@ bool splashActive() {
 // ---------------- MAIN ROUTER ----------------
 void drawScreen(TinyGPSPlus &gps, bool requiresInit, ScreenPage page) {
   switch (page) {
-    case PageMain: drawScreenOne(gps, requiresInit); break;
+    case PageMain: drawScreenSpeed(gps, requiresInit); break;
     case PageDiagnostics: drawScreenTwo(gps); break;
     case PageWaypoints: drawScreenWaypoints(gps, requiresInit); break;
     case PageTimers: drawScreenTimers(requiresInit); break;
@@ -115,7 +115,7 @@ void screenButtonEvent(
     }
 
     switch(page) {
-        case PageMain: screenOneButton(button, event); break;
+        case PageMain: screenSpeedButton(button, event); break;
         case PageDiagnostics: screenTwoButton(button, event); break;
         case PageWaypoints: screenWaypointsButton(button, event); break;
         case PageTimers: screenTimersButton(button, event); break;

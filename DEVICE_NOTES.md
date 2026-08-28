@@ -32,12 +32,13 @@ server → backend.
 | Module | Role |
 |---|---|
 | `screens.cpp` | Owns global `TFT_eSPI`; page router (`ScreenPage` enum); 200 ms redraw throttle; L-short cycles across the three top-level pages (DIAGNOSTICS excluded, RR-only); `setCurrentPage()`/`redrawCurrentPage()` full-clear helpers |
-| `screen_one.cpp` | MAIN instrument: big speed (unit-selectable kn/km/h via `config.speedUnit`), course/cardinal, status tiles (WiFi/cloud/GPS fix), satellite count, hint bar. No submodes. |
+| `screen_speed.cpp` | MAIN instrument: big speed (unit-selectable kn/km/h via `config.speedUnit`), course/cardinal, status tiles (WiFi/cloud/GPS fix), satellite count, hint bar. No submodes. Readout cell is cleared before each draw so the shorter "---" placeholder never leaves ghost pixels. |
 | `screen_waypoints.cpp` | WAYPOINTS screen: flag current position (L-long), cycle/delete markers, per-marker elapsed timer |
 | `screen_timers.cpp` | TIMERS chronograph: start/stop (R), lap while running / reset when stopped (RR), big time readout, laps in a right-hand column; status/time lines consciously cleared to avoid ghosting |
 | `screen_two.cpp` | DIAGNOSTICS page: two-column layout (GPS | SYSTEM), title font consistent with other screens |
 | `screen_config.cpp` | CONFIG page: WiFi SSID/IP status, selectable rows — OTA-on-boot toggle, speed unit cycle (R select, RR apply); LL runs an immediate OTA check |
 | `splash_screen.cpp` | Static title, non-blocking (held by `screens.cpp` until setup completes) |
+| `screen_serial.cpp` | **Deleted** — an unused, dangling standalone TFT instance; serial capture is served via `/serial` from `serial_buffer.cpp` instead |
 | `buttons.cpp` | Polling driver emitting Press/LongPress/Release events to one callback |
 | `backend.cpp` | Dedicated FreeRTOS task owns ALL network I/O: health GET every 30 s plus a 4-deep work queue of position POSTs; the UI thread only snapshots GPS values and enqueues — never blocks on DNS/TLS/server round-trips |
 | `ota.cpp` | Version check vs `latest.txt` (semver via sscanf), HTTPS firmware download with on-screen progress bar and log; on-boot check waits for WiFi (60 s timeout); when done the underlying page is restored with a clean clear |
@@ -160,6 +161,10 @@ Waypoints and chronograph laps live in RAM only — they are lost on reboot.
   the current page (pre-1.0.78); `checkForUpdate()` now waits ~1.5 s and then
   restores the underlying screen via `redrawCurrentPage()` (full clear)
 - OTA download blocks the loop until finished
+- On the WAYPOINTS screen the bottom status text ("WP n / elapsed") was drawn
+  at the same y (235) and font as the button-hint bar, so it painted over the
+  hints on every frame once a waypoint existed. `drawBottomBar` now renders it
+  above its separator (y=208)
 - All web routes unauthenticated; TLS validation disabled everywhere
 - Backend "online" tile reflects only the last health/post result
 - Backend device registry (`store/deviceStore.js`) and GPS points are

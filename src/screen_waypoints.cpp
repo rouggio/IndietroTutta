@@ -52,7 +52,8 @@ static void drawBottomBar(String timeStr, String dateStr)
   tft.setTextDatum(BC_DATUM);
 
   String bottom = "  " + timeStr + "  |  " + dateStr + "  ";
-  tft.drawString(bottom, tft.width() / 2, 235, 4);
+  // Draw above the hint bar (y=235) so the button hints survive
+  tft.drawString(bottom, tft.width() / 2, 208, 4);
 }
 
 static void rememberFlaggedMarker(TinyGPSPlus &gps)

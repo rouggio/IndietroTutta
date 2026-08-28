@@ -8,7 +8,7 @@
 #include "buttons.h"
 #include "screens.h"
 
-#include "screen_one.h"
+#include "screen_speed.h"
 
 extern TFT_eSPI tft;
 
@@ -219,7 +219,7 @@ void drawSpeed(TinyGPSPlus &gps)
   if (config.speedUnit == 1) value = knots * 1.852;      // km/h
   else if (config.speedUnit == 2) value = knots * 1.15078; // mph
 
-  tft.setTextDatum(MC_DATUM);
+tft.setTextDatum(MC_DATUM);
 
   tft.setTextColor(WHITE, BG);
   String label = "SPEED (" + String(unitLabels[config.speedUnit]) + ")";
@@ -227,9 +227,12 @@ void drawSpeed(TinyGPSPlus &gps)
 
   tft.setTextColor(TFT_YELLOW, BG);
   if (gps.speed.isValid()) {
+    // Clear the readout cell before drawing so the shorter
+    // "---" placeholder never leaves ghost pixels behind
+    tft.fillRect(tft.width() / 2 - 48, 84, 96, 34, BG);
     String spd = " " + String(value, 1) + " ";
     tft.drawString(spd, tft.width() / 2, 100, 8);
-  } else {
+} else {
     String spd = "  ---  ";
     tft.drawString(spd, tft.width() / 2, 100, 8);
   }
@@ -255,7 +258,7 @@ void initScreen() {
   prevFix = TriState::Unknown;
 }
 
-void drawScreenOne(TinyGPSPlus &gps, bool requiresInit)
+void drawScreenSpeed(TinyGPSPlus &gps, bool requiresInit)
 {
   if (requiresInit) initScreen();
 
@@ -272,7 +275,7 @@ void drawScreenOne(TinyGPSPlus &gps, bool requiresInit)
   tft.drawString("LL Cfg  RR Diag", tft.width() - 8, 235, 2);
 }
 
-void screenOneButton(
+void screenSpeedButton(
     Button button,
     ButtonEvent event
 ) {
@@ -289,9 +292,9 @@ void screenOneButton(
     }
 
 // Right long: jump to the diagnostics screen (RR-only, not part of
-  // the L-short cycle)
-  if (button == Button::Right && event == ButtonEvent::LongPress) {
-    setCurrentPage(PageDiagnostics);
-    return;
+    // the L-short cycle)
+    if (button == Button::Right && event == ButtonEvent::LongPress) {
+      setCurrentPage(PageDiagnostics);
+      return;
+    }
   }
-}
