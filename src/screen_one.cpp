@@ -288,9 +288,10 @@ void screenOneButton(
         return;
     }
 
-    // Right long: jump to the diagnostics screen
-    if (button == Button::Right && event == ButtonEvent::LongPress) {
-        setCurrentPage(PageDiagnostics);
-        return;
-    }
+// Right long: jump to the diagnostics screen (RR-only, not part of
+  // the L-short cycle)
+  if (button == Button::Right && event == ButtonEvent::LongPress) {
+    setCurrentPage(PageDiagnostics);
+    return;
+  }
 }

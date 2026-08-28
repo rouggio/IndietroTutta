@@ -31,7 +31,7 @@ server → backend.
 
 | Module | Role |
 |---|---|
-| `screens.cpp` | Owns global `TFT_eSPI`; page router (`ScreenPage` enum); 200 ms redraw throttle; L-short cycle across the four top-level pages; `setCurrentPage()`/`redrawCurrentPage()` full-clear helpers |
+| `screens.cpp` | Owns global `TFT_eSPI`; page router (`ScreenPage` enum); 200 ms redraw throttle; L-short cycles across the three top-level pages (DIAGNOSTICS excluded, RR-only); `setCurrentPage()`/`redrawCurrentPage()` full-clear helpers |
 | `screen_one.cpp` | MAIN instrument: big speed (unit-selectable kn/km/h via `config.speedUnit`), course/cardinal, status tiles (WiFi/cloud/GPS fix), satellite count, hint bar. No submodes. |
 | `screen_waypoints.cpp` | WAYPOINTS screen: flag current position (L-long), cycle/delete markers, per-marker elapsed timer |
 | `screen_timers.cpp` | TIMERS chronograph: start/stop (R), lap while running / reset when stopped (RR), big time readout, laps in a right-hand column; status/time lines consciously cleared to avoid ghosting |
@@ -109,7 +109,8 @@ Grammar (hints use `L` = left click, `LL` = long left, `R` = right click,
 `RR` = long right):
 
 - **Left-short** — leave any submode, else advance to the next page
-  (on CONFIG: back to MAIN)
+  (on CONFIG: back to MAIN). Cycles MAIN → WAYPOINTS → TIMERS → CONFIG → MAIN;
+  DIAGNOSTICS is **not** in the cycle
 - **Right-short** — contextual: advance selection in menus/lists,
   start/stop on TIMERS
 - **Left-long** — MAIN: jump to CONFIG · WAYPOINTS: flag position ·

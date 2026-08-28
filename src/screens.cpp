@@ -78,9 +78,12 @@ void drawScreen(TinyGPSPlus &gps, bool requiresInit, ScreenPage page) {
 }
 
 void nextScreen() {
-    // Cycle between the top-level pages
-    page = (ScreenPage)(((int)page + 1) % PAGE_CYCLE);
-    tft.fillScreen(TFT_BLACK);
+  // Cycle between the top-level pages, skipping DIAGNOSTICS which is
+  // reachable only via long-right-click on MAIN.
+  do {
+    page = (ScreenPage)(((int)page + 1) % ((int)PageConfig + 1));
+  } while (page == PageDiagnostics);
+  tft.fillScreen(TFT_BLACK);
 }
 
 void setCurrentPage(ScreenPage p) {
