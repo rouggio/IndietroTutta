@@ -23,7 +23,6 @@ enum ConfigRow {
 
 static int selRow = ROW_OTA;
 static bool needsRedraw = true;
-static String lastStatusKey = "";
 
 static const char* speedLabel()
 {
@@ -43,7 +42,6 @@ void drawScreenConfig(bool requiresInit)
     if (requiresInit) {
         tft.fillScreen(BG);
         needsRedraw = true;
-        lastStatusKey = "";
     }
 
     // ---- Title ----
@@ -52,33 +50,12 @@ void drawScreenConfig(bool requiresInit)
     tft.drawString("CONFIG", tft.width() / 2, 20, 4);
     tft.drawFastHLine(20, 44, tft.width() - 40, GRAY);
 
-    // ---- Connection status (SSID + IP), cleared only when it changes ----
-    bool connected = (WiFi.status() == WL_CONNECTED);
-    String ssid = connected ? WiFi.SSID() : "--";
-    String ip = connected ? WiFi.localIP().toString() : "--";
-    String statusKey = ssid + "|" + ip;
-
-    if (statusKey != lastStatusKey) {
-        tft.fillRect(0, 56, tft.width(), 60, BG);
-        lastStatusKey = statusKey;
-    }
-
-    tft.setTextColor(GRAY, BG);
-    tft.setTextDatum(TL_DATUM);
-    tft.drawString("WIFI", 12, 58, 2);
-
-    tft.setTextColor(WHITE, BG);
-    String ssidLine = "SSID " + ssid;
-    if (ssidLine.length() > 24) ssidLine = ssidLine.substring(0, 24);
-    tft.drawString(ssidLine, 12, 80, 2);
-    tft.drawString("IP   " + ip, 12, 102, 2);
-
     // ---- Selectable rows ----
     if (needsRedraw) {
-        tft.fillRect(0, 130, tft.width(), 70, BG);
+        tft.fillRect(0, 60, tft.width(), 70, BG);
 
         for (int i = 0; i < ROW_COUNT; i++) {
-            int y = 138 + i * 30;
+            int y = 68 + i * 30;
             bool selected = (i == selRow);
 
             tft.setTextColor(selected ? TFT_YELLOW : WHITE, BG);

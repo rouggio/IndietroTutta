@@ -31,12 +31,12 @@ server → backend.
 
 | Module | Role |
 |---|---|
-| `screens.cpp` | Owns global `TFT_eSPI`; page router (`ScreenPage` enum); 200 ms redraw throttle; L-short cycles across the three top-level pages (DIAGNOSTICS excluded, RR-only); `setCurrentPage()`/`redrawCurrentPage()` full-clear helpers |
+| `screens.cpp` | Owns global `TFT_eSPI`; page router (`ScreenPage` enum); 200 ms redraw throttle; L-short cycles across the three main pages (DIAGNOSTICS and CONFIG excluded as subscreens of speed); `setCurrentPage()`/`redrawCurrentPage()` full-clear helpers |
 | `screen_speed.cpp` | MAIN instrument: big speed (unit-selectable kn/km/h via `config.speedUnit`), course/cardinal, status tiles (WiFi/cloud/GPS fix), satellite count, hint bar. No submodes. Readout cell is cleared before each draw so the shorter "---" placeholder never leaves ghost pixels. |
 | `screen_waypoints.cpp` | WAYPOINTS screen: flag current position (L-long), cycle/delete markers, per-marker elapsed timer |
 | `screen_timers.cpp` | TIMERS chronograph: start/stop (R), lap while running / reset when stopped (RR), big time readout, laps in a right-hand column; status/time lines consciously cleared to avoid ghosting |
-| `screen_two.cpp` | DIAGNOSTICS page: two-column layout (GPS | SYSTEM), title font consistent with other screens |
-| `screen_config.cpp` | CONFIG page: WiFi SSID/IP status, selectable rows — OTA-on-boot toggle, speed unit cycle (R select, RR apply); LL runs an immediate OTA check |
+| `screen_diagnostics.cpp` | DIAGNOSTICS page (subscreen of speed, `RR` entry, `L` back): two-column layout (GPS | SYSTEM incl. MAC/IP/SSID), title font consistent with other screens |
+| `screen_config.cpp` | CONFIG page (subscreen of speed, `LL` entry, `L` back): selectable rows — OTA-on-boot toggle, speed unit cycle (R select, RR apply); `LL` runs an immediate OTA check |
 | `splash_screen.cpp` | Static title, non-blocking (held by `screens.cpp` until setup completes) |
 | `screen_serial.cpp` | **Deleted** — an unused, dangling standalone TFT instance; serial capture is served via `/serial` from `serial_buffer.cpp` instead |
 | `buttons.cpp` | Polling driver emitting Press/LongPress/Release events to one callback |

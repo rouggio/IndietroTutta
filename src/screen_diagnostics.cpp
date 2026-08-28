@@ -6,7 +6,7 @@
 #include "config.h"
 #include "config_store.h"
 #include "screens.h"
-#include "screen_two.h"
+#include "screen_diagnostics.h"
 
 extern TFT_eSPI tft;
 
@@ -26,7 +26,7 @@ static String padRight(String s, int len)
   return s;
 }
 
-void drawScreenTwoMain(TinyGPSPlus &gps)
+void drawScreenDiagnosticsMain(TinyGPSPlus &gps)
 {
   // Page title, consistent with the other screens
   tft.setTextColor(WHITE, BG);
@@ -86,35 +86,38 @@ void drawScreenTwoMain(TinyGPSPlus &gps)
   tft.setTextColor(WHITE, BG);
   tft.drawString(padRight("VER " BUILD_VERSION, 14), COL_R_X, 80, 2);
 
-  tft.drawString(padRight("IP " + WiFi.localIP().toString(), 14), COL_R_X, 104, 2);
+  String mac = WiFi.macAddress();
+  mac.replace(":", "");
+  tft.drawString(padRight("MAC " + mac, 14), COL_R_X, 104, 2);
+
+  tft.drawString(padRight("IP " + WiFi.localIP().toString(), 14), COL_R_X, 128, 2);
 
   String ssid = WiFi.SSID();
   if (ssid.length() > 10) ssid = ssid.substring(0, 10);
-  tft.drawString(padRight("SSID " + ssid, 14), COL_R_X, 128, 2);
+  tft.drawString(padRight("SSID " + ssid, 14), COL_R_X, 152, 2);
 
   String user = config.username;
   if (user.length() > 9) user = user.substring(0, 9);
-  tft.drawString(padRight("User " + user, 14), COL_R_X, 152, 2);
+  tft.drawString(padRight("User " + user, 14), COL_R_X, 176, 2);
 
-  // Hint bar: L/LL left, R/RR right
+  // Hint bar: L/LL left, R/RR right (subscreen: L returns to speed)
   tft.setTextColor(WHITE, BG);
   tft.setTextDatum(BL_DATUM);
-  tft.drawString("L Next", 8, 235, 2);
+  tft.drawString("L Back", 8, 235, 2);
 }
 
-void drawScreenTwo(TinyGPSPlus &gps)
+void drawScreenDiagnostics(TinyGPSPlus &gps)
 {
-  drawScreenTwoMain(gps);
+  drawScreenDiagnosticsMain(gps);
 }
 
-void screenTwoButton(
+void screenDiagnosticsButton(
     Button button,
     ButtonEvent event
 ) {
-    // Left short: advance to the next page. The diagnostics page
-    // has no submodes; every other event is ignored.
+    // Subscreen of speed: L returns to speed screen
     if (button == Button::Left && event == ButtonEvent::ShortPress) {
-        nextScreen();
+        setCurrentPage(PageMain);
         return;
     }
 }
