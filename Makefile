@@ -100,6 +100,24 @@ git-push:
 	git -C "$(BACKEND)" commit -m "Update OTA firmware to version $$VERSION"; \
 	echo "Pushing..."; \
 	git -C "$(BACKEND)" push; \
+	if [ -f "$(BACKEND)/.env" ]; then \
+		set -a; . "$(BACKEND)/.env"; set +a; \
+		_hook_url="$$REDPLOY_HOOK_URL"; \
+		if [ -z "$$_hook_url" ]; then _hook_url="$$REDEPLOY_HOOK_URL"; fi; \
+		if [ -z "$$_hook_url" ]; then _hook_url="$$DEPLOY_HOOK_URL"; fi; \
+		if [ -n "$$_hook_url" ]; then \
+			echo "Triggering redeploy via hook..."; \
+			if curl -fsS -X POST "$$_hook_url" >/dev/null; then \
+				echo "Redeploy triggered."; \
+			else \
+				echo "WARNING: redeploy hook failed (continuing - will poll anyway)"; \
+			fi; \
+		else \
+			echo "No deploy hook URL found in $(BACKEND)/.env (REDPLOY_HOOK_URL)"; \
+		fi; \
+	else \
+		echo "No $(BACKEND)/.env found - skipping redeploy hook"; \
+	fi; \
 	echo "Waiting for the server to serve version $$VERSION..."; \
 	for i in $$(seq 1 30); do \
 		sleep 10; \
