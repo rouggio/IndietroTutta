@@ -152,12 +152,12 @@ void drawScreenTimers(bool requiresInit)
     tft.drawString("/ " + formatLap(laps[i].totalMs), LAPS_X + 52, y + 14, 1);
   }
 
-  // ---- Hint bar ----
+  // ---- Hint bar: L/LL on the left, R/RR on the right ----
   tft.setTextColor(WHITE, BG);
   tft.setTextDatum(BL_DATUM);
-  tft.drawString("L - Next", 8, 235, 2);
+  tft.drawString("L Next", 8, 235, 2);
   tft.setTextDatum(BR_DATUM);
-  tft.drawString("R Run/Stop  RL Lap/Rst", tft.width() - 8, 235, 2);
+  tft.drawString("R Run  RR Lap/Rst", tft.width() - 8, 235, 2);
 }
 
 void screenTimersButton(Button button, ButtonEvent event)

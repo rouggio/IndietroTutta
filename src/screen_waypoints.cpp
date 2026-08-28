@@ -156,12 +156,12 @@ void drawScreenWaypoints(TinyGPSPlus &gps, bool requiresInit)
     tft.drawString(lon, tft.width() / 2, 150, 2);
   }
 
-  // Bottom labels
+  // Bottom labels: L/LL on the left, R/RR on the right
   tft.setTextColor(WHITE, BG);
   tft.setTextDatum(BL_DATUM);
-  tft.drawString("L - Next", 8, 235, 2);
+  tft.drawString("L Next  LL Flag", 8, 235, 2);
   tft.setTextDatum(BR_DATUM);
-  tft.drawString("R Cyc  LL Flag  RR Del", tft.width() - 8, 235, 2);
+  tft.drawString("R Cyc  RR Del", tft.width() - 8, 235, 2);
 
   if (flaggedMarkerCount > 0) {
     int idx = displayedMarker >= 0 ? displayedMarker : (flaggedMarkerCount - 1);

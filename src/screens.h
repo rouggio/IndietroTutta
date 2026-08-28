@@ -19,8 +19,9 @@ enum ScreenPage {
     PageConfig = 4
 };
 
-// Number of pages in the L-short cycle. DIAGNOSTICS is intentionally
-// excluded — it is reachable only via long-right-click on MAIN.
+// Number of pages in the L-short cycle. DIAGNOSTICS and CONFIG are
+// intentionally excluded — reachable only via speed-screen gestures
+// (RR = diagnostics, LL = config).
 static constexpr int PAGE_CYCLE = 3;
 
 // Non-blocking splash: drawn once at boot, kept on screen while setup

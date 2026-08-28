@@ -96,10 +96,10 @@ void drawScreenTwoMain(TinyGPSPlus &gps)
   if (user.length() > 9) user = user.substring(0, 9);
   tft.drawString(padRight("User " + user, 14), COL_R_X, 152, 2);
 
-  // Hint bar
+  // Hint bar: L/LL left, R/RR right
   tft.setTextColor(WHITE, BG);
   tft.setTextDatum(BL_DATUM);
-  tft.drawString("L - Next", 8, 235, 2);
+  tft.drawString("L Next", 8, 235, 2);
 }
 
 void drawScreenTwo(TinyGPSPlus &gps)

@@ -78,11 +78,12 @@ void drawScreen(TinyGPSPlus &gps, bool requiresInit, ScreenPage page) {
 }
 
 void nextScreen() {
-  // Cycle between the top-level pages, skipping DIAGNOSTICS which is
-  // reachable only via long-right-click on MAIN.
+  // Cycle between the top-level pages. DIAGNOSTICS and CONFIG are
+  // reachable only via speed-screen gestures (RR and LL) and are not
+  // part of the L-short cycle.
   do {
     page = (ScreenPage)(((int)page + 1) % ((int)PageConfig + 1));
-  } while (page == PageDiagnostics);
+  } while (page == PageDiagnostics || page == PageConfig);
   tft.fillScreen(TFT_BLACK);
 }
 

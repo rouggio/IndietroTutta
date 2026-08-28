@@ -227,9 +227,10 @@ void drawSpeed(TinyGPSPlus &gps)
 
   tft.setTextColor(TFT_YELLOW, BG);
   if (gps.speed.isValid()) {
+    tft.fillRect(tft.width() / 2 - 48, 84, 96, 34, BG);
     String spd = " " + String(value, 1) + " ";
     tft.drawString(spd, tft.width() / 2, 100, 8);
-} else {
+  } else {
     String spd = "  ---  ";
     tft.drawString(spd, tft.width() / 2, 100, 8);
   }
@@ -264,12 +265,12 @@ void drawScreenSpeed(TinyGPSPlus &gps, bool requiresInit)
   drawSpeed(gps);
   drawCourse(gps);
 
-  // Button hints in the bottom bar
+  // Button hints: L/LL on the left, R/RR on the right
   tft.setTextColor(WHITE, BG);
   tft.setTextDatum(BL_DATUM);
-  tft.drawString("L - Next", 8, 235, 2);
+  tft.drawString("L Next  LL Cfg", 8, 235, 2);
   tft.setTextDatum(BR_DATUM);
-  tft.drawString("LL Cfg  RR Diag", tft.width() - 8, 235, 2);
+  tft.drawString("RR Diag", tft.width() - 8, 235, 2);
 }
 
 void screenSpeedButton(

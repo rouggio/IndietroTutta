@@ -46,6 +46,12 @@ void drawScreenConfig(bool requiresInit)
         lastStatusKey = "";
     }
 
+    // ---- Title ----
+    tft.setTextColor(WHITE, BG);
+    tft.setTextDatum(MC_DATUM);
+    tft.drawString("CONFIG", tft.width() / 2, 20, 4);
+    tft.drawFastHLine(20, 44, tft.width() - 40, GRAY);
+
     // ---- Connection status (SSID + IP), cleared only when it changes ----
     bool connected = (WiFi.status() == WL_CONNECTED);
     String ssid = connected ? WiFi.SSID() : "--";
@@ -91,12 +97,12 @@ void drawScreenConfig(bool requiresInit)
         needsRedraw = false;
     }
 
-    // ---- Hint bar ----
+    // ---- Hint bar: L/LL on the left, R/RR on the right ----
     tft.setTextColor(WHITE, BG);
     tft.setTextDatum(BL_DATUM);
-    tft.drawString("L - Main", 8, 235, 2);
+    tft.drawString("L Main  LL OTA", 8, 235, 2);
     tft.setTextDatum(BR_DATUM);
-    tft.drawString("R Sel  RR Set  LL OTA", tft.width() - 8, 235, 2);
+    tft.drawString("R Sel  RR Set", tft.width() - 8, 235, 2);
 }
 
 void screenConfigButton(Button button, ButtonEvent event)
