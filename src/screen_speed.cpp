@@ -219,7 +219,7 @@ void drawSpeed(TinyGPSPlus &gps)
   if (config.speedUnit == 1) value = knots * 1.852;      // km/h
   else if (config.speedUnit == 2) value = knots * 1.15078; // mph
 
-tft.setTextDatum(MC_DATUM);
+  tft.setTextDatum(MC_DATUM);
 
   tft.setTextColor(WHITE, BG);
   String label = "SPEED (" + String(unitLabels[config.speedUnit]) + ")";
@@ -227,9 +227,6 @@ tft.setTextDatum(MC_DATUM);
 
   tft.setTextColor(TFT_YELLOW, BG);
   if (gps.speed.isValid()) {
-    // Clear the readout cell before drawing so the shorter
-    // "---" placeholder never leaves ghost pixels behind
-    tft.fillRect(tft.width() / 2 - 48, 84, 96, 34, BG);
     String spd = " " + String(value, 1) + " ";
     tft.drawString(spd, tft.width() / 2, 100, 8);
 } else {
