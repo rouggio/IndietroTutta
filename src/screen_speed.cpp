@@ -227,7 +227,6 @@ void drawSpeed(TinyGPSPlus &gps)
 
   tft.setTextColor(TFT_YELLOW, BG);
   if (gps.speed.isValid()) {
-    tft.fillRect(tft.width() / 2 - 48, 84, 96, 34, BG);
     String spd = " " + String(value, 1) + " ";
     tft.drawString(spd, tft.width() / 2, 100, 8);
   } else {
