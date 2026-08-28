@@ -24,7 +24,17 @@ static bool wifiConnectedFlag = false;
 static int retryIndex = -1;
 static unsigned long attemptStartedAt = 0;
 
-static const unsigned long WIFI_ATTEMPT_TIMEOUT_MS = 5000;
+// Home routers normally associate in 1-3 s; 5 s was just enough to be
+// judged a failure on slow mesh/cold-start devices, after which the
+// code cycled through every saved network on every boot. Give it room.
+static const unsigned long WIFI_ATTEMPT_TIMEOUT_MS = 12000;
+
+// (b) Never spin forever: after a few consecutive failures, park and
+// leave the AP up for provisioning. Retry again only after a new
+// network is added or a connection drops.
+static bool retryBlocked = false;
+static int attemptCount = 0;
+static constexpr int WIFI_MAX_ATTEMPTS = 3;
 
 // ---------------------------------------------------------
 // Start associating with the next saved network.
@@ -68,10 +78,14 @@ static bool beginNextNetwork()
 
 // Point the rotation at a specific saved index so it is tried
 // on the next pass (used when a network is added/updated).
+// A manually added network gets a fresh attempt budget and
+// unblocks a parked state.
 static void preferNetwork(int index)
 {
     retryIndex = index - 1;
     attemptStartedAt = 0;
+    retryBlocked = false;
+    attemptCount = 0;
 }
 
 static void startAccessPoint()
@@ -280,6 +294,8 @@ void wifiClearNetworks()
     clearWiFiNetworks();
 
     retryIndex = -1;
+    attemptCount = 0;
+    retryBlocked = false;
 
     bufferedSerialPrintln("[WiFi] All saved networks cleared");
 }
@@ -331,6 +347,8 @@ void wifiInit(TinyGPSPlus& gps)
     wifiConnectedFlag = false;
     retryIndex = -1;
     attemptStartedAt = 0;
+    attemptCount = 0;
+    retryBlocked = false;
 
     startAccessPoint();
 
@@ -389,6 +407,10 @@ void wifiLoop()
             );
         }
 
+        // Full budget for the next drop
+        retryBlocked = false;
+        attemptCount = 0;
+
         return;
     }
 
@@ -407,17 +429,46 @@ void wifiLoop()
         bufferedSerialPrintln(
             "[WiFi] Searching for another saved network..."
         );
+
+        // A fresh budget for the reconnection after a drop
+        retryBlocked = false;
+        attemptCount = 0;
+        attemptStartedAt = 0;
     }
 
     // -----------------------------------------------------
     // Rotate to the next saved credential once the current
     // attempt has run out of time. WiFi.begin() is
     // non-blocking, so this never stalls the main loop.
+    //
+    // (c) A definitive failure (network gone, wrong password)
+    // skips straight to the next network instead of burning the
+    // full timeout on a negotiation that cannot succeed.
     // -----------------------------------------------------
 
-    if (millis() - attemptStartedAt >= WIFI_ATTEMPT_TIMEOUT_MS)
+    if (retryBlocked)
+        return;
+
+    const bool definitive =
+        status == WL_NO_SSID_AVAIL ||
+        status == WL_CONNECT_FAILED ||
+        status == WL_CONNECTION_LOST ||
+        status == WL_DISCONNECTED;
+
+    if (definitive ||
+        millis() - attemptStartedAt >= WIFI_ATTEMPT_TIMEOUT_MS)
     {
-        beginNextNetwork();
+        if (beginNextNetwork())
+        {
+            if (++attemptCount >= WIFI_MAX_ATTEMPTS)
+            {
+                retryBlocked = true;
+
+                bufferedSerialPrintln(
+                    "[WiFi] Giving up after failed attempts; "
+                    "AP still up for provisioning");
+            }
+        }
     }
 }
 
