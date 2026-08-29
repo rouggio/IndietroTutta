@@ -1,0 +1,104 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="520" viewBox="0 0 1000 520">
+<style>
+  .bg { fill: #f8fafc; }
+  .panel { fill: white; stroke: #e2e8f0; rx: 12; }
+  .title { font: 700 13px Arial, sans-serif; fill: #0f172a; }
+  .label { font: 11px Arial, sans-serif; fill: #334155; }
+  .mark { fill: #f59e0b; stroke: #d97706; stroke-width: 1.5; }
+  .start { fill: #16a34a; stroke: #15803d; stroke-width: 1.5; }
+  .finish { fill: #dc2626; stroke: #991b1b; stroke-width: 1.5; }
+  .gate { fill: #f59e0b; stroke: #d97706; stroke-width: 1.5; }
+  .line { stroke: #3b82f6; stroke-width: 2; fill: none; marker-end: url(#arrow); stroke-dasharray: 6 4; }
+  .startline { stroke: #16a34a; stroke-width: 3; }
+  .wind { stroke: #94a3b8; stroke-width: 1.5; marker-end: url(#arrowWind); }
+</style>
+<defs>
+  <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#3b82f6"/></marker>
+  <marker id="arrowWind" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M 0 0 L 10 5 L 0 10 z" fill="#94a3b8"/></marker>
+</defs>
+<rect width="1000" height="520" class="bg"/>
+
+<!-- Wind indicator top -->
+<g transform="translate(500,18)">
+  <line x1="0" y1="12" x2="0" y2="-12" class="wind"/>
+  <text x="12" y="4" class="label">Wind ↑</text>
+</g>
+
+<!-- 1. Windward-Leeward -->
+<g transform="translate(10,35)">
+  <rect width="185" height="220" class="panel"/>
+  <text x="92" y="18" text-anchor="middle" class="title">1. Windward-Leeward</text>
+  <text x="92" y="32" text-anchor="middle" class="label">Start → 1 → 2 → 1 → Finish</text>
+  <!-- marks -->
+  <circle cx="92" cy="70" r="10" class="mark"/><text x="92" y="74" text-anchor="middle" class="label" fill="white">1</text>
+  <circle cx="92" cy="180" r="10" class="mark"/><text x="92" y="184" text-anchor="middle" class="label" fill="white">2</text>
+  <line x1="62" y1="195" x2="122" y2="195" class="startline"/><text x="92" y="210" text-anchor="middle" class="label">Start/Finish</text>
+  <path d="M 92 185 L 92 80" class="line"/>
+  <text x="105" y="125" class="label">↺</text>
+</g>
+
+<!-- 2. W/L with Gate -->
+<g transform="translate(210,35)">
+  <rect width="185" height="220" class="panel"/>
+  <text x="92" y="18" text-anchor="middle" class="title">2. W/L with Gate</text>
+  <text x="92" y="32" text-anchor="middle" class="label">Start → 1 → Gate → 1 → Finish</text>
+  <circle cx="92" cy="70" r="10" class="mark"/><text x="92" y="74" text-anchor="middle" class="label" fill="white">1</text>
+  <circle cx="65" cy="170" r="8" class="gate"/><circle cx="119" cy="170" r="8" class="gate"/><text x="92" y="188" text-anchor="middle" class="label">Gate</text>
+  <line x1="62" y1="195" x2="122" y2="195" class="startline"/><text x="92" y="210" text-anchor="middle" class="label">Start/Finish</text>
+  <path d="M 92 175 L 92 80" class="line"/>
+</g>
+
+<!-- 3. Triangle -->
+<g transform="translate(410,35)">
+  <rect width="185" height="220" class="panel"/>
+  <text x="92" y="18" text-anchor="middle" class="title">3. Triangle</text>
+  <text x="92" y="32" text-anchor="middle" class="label">Start → 1 → 2 → 3 → Finish</text>
+  <circle cx="92" cy="70" r="10" class="mark"/><text x="92" y="74" text-anchor="middle" class="label" fill="white">1</text>
+  <circle cx="150" cy="140" r="10" class="mark"/><text x="150" y="144" text-anchor="middle" class="label" fill="white">2</text>
+  <circle cx="35" cy="140" r="10" class="mark"/><text x="35" y="144" text-anchor="middle" class="label" fill="white">3</text>
+  <line x1="62" y1="195" x2="122" y2="195" class="startline"/><text x="92" y="210" text-anchor="middle" class="label">Start/Finish</text>
+  <path d="M 92 185 L 92 80 L 150 140 L 35 140 L 92 185" class="line"/>
+</g>
+
+<!-- 4. WLT Olympic -->
+<g transform="translate(610,35)">
+  <rect width="185" height="220" class="panel"/>
+  <text x="92" y="18" text-anchor="middle" class="title">4. WLT Olympic</text>
+  <text x="92" y="32" text-anchor="middle" class="label">1 → 2 → 3 → 1 → Finish</text>
+  <circle cx="92" cy="65" r="9" class="mark"/><text x="92" y="69" text-anchor="middle" class="label" fill="white" font-size="10">1</text>
+  <circle cx="145" cy="115" r="9" class="mark"/><text x="145" y="119" text-anchor="middle" class="label" fill="white" font-size="10">2</text>
+  <circle cx="40" cy="115" r="9" class="mark"/><text x="40" y="119" text-anchor="middle" class="label" fill="white" font-size="10">3</text>
+  <line x1="62" y1="195" x2="122" y2="195" class="startline"/><text x="92" y="210" text-anchor="middle" class="label">Start/Finish</text>
+  <path d="M 92 190 L 92 74 L 145 115 L 40 115 L 92 74 L 92 190" class="line"/>
+</g>
+
+<!-- 5. Trapezoid -->
+<g transform="translate(810,35)">
+  <rect width="180" height="220" class="panel"/>
+  <text x="90" y="18" text-anchor="middle" class="title">5. Trapezoid</text>
+  <text x="90" y="32" text-anchor="middle" class="label">Start → 1 → 2 → 3 → 4 → Finish</text>
+  <circle cx="50" cy="70" r="9" class="mark"/><text x="50" y="74" text-anchor="middle" class="label" fill="white" font-size="10">1</text>
+  <circle cx="130" cy="70" r="9" class="mark"/><text x="130" y="74" text-anchor="middle" class="label" fill="white" font-size="10">2</text>
+  <circle cx="130" cy="155" r="9" class="mark"/><text x="130" y="159" text-anchor="middle" class="label" fill="white" font-size="10">3</text>
+  <circle cx="50" cy="155" r="9" class="mark"/><text x="50" y="159" text-anchor="middle" class="label" fill="white" font-size="10">4</text>
+  <line x1="30" y1="195" x2="90" y2="195" class="startline"/><text x="60" y="210" text-anchor="middle" class="label">Start/Finish</text>
+  <path d="M 60 190 L 50 79 L 130 79 L 130 150 L 50 150 L 60 190" class="line"/>
+</g>
+
+<!-- Legend -->
+<g transform="translate(10,275)">
+  <rect width="980" height="235" class="panel"/>
+  <text x="490" y="20" text-anchor="middle" class="title">How to read</text>
+  <g transform="translate(20,35)">
+    <circle cx="10" cy="10" r="8" class="mark"/><text x="28" y="14" class="label">Mark (rounding)</text>
+    <line x1="150" y1="10" x2="190" y2="10" class="startline"/><text x="198" y="14" class="label">Start / Finish line (square to wind)</text>
+    <line x1="380" y1="10" x2="420" y2="10" class="line" style="stroke-dasharray:6 4"/><text x="428" y="14" class="label">Sailing leg (order = numbers)</text>
+    <circle cx="10" cy="35" r="6" class="gate"/><text x="28" y="39" class="label">Gate (two buoys, choose one)</text>
+    <text x="150" y="39" class="label">↺ = round to port (default)</text>
+  </g>
+  <text x="20" y="75" class="label">• Your wireframe = marks + order + radius. Device draws lines + circles only (&lt;5ms). Start line bearing = COG+90° or p1→p2+90° fallback.</text>
+  <text x="20" y="95" class="label">• Training: Flag 1 = start line center (perpendicular to wind/course), Flag 2 = windward, etc. &lt;10 marks total.</text>
+  <text x="20" y="115" class="label">• W/L is your "stick" — perfect for solo training. Gate/Trapezoid are just more marks in order.</text>
+  <text x="20" y="145" class="label" font-style="italic">Tell me which template to make the default in the course builder and I'll wire it as one-click.</text>
+</g>
+</svg>
