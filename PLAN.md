@@ -16,12 +16,10 @@
 **Strategy:** Each step is a commit/branch that alone passes `make compile` + `GET /health` + `GET /gps` + `GET /devices`. No step breaks `speed` or heartbeat.
 
 - `main` (device `bfdb500`, backend `b007daf` + `main` `b358c5c`) — last stable
-- `step-0/templates` (backend) — **DONE**: `courses/templates.json` (W/L, W/L Gate, Triangle, WLT Olympic, Trapezoid) + `GET /courses/templates`, empty `services/` removed
-  - Test: `curl /courses/templates` → 5
-- `step-0/templates` + 1 commit `ddd2a2d` — **DONE Step 1**: `courses` Turso table + `store/courseStore.js` + CRUD `POST/GET/PUT/DELETE /courses`
-  - Test: `POST /courses` → `GET /courses/:id` → `PUT` bumps `version` → `DELETE`
+- `feature/regatta` (backend, was `step-0/templates`) — **DONE**: `courses/templates.json` (5 presets) + `GET /courses/templates`, `courses` Turso table + CRUD `POST/GET/PUT/DELETE /courses` + Builder UI (Leaflet draggable `P/S/G`, `radius`), empty `services/` removed
+  - Test: `curl /courses/templates` → 5; `POST /courses` → `PUT` bumps `version`
 
-**Next:** continue on same branch `step-0/templates` (it now contains Step 0+1) or cut `step-1/*` from it. Current HEAD is `ddd2a2d`.
+**Next:** continue on `feature/regatta` (currently `731fa4c` + `81255bd` nodemon). Current HEAD is `feature/regatta`.
 
 ## How to Continue (new session)
 1. Read `FEATURES.md` (§10 Incremental Plan Steps 0-8) + `PLAN.md` + `FEATURES_courses.svg`
