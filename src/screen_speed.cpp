@@ -253,6 +253,9 @@ void drawRaceInfo(TinyGPSPlus &gps)
 {
   if (!raceHasActive()) return;
 
+  // Check for mark rounding
+  raceCheckPass(gps);
+
   unsigned long nowMs = getSyncedTimeMs(gps);
   unsigned long startMs = raceGetStartTimeMs();
   long remaining = (long)startMs - (long)nowMs;
@@ -283,12 +286,30 @@ void drawRaceInfo(TinyGPSPlus &gps)
   tft.setTextColor(cdColor, BG);
   tft.drawString(cd, tft.width() / 2, 160, 4);
 
-  // Course name small
-  String courseName = raceGetCourseName();
-  if (courseName.length() > 0) {
-    if (courseName.length() > 20) courseName = courseName.substring(0, 20);
-    tft.setTextColor(GRAY, BG);
-    tft.drawString(courseName, tft.width() / 2, 185, 1);
+  // Next mark info: distance, bearing, passed
+  RaceMark m;
+  if (raceGetNextMark(m) && gps.location.isValid()) {
+    double dist = TinyGPSPlus::distanceBetween(gps.location.lat(), gps.location.lng(), m.lat, m.lon);
+    double bearing = TinyGPSPlus::courseTo(gps.location.lat(), gps.location.lng(), m.lat, m.lon);
+    double rel = bearing - (gps.course.isValid() ? gps.course.deg() : bearing);
+    while (rel > 180) rel -= 360;
+    while (rel < -180) rel += 360;
+    String markStr = "M" + String(raceGetCurrentMarkIndex()+1) + "/" + String(raceGetMarkCount());
+    String distStr = String((int)dist) + "m";
+    String bearStr = String((int)bearing) + "°";
+    String relStr = String((int)rel) + "°";
+    bool passed = (dist <= m.radius);
+    String line = markStr + " " + distStr + " " + bearStr + " (" + relStr + ")" + (passed ? " ✓" : " ●");
+    tft.setTextColor(passed ? TFT_GREEN : GRAY, BG);
+    tft.drawString(line, tft.width() / 2, 182, 1);
+    // Course name small below, or if no mark, show course name
+  } else {
+    String courseName = raceGetCourseName();
+    if (courseName.length() > 0) {
+      if (courseName.length() > 20) courseName = courseName.substring(0, 20);
+      tft.setTextColor(GRAY, BG);
+      tft.drawString(courseName, tft.width() / 2, 182, 1);
+    }
   }
 }
 

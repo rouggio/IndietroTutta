@@ -104,8 +104,12 @@ static void healthCheck()
                 const char* startTime = doc["race"] && !doc["race"].isNull() ? doc["race"]["startTime"] : nullptr;
                 const char* courseName = doc["course"] && !doc["course"].isNull() ? doc["course"]["name"] : nullptr;
                 const char* serverTime = doc["serverTime"] | "";
+                String marksJson = "";
+                if (doc["course"] && !doc["course"].isNull() && doc["course"]["marks"]) {
+                    serializeJson(doc["course"]["marks"], marksJson);
+                }
                 if (raceId && startTime) {
-                    raceUpdateFromHealth(String(raceId), String(raceName ? raceName : ""), String(raceStatus ? raceStatus : ""), String(startTime), String(courseName ? courseName : ""), String(serverTime));
+                    raceUpdateFromHealth(String(raceId), String(raceName ? raceName : ""), String(raceStatus ? raceStatus : ""), String(startTime), String(courseName ? courseName : ""), marksJson, String(serverTime));
                 } else {
                     raceClear();
                 }
