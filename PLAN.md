@@ -60,6 +60,12 @@
 
 Gate for each: `make compile` SUCCESS, `make dist` → Render live → `health`+`gps` OK → update this file.
 
+## Bruno
+- Collection: `IndietroTuttaBackend/bruno/` — keep updated as we add endpoints
+- Current: `health`, `post-gps`, `get-gps`, `devices`, `latest-gps`, `flag-position` + new `courses-templates`, `courses-list`, `courses-create`, `courses-get`, `courses-update`, `courses-delete`
+- Environments: `local` (`http://localhost:3000`) / `production` (`https://indietrotutta.onrender.com`) — always test both
+- Rule: every new `routes/*.js` endpoint gets a `bruno/*.bru` before merge
+
 ## Quick Commands
 ```sh
 # backend local
