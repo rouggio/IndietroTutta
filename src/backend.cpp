@@ -7,6 +7,8 @@
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 #include <TinyGPSPlus.h>
+#include <ArduinoJson.h>
+#include "race_store.h"
 
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
@@ -88,7 +90,29 @@ static void healthCheck()
             http.addHeader("Username", String(config.username));
         }
 
-        online = (http.GET() == HTTP_CODE_OK);
+        int code = http.GET();
+        if (code == HTTP_CODE_OK) {
+            online = true;
+            String payload = http.getString();
+            // Parse race/course for regatta mode (wireframe push)
+            DynamicJsonDocument doc(2048);
+            DeserializationError err = deserializeJson(doc, payload);
+            if (!err) {
+                const char* raceId = doc["race"] && !doc["race"].isNull() ? doc["race"]["id"] : nullptr;
+                const char* raceName = doc["race"] && !doc["race"].isNull() ? doc["race"]["name"] : nullptr;
+                const char* raceStatus = doc["race"] && !doc["race"].isNull() ? doc["race"]["status"] : nullptr;
+                const char* startTime = doc["race"] && !doc["race"].isNull() ? doc["race"]["startTime"] : nullptr;
+                const char* courseName = doc["course"] && !doc["course"].isNull() ? doc["course"]["name"] : nullptr;
+                const char* serverTime = doc["serverTime"] | "";
+                if (raceId && startTime) {
+                    raceUpdateFromHealth(String(raceId), String(raceName ? raceName : ""), String(raceStatus ? raceStatus : ""), String(startTime), String(courseName ? courseName : ""), String(serverTime));
+                } else {
+                    raceClear();
+                }
+            }
+        } else {
+            online = false;
+        }
         http.end();
     }
     else {

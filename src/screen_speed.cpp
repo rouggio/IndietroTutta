@@ -7,6 +7,7 @@
 #include "backend.h"
 #include "buttons.h"
 #include "screens.h"
+#include "race_store.h"
 
 #include "screen_speed.h"
 
@@ -248,6 +249,63 @@ void drawCourse(TinyGPSPlus &gps)
   tft.drawString(courseString, tft.width() / 2, 180, 4);
 }
 
+void drawRaceInfo(TinyGPSPlus &gps)
+{
+  if (!raceHasActive()) return;
+
+  unsigned long nowMs = getSyncedTimeMs(gps);
+  unsigned long startMs = raceGetStartTimeMs();
+  long remaining = (long)startMs - (long)nowMs;
+
+  String cd;
+  uint16_t cdColor = WHITE;
+  if (nowMs == 0) {
+    cd = "--:--";
+    cdColor = GRAY;
+  } else if (remaining <= 0 && remaining > -10000) {
+    cd = "GO!";
+    cdColor = TFT_GREEN;
+  } else if (remaining <= 0) {
+    cd = "RACING";
+    cdColor = TFT_GREEN;
+  } else {
+    cd = formatCountdown((unsigned long)remaining);
+    if (remaining < 60000) cdColor = TFT_ORANGE;
+    else if (remaining < 300000) cdColor = TFT_YELLOW;
+  }
+
+  tft.setTextColor(WHITE, BG);
+  tft.setTextDatum(MC_DATUM);
+  String raceLabel = raceGetName();
+  if (raceLabel.length() > 18) raceLabel = raceLabel.substring(0, 18);
+  tft.drawString(raceLabel, tft.width() / 2, 135, 2);
+
+  tft.setTextColor(cdColor, BG);
+  tft.drawString(cd, tft.width() / 2, 160, 4);
+
+  // Course name small
+  String courseName = raceGetCourseName();
+  if (courseName.length() > 0) {
+    if (courseName.length() > 20) courseName = courseName.substring(0, 20);
+    tft.setTextColor(GRAY, BG);
+    tft.drawString(courseName, tft.width() / 2, 185, 1);
+  }
+}
+
+void drawPosition(TinyGPSPlus &gps)
+{
+  String pos;
+  if (gps.location.isValid()) {
+    pos = String(gps.location.lat(), 4) + " " + String(gps.location.lng(), 4);
+  } else {
+    pos = "POS --";
+  }
+  tft.setTextColor(GRAY, BG);
+  tft.setTextDatum(MC_DATUM);
+  // Slightly above hint bar, small font
+  tft.drawString(pos, tft.width() / 2, 205, 1);
+}
+
 void initScreen() {
   tft.fillScreen(TFT_BLACK);
   prevWifiConnected = TriState::Unknown;
@@ -262,7 +320,19 @@ void drawScreenSpeed(TinyGPSPlus &gps, bool requiresInit)
   // Normal display
   drawTopBar(gps);
   drawSpeed(gps);
-  drawCourse(gps);
+  // Clear middle area when race mode toggles to avoid ghosting
+  static bool lastRaceActive = false;
+  bool curRaceActive = raceHasActive();
+  if (curRaceActive != lastRaceActive) {
+    tft.fillRect(0, 130, tft.width(), 85, BG);
+    lastRaceActive = curRaceActive;
+  }
+  if (curRaceActive) {
+    drawRaceInfo(gps);
+  } else {
+    drawCourse(gps);
+  }
+  drawPosition(gps);
 
   // Button hints: L/LL on the left, R/RR on the right
   tft.setTextColor(WHITE, BG);
