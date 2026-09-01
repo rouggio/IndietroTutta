@@ -34,7 +34,7 @@ static const unsigned long WIFI_ATTEMPT_TIMEOUT_MS = 12000;
 // network is added or a connection drops.
 static bool retryBlocked = false;
 static int attemptCount = 0;
-static constexpr int WIFI_MAX_ATTEMPTS = 3;
+static constexpr int WIFI_MAX_ATTEMPTS = 10;
 
 // ---------------------------------------------------------
 // Start associating with the next saved network.
@@ -449,13 +449,15 @@ void wifiLoop()
     if (retryBlocked)
         return;
 
-    const bool definitive =
+    // Only treat hard failures as definitive, and only after a short grace
+    // period so the stack has time to start the association. WL_DISCONNECTED
+    // is the normal "still trying" state — must not be considered definitive.
+    const bool hardFailure =
         status == WL_NO_SSID_AVAIL ||
-        status == WL_CONNECT_FAILED ||
-        status == WL_CONNECTION_LOST ||
-        status == WL_DISCONNECTED;
+        status == WL_CONNECT_FAILED;
+    const bool graceElapsed = millis() - attemptStartedAt >= 1500;
 
-    if (definitive ||
+    if ((hardFailure && graceElapsed) ||
         millis() - attemptStartedAt >= WIFI_ATTEMPT_TIMEOUT_MS)
     {
         if (beginNextNetwork())
