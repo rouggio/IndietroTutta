@@ -26,8 +26,19 @@
 // ---------------------------------------------------------
 
 constexpr unsigned long HEALTH_CHECK_INTERVAL = 30000;
-constexpr unsigned long GPS_TRANSMISSION_INTERVAL = 40000;
+// GPS throttling: baseline 30s at 0 knots, 2s at >=5 knots, linear in between
+constexpr unsigned long GPS_BASE_INTERVAL_MS = 30000;
+constexpr unsigned long GPS_FAST_INTERVAL_MS = 2000;
+constexpr double GPS_FAST_SPEED_KNOTS = 5.0;
 constexpr unsigned long TASK_TICK_MS = 250;
+
+static unsigned long gpsIntervalForSpeed(double speedKnots) {
+    if (speedKnots <= 0) return GPS_BASE_INTERVAL_MS;
+    if (speedKnots >= GPS_FAST_SPEED_KNOTS) return GPS_FAST_INTERVAL_MS;
+    double ratio = speedKnots / GPS_FAST_SPEED_KNOTS; // 0..1
+    double interval = GPS_BASE_INTERVAL_MS - (GPS_BASE_INTERVAL_MS - GPS_FAST_INTERVAL_MS) * ratio;
+    return (unsigned long)(interval + 0.5);
+}
 
 struct BackendWork {
     double lat;
@@ -227,7 +238,11 @@ void backendLoop(TinyGPSPlus &gps)
 {
     static unsigned long gpsTransmissionLastCheck = 0;
 
-    if (millis() - gpsTransmissionLastCheck < GPS_TRANSMISSION_INTERVAL) {
+    double speedKnots = gps.speed.isValid() ? gps.speed.knots() : 0;
+    if (speedKnots < 0) speedKnots = 0;
+    unsigned long curInterval = gpsIntervalForSpeed(speedKnots);
+
+    if (millis() - gpsTransmissionLastCheck < curInterval) {
         return;
     }
 
