@@ -33,8 +33,10 @@ static const unsigned long WIFI_ATTEMPT_TIMEOUT_MS = 12000;
 // leave the AP up for provisioning. Retry again only after a new
 // network is added or a connection drops.
 static bool retryBlocked = false;
+static unsigned long blockedSince = 0;
 static int attemptCount = 0;
 static constexpr int WIFI_MAX_ATTEMPTS = 10;
+static const unsigned long RECONNECT_RETRY_MS = 30000; // parked → retry after 30s for AP back on
 
 // ---------------------------------------------------------
 // Start associating with the next saved network.
@@ -85,6 +87,7 @@ static void preferNetwork(int index)
     retryIndex = index - 1;
     attemptStartedAt = 0;
     retryBlocked = false;
+    blockedSince = 0;
     attemptCount = 0;
 }
 
@@ -296,6 +299,7 @@ void wifiClearNetworks()
     retryIndex = -1;
     attemptCount = 0;
     retryBlocked = false;
+    blockedSince = 0;
 
     bufferedSerialPrintln("[WiFi] All saved networks cleared");
 }
@@ -349,6 +353,7 @@ void wifiInit(TinyGPSPlus& gps)
     attemptStartedAt = 0;
     attemptCount = 0;
     retryBlocked = false;
+    blockedSince = 0;
 
     startAccessPoint();
 
@@ -409,6 +414,7 @@ void wifiLoop()
 
         // Full budget for the next drop
         retryBlocked = false;
+        blockedSince = 0;
         attemptCount = 0;
 
         return;
@@ -432,6 +438,7 @@ void wifiLoop()
 
         // A fresh budget for the reconnection after a drop
         retryBlocked = false;
+        blockedSince = 0;
         attemptCount = 0;
         attemptStartedAt = 0;
     }
@@ -446,8 +453,17 @@ void wifiLoop()
     // full timeout on a negotiation that cannot succeed.
     // -----------------------------------------------------
 
-    if (retryBlocked)
-        return;
+    if (retryBlocked) {
+        if (millis() - blockedSince >= RECONNECT_RETRY_MS) {
+            bufferedSerialPrintln("[WiFi] Retrying parked networks (AP may be back)");
+            retryBlocked = false;
+            blockedSince = 0;
+            attemptCount = 0;
+            attemptStartedAt = 0;
+        } else {
+            return;
+        }
+    }
 
     // Only treat hard failures as definitive, and only after a short grace
     // period so the stack has time to start the association. WL_DISCONNECTED
@@ -465,9 +481,10 @@ void wifiLoop()
             if (++attemptCount >= WIFI_MAX_ATTEMPTS)
             {
                 retryBlocked = true;
+                blockedSince = millis();
 
                 bufferedSerialPrintln(
-                    "[WiFi] Giving up after failed attempts; "
+                    "[WiFi] Parking STA retries for 30s; "
                     "AP still up for provisioning");
             }
         }
