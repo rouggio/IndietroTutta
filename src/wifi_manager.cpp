@@ -36,7 +36,7 @@ static bool retryBlocked = false;
 static unsigned long blockedSince = 0;
 static int attemptCount = 0;
 static constexpr int WIFI_MAX_ATTEMPTS = 10;
-static const unsigned long RECONNECT_RETRY_MS = 30000; // parked → retry after 30s for AP back on
+static const unsigned long RECONNECT_RETRY_MS = 10000; // parked → retry after 10s for AP back on (was 30s)
 
 // ---------------------------------------------------------
 // Start associating with the next saved network.
@@ -484,7 +484,7 @@ void wifiLoop()
                 blockedSince = millis();
 
                 bufferedSerialPrintln(
-                    "[WiFi] Parking STA retries for 30s; "
+                    "[WiFi] Parking STA retries for 10s; "
                     "AP still up for provisioning");
             }
         }
