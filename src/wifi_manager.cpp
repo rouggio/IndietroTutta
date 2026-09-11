@@ -9,6 +9,19 @@
 
 DNSServer dns;
 
+static const char* wifiStatusToString(wl_status_t s) {
+    switch (s) {
+        case WL_IDLE_STATUS: return "IDLE";
+        case WL_NO_SSID_AVAIL: return "NO_SSID";
+        case WL_SCAN_COMPLETED: return "SCAN_COMPLETED";
+        case WL_CONNECTED: return "CONNECTED";
+        case WL_CONNECT_FAILED: return "CONNECT_FAILED";
+        case WL_CONNECTION_LOST: return "CONNECTION_LOST";
+        case WL_DISCONNECTED: return "DISCONNECTED";
+        default: return "UNKNOWN";
+    }
+}
+
 // ---------------------------------------------------------
 // Non-blocking reconnection state machine.
 //
@@ -68,12 +81,26 @@ static bool beginNextNetwork()
     }
 
     bufferedSerialPrint("[WiFi] Trying: ");
-    bufferedSerialPrintln(ssid);
+    bufferedSerialPrint(ssid);
+    bufferedSerialPrint(" (idx ");
+    bufferedSerialPrint(String(retryIndex));
+    bufferedSerialPrint(", attempt ");
+    bufferedSerialPrint(String(attemptCount+1));
+    bufferedSerialPrint("/");
+    bufferedSerialPrint(String(WIFI_MAX_ATTEMPTS));
+    bufferedSerialPrintln(")");
 
     // Non-blocking: returns immediately
     WiFi.begin(ssid, password);
 
     attemptStartedAt = millis();
+
+    // diag: log status right after begin
+    bufferedSerialPrint("[WiFi] -> status after begin: ");
+    bufferedSerialPrint(wifiStatusToString(WiFi.status()));
+    bufferedSerialPrint(" (");
+    bufferedSerialPrint(String((int)WiFi.status()));
+    bufferedSerialPrintln(")");
 
     return true;
 }
@@ -428,10 +455,13 @@ void wifiLoop()
     {
         wifiConnectedFlag = false;
 
-        bufferedSerialPrintln(
-            "[WiFi] Connection lost"
-        );
-
+        bufferedSerialPrint("[WiFi] Connection lost from: ");
+        bufferedSerialPrintln(WiFi.SSID());
+        bufferedSerialPrint("[WiFi] Last status: ");
+        bufferedSerialPrint(wifiStatusToString(status));
+        bufferedSerialPrint(" (");
+        bufferedSerialPrint(String((int)status));
+        bufferedSerialPrintln(")");
         bufferedSerialPrintln(
             "[WiFi] Searching for another saved network..."
         );
@@ -456,12 +486,70 @@ void wifiLoop()
     if (retryBlocked) {
         if (millis() - blockedSince >= RECONNECT_RETRY_MS) {
             bufferedSerialPrintln("[WiFi] Retrying parked networks (AP may be back)");
+            // diag: scan visible APs
+            {
+                int n = WiFi.scanNetworks();
+                bufferedSerialPrint("[WiFi] Scan found ");
+                bufferedSerialPrint(String(n));
+                bufferedSerialPrintln(" networks:");
+                for (int i=0;i<n && i<10;i++){
+                    bufferedSerialPrint("  - ");
+                    bufferedSerialPrint(WiFi.SSID(i));
+                    bufferedSerialPrint(" (RSSI ");
+                    bufferedSerialPrint(String(WiFi.RSSI(i)));
+                    bufferedSerialPrint(") ch ");
+                    bufferedSerialPrintln(String(WiFi.channel(i)));
+                }
+                // also log saved networks
+                int cnt = wifiNetworkCount();
+                bufferedSerialPrint("[WiFi] Saved ");
+                bufferedSerialPrint(String(cnt));
+                bufferedSerialPrintln(":");
+                for (int i=0;i<cnt;i++){
+                    char ssid[33]; if(wifiGetNetwork(i, ssid, sizeof(ssid))){
+                        bufferedSerialPrint("  * "); bufferedSerialPrintln(ssid);
+                    }
+                }
+            }
             retryBlocked = false;
             blockedSince = 0;
             attemptCount = 0;
             attemptStartedAt = 0;
         } else {
+            // diag: periodic status while parked (every ~5s)
+            static unsigned long lastParkLog=0;
+            if(millis()-lastParkLog>=5000){
+                lastParkLog=millis();
+                bufferedSerialPrint("[WiFi] Parked (");
+                bufferedSerialPrint(String((millis()-blockedSince)/1000));
+                bufferedSerialPrint("s) status=");
+                bufferedSerialPrint(wifiStatusToString(status));
+                bufferedSerialPrint(" (");
+                bufferedSerialPrint(String((int)status));
+                bufferedSerialPrintln(")");
+            }
             return;
+        }
+    }
+
+    // diag: periodic status while trying (every 2s)
+    {
+        static unsigned long lastTryLog=0;
+        static wl_status_t lastLoggedStatus=(wl_status_t)-1;
+        if(status!=lastLoggedStatus || millis()-lastTryLog>=2000){
+            lastLoggedStatus=status;
+            lastTryLog=millis();
+            bufferedSerialPrint("[WiFi] Trying status=");
+            bufferedSerialPrint(wifiStatusToString(status));
+            bufferedSerialPrint(" (");
+            bufferedSerialPrint(String((int)status));
+            bufferedSerialPrint(") for ");
+            bufferedSerialPrint(String((millis()-attemptStartedAt)/1000));
+            bufferedSerialPrint("s retryIdx=");
+            bufferedSerialPrint(String(retryIndex));
+            bufferedSerialPrint(" attempt ");
+            bufferedSerialPrint(String(attemptCount+1));
+            bufferedSerialPrintln("");
         }
     }
 
@@ -476,6 +564,16 @@ void wifiLoop()
     if ((hardFailure && graceElapsed) ||
         millis() - attemptStartedAt >= WIFI_ATTEMPT_TIMEOUT_MS)
     {
+        bufferedSerialPrint("[WiFi] Fail on idx ");
+        bufferedSerialPrint(String(retryIndex));
+        bufferedSerialPrint(" status=");
+        bufferedSerialPrint(wifiStatusToString(status));
+        bufferedSerialPrint(" after ");
+        bufferedSerialPrint(String(millis()-attemptStartedAt));
+        bufferedSerialPrint("ms hard=");
+        bufferedSerialPrint(String(hardFailure));
+        bufferedSerialPrintln("");
+
         if (beginNextNetwork())
         {
             if (++attemptCount >= WIFI_MAX_ATTEMPTS)
