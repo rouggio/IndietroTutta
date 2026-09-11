@@ -63,7 +63,30 @@ static bool beginNextNetwork()
     if (count <= 0)
         return false;
 
-    retryIndex = (retryIndex + 1) % count;
+    // auto-skip stale: scan visible APs and prefer strongest saved SSID
+    int bestIdx = -1;
+    int bestRssi = -1000;
+    {
+        int n = WiFi.scanNetworks();
+        for (int i=0;i<n;i++){
+            String seen = WiFi.SSID(i);
+            int rssi = WiFi.RSSI(i);
+            for (int j=0;j<count;j++){
+                char s[33]; char p[65];
+                if (!loadWiFiNetwork(j, s, sizeof(s), p, sizeof(p))) continue;
+                if (seen == String(s) && rssi > bestRssi){
+                    bestRssi = rssi;
+                    bestIdx = j;
+                }
+            }
+        }
+        if (bestIdx >=0){
+            retryIndex = bestIdx;
+        } else {
+            retryIndex = (retryIndex + 1) % count;
+        }
+        WiFi.scanDelete();
+    }
 
     char ssid[33];
     char password[65];
@@ -473,45 +496,12 @@ void wifiLoop()
     if (retryBlocked) {
         if (millis() - blockedSince >= RECONNECT_RETRY_MS) {
             bufferedSerialPrintln("[WiFi] Retrying parked networks (AP may be back)");
-            // diag: scan visible APs (single-line logs to avoid garble)
-            {
-                int n = WiFi.scanNetworks();
-                bufferedSerialPrintln(String("[WiFi] Scan found ") + String(n) + " networks:");
-                for (int i=0;i<n && i<10;i++){
-                    bufferedSerialPrintln(String("  - ") + WiFi.SSID(i) + " (RSSI " + String(WiFi.RSSI(i)) + ") ch " + String(WiFi.channel(i)) + " auth " + String(WiFi.encryptionType(i)));
-                }
-                // also log saved networks
-                int cnt = wifiNetworkCount();
-                bufferedSerialPrintln(String("[WiFi] Saved ") + String(cnt) + ":");
-                for (int i=0;i<cnt;i++){
-                    char ssid[33]; if(wifiGetNetwork(i, ssid, sizeof(ssid))){
-                        bufferedSerialPrintln(String("  * ") + ssid);
-                    }
-                }
-            }
             retryBlocked = false;
             blockedSince = 0;
             attemptCount = 0;
             attemptStartedAt = 0;
         } else {
-            // diag: periodic status while parked (every ~5s) — single line
-            static unsigned long lastParkLog=0;
-            if(millis()-lastParkLog>=5000){
-                lastParkLog=millis();
-                bufferedSerialPrintln(String("[WiFi] Parked (") + String((millis()-blockedSince)/1000) + "s) status=" + wifiStatusToString(status) + " (" + String((int)status) + ")");
-            }
             return;
-        }
-    }
-
-    // diag: periodic status while trying (every 2s) — single line
-    {
-        static unsigned long lastTryLog=0;
-        static wl_status_t lastLoggedStatus=(wl_status_t)-1;
-        if(status!=lastLoggedStatus || millis()-lastTryLog>=2000){
-            lastLoggedStatus=status;
-            lastTryLog=millis();
-            bufferedSerialPrintln(String("[WiFi] Trying status=") + wifiStatusToString(status) + " (" + String((int)status) + ") for " + String((millis()-attemptStartedAt)/1000) + "s retryIdx=" + String(retryIndex) + " attempt " + String(attemptCount+1));
         }
     }
 
