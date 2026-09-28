@@ -9,6 +9,19 @@
 
 DNSServer dns;
 
+static const char* wifiStatusToString(wl_status_t s) {
+    switch (s) {
+        case WL_IDLE_STATUS: return "IDLE";
+        case WL_NO_SSID_AVAIL: return "NO_SSID";
+        case WL_SCAN_COMPLETED: return "SCAN_COMPLETED";
+        case WL_CONNECTED: return "CONNECTED";
+        case WL_CONNECT_FAILED: return "CONNECT_FAILED";
+        case WL_CONNECTION_LOST: return "CONNECTION_LOST";
+        case WL_DISCONNECTED: return "DISCONNECTED";
+        default: return "UNKNOWN";
+    }
+}
+
 // ---------------------------------------------------------
 // Non-blocking reconnection state machine.
 //
@@ -33,8 +46,10 @@ static const unsigned long WIFI_ATTEMPT_TIMEOUT_MS = 12000;
 // leave the AP up for provisioning. Retry again only after a new
 // network is added or a connection drops.
 static bool retryBlocked = false;
+static unsigned long blockedSince = 0;
 static int attemptCount = 0;
-static constexpr int WIFI_MAX_ATTEMPTS = 3;
+static constexpr int WIFI_MAX_ATTEMPTS = 10;
+static const unsigned long RECONNECT_RETRY_MS = 10000; // parked → retry after 10s for AP back on (was 30s)
 
 // ---------------------------------------------------------
 // Start associating with the next saved network.
@@ -48,7 +63,30 @@ static bool beginNextNetwork()
     if (count <= 0)
         return false;
 
-    retryIndex = (retryIndex + 1) % count;
+    // auto-skip stale: scan visible APs and prefer strongest saved SSID
+    int bestIdx = -1;
+    int bestRssi = -1000;
+    {
+        int n = WiFi.scanNetworks();
+        for (int i=0;i<n;i++){
+            String seen = WiFi.SSID(i);
+            int rssi = WiFi.RSSI(i);
+            for (int j=0;j<count;j++){
+                char s[33]; char p[65];
+                if (!loadWiFiNetwork(j, s, sizeof(s), p, sizeof(p))) continue;
+                if (seen == String(s) && rssi > bestRssi){
+                    bestRssi = rssi;
+                    bestIdx = j;
+                }
+            }
+        }
+        if (bestIdx >=0){
+            retryIndex = bestIdx;
+        } else {
+            retryIndex = (retryIndex + 1) % count;
+        }
+        WiFi.scanDelete();
+    }
 
     char ssid[33];
     char password[65];
@@ -65,13 +103,19 @@ static bool beginNextNetwork()
         return false;
     }
 
-    bufferedSerialPrint("[WiFi] Trying: ");
-    bufferedSerialPrintln(ssid);
+    bufferedSerialPrintln(String("[WiFi] Trying: ") + ssid + " (idx " + String(retryIndex) + ", attempt " + String(attemptCount+1) + "/" + String(WIFI_MAX_ATTEMPTS) + ")");
 
-    // Non-blocking: returns immediately
+    // channel-change diag: clear stale BSSID/channel cache (AP may have changed channel/BSSID on reboot)
+    WiFi.disconnect(false, true);
+    delay(20);
+
+    // Non-blocking: returns immediately (forces fresh scan)
     WiFi.begin(ssid, password);
 
     attemptStartedAt = millis();
+
+    // diag: log status right after begin (single line, no garble)
+    bufferedSerialPrintln(String("[WiFi] -> status after begin: ") + wifiStatusToString(WiFi.status()) + " (" + String((int)WiFi.status()) + ")");
 
     return true;
 }
@@ -85,6 +129,7 @@ static void preferNetwork(int index)
     retryIndex = index - 1;
     attemptStartedAt = 0;
     retryBlocked = false;
+    blockedSince = 0;
     attemptCount = 0;
 }
 
@@ -296,6 +341,7 @@ void wifiClearNetworks()
     retryIndex = -1;
     attemptCount = 0;
     retryBlocked = false;
+    blockedSince = 0;
 
     bufferedSerialPrintln("[WiFi] All saved networks cleared");
 }
@@ -349,6 +395,7 @@ void wifiInit(TinyGPSPlus& gps)
     attemptStartedAt = 0;
     attemptCount = 0;
     retryBlocked = false;
+    blockedSince = 0;
 
     startAccessPoint();
 
@@ -409,6 +456,7 @@ void wifiLoop()
 
         // Full budget for the next drop
         retryBlocked = false;
+        blockedSince = 0;
         attemptCount = 0;
 
         return;
@@ -422,16 +470,15 @@ void wifiLoop()
     {
         wifiConnectedFlag = false;
 
-        bufferedSerialPrintln(
-            "[WiFi] Connection lost"
-        );
-
+        bufferedSerialPrintln(String("[WiFi] Connection lost from: ") + WiFi.SSID());
+        bufferedSerialPrintln(String("[WiFi] Last status: ") + wifiStatusToString(status) + " (" + String((int)status) + ")");
         bufferedSerialPrintln(
             "[WiFi] Searching for another saved network..."
         );
 
         // A fresh budget for the reconnection after a drop
         retryBlocked = false;
+        blockedSince = 0;
         attemptCount = 0;
         attemptStartedAt = 0;
     }
@@ -446,26 +493,40 @@ void wifiLoop()
     // full timeout on a negotiation that cannot succeed.
     // -----------------------------------------------------
 
-    if (retryBlocked)
-        return;
+    if (retryBlocked) {
+        if (millis() - blockedSince >= RECONNECT_RETRY_MS) {
+            bufferedSerialPrintln("[WiFi] Retrying parked networks (AP may be back)");
+            retryBlocked = false;
+            blockedSince = 0;
+            attemptCount = 0;
+            attemptStartedAt = 0;
+        } else {
+            return;
+        }
+    }
 
-    const bool definitive =
+    // Only treat hard failures as definitive, and only after a short grace
+    // period so the stack has time to start the association. WL_DISCONNECTED
+    // is the normal "still trying" state — must not be considered definitive.
+    const bool hardFailure =
         status == WL_NO_SSID_AVAIL ||
-        status == WL_CONNECT_FAILED ||
-        status == WL_CONNECTION_LOST ||
-        status == WL_DISCONNECTED;
+        status == WL_CONNECT_FAILED;
+    const bool graceElapsed = millis() - attemptStartedAt >= 1500;
 
-    if (definitive ||
+    if ((hardFailure && graceElapsed) ||
         millis() - attemptStartedAt >= WIFI_ATTEMPT_TIMEOUT_MS)
     {
+        bufferedSerialPrintln(String("[WiFi] Fail on idx ") + String(retryIndex) + " status=" + wifiStatusToString(status) + " after " + String(millis()-attemptStartedAt) + "ms hard=" + String(hardFailure));
+
         if (beginNextNetwork())
         {
             if (++attemptCount >= WIFI_MAX_ATTEMPTS)
             {
                 retryBlocked = true;
+                blockedSince = millis();
 
                 bufferedSerialPrintln(
-                    "[WiFi] Giving up after failed attempts; "
+                    "[WiFi] Parking STA retries for 10s; "
                     "AP still up for provisioning");
             }
         }
