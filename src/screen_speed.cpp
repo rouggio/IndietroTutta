@@ -7,7 +7,6 @@
 #include "backend.h"
 #include "buttons.h"
 #include "screens.h"
-#include "race_store.h"
 
 #include "screen_speed.h"
 
@@ -210,121 +209,117 @@ void drawTopBar(TinyGPSPlus &gps)
   tft.drawFastHLine(0, 30, tft.width(), GRAY);
 }
 
+// Right-column cache: values redrawn only on change (no flicker),
+// space-padded to overwrite narrower predecessors. Reset in initScreen().
+static String lastMaxStr = "";
+static String lastCrsStr = "";
+static String lastSesStr = "";
+
+static void drawRightValue(const String& padded, int y, uint8_t font, String& last)
+{
+  if (padded == last) return;
+  last = padded;
+  tft.setTextColor(WHITE, BG);
+  tft.setTextDatum(TR_DATUM);
+  tft.drawString(padded, tft.width() - 8, y, font);
+}
+
+static void drawRightLabel(const char* label, int y)
+{
+  tft.setTextColor(GRAY, BG);
+  tft.setTextDatum(TR_DATUM);
+  tft.drawString(label, tft.width() - 8, y, 2);
+}
+
+// Grid: same 1px GRAY as the top separator (drawTopBar).
+// Redrawn every frame over the same pixels — no flicker, no clear needed.
+static const int GRID_X = 224;
+static const int GRID_TOP = 30;
+static const int GRID_BOTTOM = 210;
+// East column: 3 equal cells between top and bottom line
+static const int GRID_ROW1 = 90;
+static const int GRID_ROW2 = 150;
+
+static void drawMainGrid()
+{
+  tft.drawFastVLine(GRID_X, GRID_TOP, GRID_BOTTOM - GRID_TOP, GRAY);
+  tft.drawFastHLine(0, GRID_BOTTOM, tft.width(), GRAY);
+  tft.drawFastHLine(GRID_X, GRID_ROW1, tft.width() - GRID_X, GRAY);
+  tft.drawFastHLine(GRID_X, GRID_ROW2, tft.width() - GRID_X, GRAY);
+}
+
 void drawSpeed(TinyGPSPlus &gps)
 {
   static const char* unitLabels[SPEED_UNITS] = { "kn", "km/h", "mph" };
+  // Session max (RAM only, resets on reboot)
+  static double sessionMaxKnots = 0.0;
+  static bool hasSessionMax = false;
 
   const double knots = gps.speed.isValid() ? gps.speed.knots() : 0.0;
 
-  double value = knots;
-  if (config.speedUnit == 1) value = knots * 1.852;      // km/h
-  else if (config.speedUnit == 2) value = knots * 1.15078; // mph
+  if (gps.speed.isValid()) {
+    hasSessionMax = true;
+    if (knots > sessionMaxKnots) sessionMaxKnots = knots;
+  }
 
+  double value = knots;
+  double maxValue = sessionMaxKnots;
+  if (config.speedUnit == 1) { value *= 1.852; maxValue *= 1.852; }         // km/h
+  else if (config.speedUnit == 2) { value *= 1.15078; maxValue *= 1.15078; } // mph
+
+  // Instant speed centered in the west grid slot
+  const int cx = GRID_X / 2;
   tft.setTextDatum(MC_DATUM);
 
   tft.setTextColor(WHITE, BG);
   String label = "SPEED (" + String(unitLabels[config.speedUnit]) + ")";
-  tft.drawString(label, tft.width() / 2, 50, 2);
+  tft.drawString(label, cx, 80, 2);
 
   tft.setTextColor(TFT_YELLOW, BG);
   if (gps.speed.isValid()) {
     String spd = " " + String(value, 1) + " ";
-    tft.drawString(spd, tft.width() / 2, 100, 8);
+    tft.drawString(spd, cx, 125, 8);
   } else {
     String spd = "  ---  ";
-    tft.drawString(spd, tft.width() / 2, 100, 8);
-  }
-}
-
-void drawCourse(TinyGPSPlus &gps)
-{
-  String bearing = gps.course.isValid() ? String((int)gps.course.deg()) : "---";
-  String dirName = gps.course.isValid() ? "(" + String(TinyGPSPlus::cardinal(gps.course.deg())) + ")" : "";
-  String courseString = "       " + bearing + dirName + "       ";
-
-  tft.setTextColor(WHITE, BG);
-  tft.setTextDatum(MC_DATUM);
-
-  tft.drawString("COURSE", tft.width() / 2, 155, 2);
-  tft.drawString(courseString, tft.width() / 2, 180, 4);
-}
-
-void drawRaceInfo(TinyGPSPlus &gps)
-{
-  if (!raceHasActive()) return;
-
-  // Check for mark rounding
-  raceCheckPass(gps);
-
-  unsigned long nowMs = getSyncedTimeMs(gps);
-  unsigned long startMs = raceGetStartTimeMs();
-  long remaining = (long)startMs - (long)nowMs;
-
-  String cd;
-  uint16_t cdColor = WHITE;
-  if (nowMs == 0) {
-    cd = "--:--";
-    cdColor = GRAY;
-  } else if (remaining <= 0 && remaining > -10000) {
-    cd = "GO!";
-    cdColor = TFT_GREEN;
-  } else if (remaining <= 0) {
-    cd = "RACING";
-    cdColor = TFT_GREEN;
-  } else {
-    cd = formatCountdown((unsigned long)remaining);
-    if (remaining < 60000) cdColor = TFT_ORANGE;
-    else if (remaining < 300000) cdColor = TFT_YELLOW;
+    tft.drawString(spd, cx, 125, 8);
   }
 
-  tft.setTextColor(WHITE, BG);
-  tft.setTextDatum(MC_DATUM);
-  String raceLabel = raceGetName();
-  if (raceLabel.length() > 18) raceLabel = raceLabel.substring(0, 18);
-  tft.drawString(raceLabel, tft.width() / 2, 135, 2);
-
-  tft.setTextColor(cdColor, BG);
-  tft.drawString(cd, tft.width() / 2, 160, 4);
-
-  // Next mark info: distance, bearing, passed
-  RaceMark m;
-  if (raceGetNextMark(m) && gps.location.isValid()) {
-    double dist = TinyGPSPlus::distanceBetween(gps.location.lat(), gps.location.lng(), m.lat, m.lon);
-    double bearing = TinyGPSPlus::courseTo(gps.location.lat(), gps.location.lng(), m.lat, m.lon);
-    double rel = bearing - (gps.course.isValid() ? gps.course.deg() : bearing);
-    while (rel > 180) rel -= 360;
-    while (rel < -180) rel += 360;
-    String markStr = "M" + String(raceGetCurrentMarkIndex()+1) + "/" + String(raceGetMarkCount());
-    String distStr = String((int)dist) + "m";
-    String bearStr = String((int)bearing) + "°";
-    String relStr = String((int)rel) + "°";
-    bool passed = (dist <= m.radius);
-    String line = markStr + " " + distStr + " " + bearStr + " (" + relStr + ")" + (passed ? " ✓" : " ●");
-    tft.setTextColor(passed ? TFT_GREEN : GRAY, BG);
-    tft.drawString(line, tft.width() / 2, 182, 1);
-    // Course name small below, or if no mark, show course name
+  // Right column: Max / Course / Session, one per equal grid cell.
+  // Labels gray, values white. No fillRect/clear on the refresh path.
+  drawRightLabel("Max", 42);
+  String maxPadded;
+  if (hasSessionMax) {
+    char maxBuf[16];
+    snprintf(maxBuf, sizeof(maxBuf), "%04.1f", maxValue);
+    maxPadded = "  " + String(maxBuf) + " ";
   } else {
-    String courseName = raceGetCourseName();
-    if (courseName.length() > 0) {
-      if (courseName.length() > 20) courseName = courseName.substring(0, 20);
-      tft.setTextColor(GRAY, BG);
-      tft.drawString(courseName, tft.width() / 2, 182, 1);
+    maxPadded = "  ---  ";
+  }
+  drawRightValue(maxPadded, 64, 4, lastMaxStr);
+
+  drawRightLabel("Course", 102);
+  String crsVal;
+  if (gps.course.isValid()) {
+    int deg = (int)gps.course.deg();
+    String full = String(deg) + " (" + String(TinyGPSPlus::cardinal(gps.course.deg())) + ")";
+    String padded = "  " + full + " ";
+    if (tft.textWidth(padded, 4) > 90) {
+      padded = "  " + String(deg) + "° ";
     }
-  }
-}
-
-void drawPosition(TinyGPSPlus &gps)
-{
-  String pos;
-  if (gps.location.isValid()) {
-    pos = String(gps.location.lat(), 4) + " " + String(gps.location.lng(), 4);
+    crsVal = padded;
   } else {
-    pos = "POS --";
+    crsVal = "  ---  ";
   }
-  tft.setTextColor(GRAY, BG);
-  tft.setTextDatum(MC_DATUM);
-  // Slightly above hint bar, small font
-  tft.drawString(pos, tft.width() / 2, 205, 1);
+  drawRightValue(crsVal, 124, 4, lastCrsStr);
+
+  drawRightLabel("Session", 162);
+  unsigned long totalSec = millis() / 1000UL;
+  unsigned long hh = totalSec / 3600UL;
+  unsigned long mm = (totalSec % 3600UL) / 60UL;
+  unsigned long ss = totalSec % 60UL;
+  char sesBuf[16];
+  snprintf(sesBuf, sizeof(sesBuf), "%02lu:%02lu:%02lu", hh, mm, ss);
+  drawRightValue("  " + String(sesBuf) + " ", 184, 2, lastSesStr);
 }
 
 void initScreen() {
@@ -332,6 +327,9 @@ void initScreen() {
   prevWifiConnected = TriState::Unknown;
   prevDataConnected = TriState::Unknown;
   prevFix = TriState::Unknown;
+  lastMaxStr = "";
+  lastCrsStr = "";
+  lastSesStr = "";
 }
 
 void drawScreenSpeed(TinyGPSPlus &gps, bool requiresInit)
@@ -341,22 +339,11 @@ void drawScreenSpeed(TinyGPSPlus &gps, bool requiresInit)
   // Normal display
   drawTopBar(gps);
   drawSpeed(gps);
-  // Clear middle area when race mode toggles to avoid ghosting
-  static bool lastRaceActive = false;
-  bool curRaceActive = raceHasActive();
-  if (curRaceActive != lastRaceActive) {
-    tft.fillRect(0, 130, tft.width(), 85, BG);
-    lastRaceActive = curRaceActive;
-  }
-  if (curRaceActive) {
-    drawRaceInfo(gps);
-  } else {
-    drawCourse(gps);
-  }
-  drawPosition(gps);
+
+  drawMainGrid();
 
   // Button hints: L/LL on the left, R/RR on the right
-  tft.setTextColor(WHITE, BG);
+  tft.setTextColor(GRAY, BG);
   tft.setTextDatum(BL_DATUM);
   tft.drawString("L Next  LL Cfg", 8, 235, 2);
   tft.setTextDatum(BR_DATUM);

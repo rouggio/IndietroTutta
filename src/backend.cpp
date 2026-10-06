@@ -7,8 +7,6 @@
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 #include <TinyGPSPlus.h>
-#include <ArduinoJson.h>
-#include "race_store.h"
 
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
@@ -96,6 +94,7 @@ static void healthCheck()
 
     if (http.begin(client, HEALTH_URL)) {
         http.addHeader("DeviceId", String(WiFi.macAddress()));
+        http.addHeader("Firmware-Version", BUILD_VERSION);
 
         if (config.username[0] != '\0') {
             http.addHeader("Username", String(config.username));
@@ -104,27 +103,6 @@ static void healthCheck()
         int code = http.GET();
         if (code == HTTP_CODE_OK) {
             online = true;
-            String payload = http.getString();
-            // Parse race/course for regatta mode (wireframe push)
-            DynamicJsonDocument doc(2048);
-            DeserializationError err = deserializeJson(doc, payload);
-            if (!err) {
-                const char* raceId = doc["race"] && !doc["race"].isNull() ? doc["race"]["id"] : nullptr;
-                const char* raceName = doc["race"] && !doc["race"].isNull() ? doc["race"]["name"] : nullptr;
-                const char* raceStatus = doc["race"] && !doc["race"].isNull() ? doc["race"]["status"] : nullptr;
-                const char* startTime = doc["race"] && !doc["race"].isNull() ? doc["race"]["startTime"] : nullptr;
-                const char* courseName = doc["course"] && !doc["course"].isNull() ? doc["course"]["name"] : nullptr;
-                const char* serverTime = doc["serverTime"] | "";
-                String marksJson = "";
-                if (doc["course"] && !doc["course"].isNull() && doc["course"]["marks"]) {
-                    serializeJson(doc["course"]["marks"], marksJson);
-                }
-                if (raceId && startTime) {
-                    raceUpdateFromHealth(String(raceId), String(raceName ? raceName : ""), String(raceStatus ? raceStatus : ""), String(startTime), String(courseName ? courseName : ""), marksJson, String(serverTime));
-                } else {
-                    raceClear();
-                }
-            }
         } else {
             online = false;
         }
@@ -154,6 +132,7 @@ static bool sendPosition(const BackendWork &w)
 
     http.addHeader("Content-Type", "application/json");
     http.addHeader("DeviceId", String(WiFi.macAddress()));
+    http.addHeader("Firmware-Version", BUILD_VERSION);
 
     String body = "{";
     body += "\"lat\":" + String(w.lat, 7);
@@ -163,6 +142,7 @@ static bool sendPosition(const BackendWork &w)
     body += ",\"altitude\":" + String(w.altitude, 1);
     body += ",\"sats\":" + String(w.sats);
     body += ",\"flagged\":" + String(w.flagged ? "true" : "false");
+    body += ",\"fw\":\"" BUILD_VERSION "\"";
 
     if (config.username[0] != '\0') {
         body += ",\"username\":\"" + String(config.username) + "\"";
