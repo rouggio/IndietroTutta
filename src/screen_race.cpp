@@ -593,7 +593,7 @@ static void drawRaceText(TinyGPSPlus& gps)
     tft.setTextDatum(BL_DATUM);
     tft.drawString("L Next", 8, 235, 2);
     tft.setTextDatum(BR_DATUM);
-    tft.drawString("R Sync RR View", tft.width() - 8, 235, 2);
+    tft.drawString("R View RR Sync", tft.width() - 8, 235, 2);
 }
 
 void drawScreenRace(TinyGPSPlus &gps, bool requiresInit)
@@ -618,17 +618,16 @@ void screenRaceButton(Button button, ButtonEvent event)
         nextScreen();
         return;
     }
-    // Right short: re-poll health now (pull a freshly pushed session
+    // Right short: cycle views — north-up → bearing-up → best-fit.
+    // Right long: re-poll health now (pull a freshly pushed session
     // without waiting for the 30s tick).
     if (button == Button::Right && event == ButtonEvent::ShortPress) {
-        backendPollHealthNow();
-        return;
-    }
-    // Right long: cycle views — north-up → bearing-up → best-fit.
-    // Full clear is a user gesture, so a one-time redraw is acceptable.
-    if (button == Button::Right && event == ButtonEvent::LongPress) {
         viewMode = (viewMode + 1) % 3;
         redrawCurrentPage();
+        return;
+    }
+    if (button == Button::Right && event == ButtonEvent::LongPress) {
+        backendPollHealthNow();
         return;
     }
 }
