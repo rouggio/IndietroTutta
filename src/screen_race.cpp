@@ -378,6 +378,44 @@ static void drawRaceMap(TinyGPSPlus& gps)
     }
 }
 
+static int fontPxH(uint8_t font)
+{
+    // Classic TFT_eSPI fonts used here: 2 = 16px, 4 = 26px.
+    return font == 4 ? 26 : 16;
+}
+
+// Change-detect text: redraws (with exact-extent erase) only when the
+// content actually changes. All call sites sit on solid backgrounds
+// (header black, strip solid), so erase-then-draw never smears.
+static void drawSmart(int x, int y, uint8_t font, int datum, uint16_t color,
+                      const char* txt, char* last, size_t lastLen, int16_t& lastW)
+{
+    if (strcmp(txt, last) == 0) return;
+    tft.setTextDatum(datum);
+    const int h = fontPxH(font);
+    int ex = x, ey = y;
+    if (datum == TC_DATUM) ex = x - lastW / 2;
+    else if (datum == TR_DATUM) ex = x - lastW;
+    else if (datum == BL_DATUM) ey = y - h;
+    else if (datum == BR_DATUM) { ex = x - lastW; ey = y - h; }
+    if (lastW > 0) tft.fillRect(ex, ey, lastW, h, RBG);
+    tft.setTextColor(color, RBG);
+    lastW = tft.drawString(txt, x, y, font);
+    strncpy(last, txt, lastLen - 1);
+    last[lastLen - 1] = '\0';
+}
+
+static char lastCd[12] = {0};
+static int16_t lastCdW = 0;
+static char lastTag[8] = {0};
+static int16_t lastTagW = 0;
+static char lastPrac[8] = {0};
+static int16_t lastPracW = 0;
+static char lastRow[24] = {0};
+static int16_t lastRowW = 0;
+static char lastMode[8] = {0};
+static int16_t lastModeW = 0;
+
 static void drawRaceText(TinyGPSPlus& gps)
 {
     // Header: countdown center, next-passage tag right (bright white).
@@ -417,12 +455,23 @@ static void drawRaceText(TinyGPSPlus& gps)
     tft.drawString(raceSession.valid ? (isRace ? "RACE" : "PRAC") : "----", 8, 184, 2);
 
     tft.setTextColor(RFG, RBG);
-    tft.setTextDatum(TC_DATUM);
-    char row[24];
+    char bbuf[8], dbuf[14];
+    bool showBrg = false;
+    // Strip layout changes between centered messages and the split bearing
+    // view — clear the text band once on transition (rare, never per-pass).
+    static int lastStripMode = -1;
+    const int stripMode = (!raceSession.valid || !gps.location.isValid()) ? 0 : (haveDest ? 1 : 0);
+    if (stripMode != lastStripMode) {
+        tft.fillRect(8, STRIP_Y0, MAP_W - 16, STRIP_Y1 - STRIP_Y0, RBG);
+        tft.drawFastHLine(MAP_X, STRIP_Y0, MAP_W, RDIM);
+        lastStripMode = stripMode;
+    }
     if (!raceSession.valid) {
-        snprintf(row, sizeof(row), "NO COURSE       ");
+        tft.setTextDatum(TC_DATUM);
+        tft.drawString("NO COURSE       ", 170, 182, 4);
     } else if (!gps.location.isValid()) {
-        snprintf(row, sizeof(row), "NO FIX          ");
+        tft.setTextDatum(TC_DATUM);
+        tft.drawString("NO FIX          ", 170, 182, 4);
     } else if (haveDest) {
         const double dist = TinyGPSPlus::distanceBetween(
             gps.location.lat(), gps.location.lng(), dLat, dLon);
@@ -431,11 +480,24 @@ static void drawRaceText(TinyGPSPlus& gps)
         if (brg < 0) brg += 360.0;
         if (brg >= 360.0) brg -= 360.0;
         const long d = (long)dist > 9999 ? 9999 : (long)dist;
-        snprintf(row, sizeof(row), " %3d° %4ldm   ", (int)brg, d);
+        // Bearing right-aligned ending at x=158, degree ring drawn at the
+        // fixed slot (the font has no ° glyph), distance from x=178.
+        snprintf(bbuf, sizeof(bbuf), "%3d", (int)brg);
+        snprintf(dbuf, sizeof(dbuf), "%4ldm   ", d);
+        tft.setTextDatum(TR_DATUM);
+        tft.drawString(bbuf, 158, 182, 4);
+        tft.drawCircle(168, 188, 2, RFG);
+        tft.setTextDatum(TL_DATUM);
+        tft.drawString(dbuf, 178, 182, 4);
+        showBrg = true;
     } else {
-        snprintf(row, sizeof(row), " ---           ");
+        tft.setTextDatum(TC_DATUM);
+        tft.drawString(" ---           ", 170, 182, 4);
     }
-    tft.drawString(row, 170, 182, 4);
+    if (!showBrg) {
+        // Erase a stale ring when leaving the bearing view.
+        tft.drawCircle(168, 188, 2, RBG);
+    }
 
     tft.setTextColor(RDIM, RBG);
     tft.setTextDatum(TR_DATUM);

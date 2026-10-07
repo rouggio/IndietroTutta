@@ -308,14 +308,18 @@ void drawSpeed(TinyGPSPlus &gps)
   drawRightLabel("Course", 99);
   String crsVal;
   if (gps.course.isValid()) {
-    // Fixed-width (3-digit field) so shrinking bearings fully overwrite
+    // Fixed-width (3-digit field) so shrinking bearings fully overwrite.
+    // No trailing spaces: the string always ends at the anchor, where the
+    // degree ring is drawn (the font has no ° glyph — ring is drawn).
     String deg = String((int)gps.course.deg());
     while (deg.length() < 3) deg = " " + deg;
-    crsVal = "  " + deg + "°  ";
+    crsVal = "     " + deg;
   } else {
-    crsVal = "  ---  ";
+    crsVal = "   ---  ";
   }
   drawRightValue(crsVal, 121, 4, lastCrsStr);
+  // Degree ring at a fixed spot right of the digits (erased when invalid).
+  tft.drawCircle(tft.width() - 3, 127, 2, gps.course.isValid() ? TFT_WHITE : BG);
 
   drawRightLabel("Session", 159);
   unsigned long totalSec = millis() / 1000UL;
