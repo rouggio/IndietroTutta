@@ -231,14 +231,65 @@ static void drawRaceText(TinyGPSPlus& gps)
         tft.drawString("S--", 312, 4, 2);
     }
 
-    // Next-mark row (Step 3: marks[0]; sequencing arrives in Step 5).
+    // Next-passage row. Pre-start the next passage is the START (line, else
+    // start point, else marks[0]); after the gun the marks take over in
+    // order (auto-advance arrives with pass detection in Step 4/5).
     tft.setTextColor(RFG, RBG);
     tft.setTextDatum(TL_DATUM);
     char row[32];
-    if (!raceSession.valid || raceSession.markCount == 0) {
+    const long nowMark = raceGpsEpoch(gps);
+    const bool preStart = !raceSession.valid ? true :
+        (raceSession.startTime <= 0 || nowMark <= 0 ||
+         (raceSession.startTime + raceSession.startOffsetSec) > nowMark);
+    if (!raceSession.valid || (raceSession.markCount == 0 && !raceSession.startLine.valid)) {
         snprintf(row, sizeof(row), "NO COURSE            ");
     } else if (!gps.location.isValid()) {
         snprintf(row, sizeof(row), "NO FIX               ");
+    } else if (preStart) {
+        // Nearest point on the start segment (or the start point mark).
+        double tgtLat = 0.0, tgtLon = 0.0, lineDist = -1.0;
+        bool haveLine = false;
+        if (raceSession.startLine.valid) {
+            // Equirectangular projection around the boat, meters.
+            const double lat0 = gps.location.lat();
+            const double cosLat = cos(lat0 * M_PI / 180.0);
+            const double ax = (raceSession.startLine.lonA - gps.location.lng()) * DEG_M * cosLat;
+            const double ay = (raceSession.startLine.latA - lat0) * DEG_M;
+            const double cx = (raceSession.startLine.lonB - gps.location.lng()) * DEG_M * cosLat;
+            const double cy = (raceSession.startLine.latB - lat0) * DEG_M;
+            const double dx = cx - ax, dy = cy - ay;
+            const double len2 = dx * dx + dy * dy;
+            double t = 0.0;
+            if (len2 > 1.0) {
+                t = -((ax * dx + ay * dy) / len2);
+                if (t < 0.0) t = 0.0;
+                if (t > 1.0) t = 1.0;
+            }
+            const double nx = ax + t * dx, ny = ay + t * dy;
+            lineDist = sqrt(nx * nx + ny * ny);
+            // Back to lat/lon for the bearing.
+            tgtLat = lat0 + (ny / DEG_M);
+            tgtLon = gps.location.lng() + (nx / (DEG_M * (cosLat < 0.2 ? 0.2 : cosLat)));
+            haveLine = true;
+        }
+        if (!haveLine) {
+            // Fall back to the start point mark, else marks[0].
+            const RaceMark* sm = nullptr;
+            for (uint8_t i = 0; i < raceSession.markCount; i++) {
+                if (raceSession.marks[i].type == RaceMarkStart) { sm = &raceSession.marks[i]; break; }
+            }
+            if (!sm && raceSession.markCount > 0) sm = &raceSession.marks[0];
+            if (sm) { tgtLat = sm->lat; tgtLon = sm->lon; }
+        }
+        const double dist = haveLine ? lineDist : TinyGPSPlus::distanceBetween(
+            gps.location.lat(), gps.location.lng(), tgtLat, tgtLon);
+        double brg = TinyGPSPlus::courseTo(
+            gps.location.lat(), gps.location.lng(), tgtLat, tgtLon);
+        if (brg < 0) brg += 360.0;
+        if (brg >= 360.0) brg -= 360.0;
+        const long d = (long)dist > 9999 ? 9999 : (long)dist;
+        snprintf(row, sizeof(row), "ST %3d %4ldm     ",
+                 (int)brg, d);
     } else {
         const RaceMark& m = raceSession.marks[0];
         const double dist = TinyGPSPlus::distanceBetween(
