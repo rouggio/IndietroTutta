@@ -386,6 +386,13 @@ static void drawRaceMap(TinyGPSPlus& gps, bool full)
         if (millis() - lastMapDraw < 1000) return;
         full = true;
     }
+    // Fix gain/loss changes the in-frame NO FIX overlay — full path redraws it.
+    static bool lastFixOk = false;
+    const bool fixOk = gps.location.isValid();
+    if (fixOk != lastFixOk) {
+        full = true;
+        lastFixOk = fixOk;
+    }
     if (full) {
         tft.fillRect(MAP_X, MAP_Y, MAP_W, WIRE_Y1 - MAP_Y, RBG);
         tft.drawRect(MAP_X, MAP_Y, MAP_W, STRIP_Y1 - MAP_Y, RDIM);
@@ -393,6 +400,13 @@ static void drawRaceMap(TinyGPSPlus& gps, bool full)
         oldRotEff = rotEff;
         lastMapDraw = millis();
         dynOk = false;
+        // NO FIX overlay, top-right inside the frame (full path only, so it
+        // never smears the wireframe underneath).
+        if (!fixOk) {
+            tft.setTextDatum(TR_DATUM);
+            tft.setTextColor(TFT_YELLOW, RBG);
+            tft.drawString("NO FIX", MAP_X + MAP_W - 8, MAP_Y + 6, 2);
+        }
     }
 
     // Boat: triangle on the chart, or a projected dot on the frame edge.
@@ -543,7 +557,7 @@ static void drawRaceText(TinyGPSPlus& gps)
     // clear the band once on transition, then draw everything change-detect.
     static int lastStripMode = -1;
     static bool lastShowBrg = false;
-    const int stripMode = (!raceSession.valid || !gps.location.isValid()) ? 0 : (haveDest ? 1 : 0);
+    const int stripMode = !raceSession.valid ? 0 : 1;
     if (stripMode != lastStripMode) {
         tft.fillRect(8, STRIP_Y0, MAP_W - 16, STRIP_Y1 - STRIP_Y0, RBG);
         lastMsg[0] = 0; lastMsgW = 0;
@@ -560,9 +574,7 @@ static void drawRaceText(TinyGPSPlus& gps)
     bool showBrg = false;
     if (!raceSession.valid) {
         drawSmart(170, 182, 4, TC_DATUM, RFG, "NO COURSE       ", lastMsg, sizeof(lastMsg), lastMsgW);
-    } else if (!gps.location.isValid()) {
-        drawSmart(170, 182, 4, TC_DATUM, RFG, "NO FIX          ", lastMsg, sizeof(lastMsg), lastMsgW);
-    } else if (haveDest) {
+    } else if (haveDest && gps.location.isValid()) {
         const double dist = TinyGPSPlus::distanceBetween(
             gps.location.lat(), gps.location.lng(), dLat, dLon);
         double brg = TinyGPSPlus::courseTo(
