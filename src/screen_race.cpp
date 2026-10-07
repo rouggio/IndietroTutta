@@ -23,7 +23,8 @@ static const int HDR_H = 28;
 static const int MAP_X = 2;
 static const int MAP_Y = 30;
 static const int MAP_W = 316;
-static const int WIRE_Y1 = 178;   // wire area: MAP_Y..WIRE_Y1
+static const int WIRE_TOP = 58;   // course wire area starts here (speed zone above)
+static const int WIRE_Y1 = 178;   // wire area: WIRE_TOP..WIRE_Y1
 static const int STRIP_Y0 = 180;  // data strip: STRIP_Y0..208
 static const int STRIP_Y1 = 208;
 
@@ -129,14 +130,14 @@ static void buildProjection(RaceProj& p, double rotDeg)
     if (spanY < 0.0005) spanY = 0.0005;
     const int pad = 10;
     const int ww = MAP_W - 2 * pad;
-    const int wh = (WIRE_Y1 - MAP_Y) - 2 * pad;
+    const int wh = (WIRE_Y1 - WIRE_TOP) - 2 * pad;
     const double sx = ww / spanX;
     const double sy = wh / spanY;
     p.scale = sx < sy ? sx : sy;
     p.rcx = (rminx + rmaxx) / 2.0;
     p.rcy = (rminy + rmaxy) / 2.0;
     p.ox = MAP_X + MAP_W / 2;
-    p.oy = MAP_Y + (WIRE_Y1 - MAP_Y) / 2;
+    p.oy = WIRE_TOP + (WIRE_Y1 - WIRE_TOP) / 2;
     p.ok = true;
 }
 
@@ -221,7 +222,7 @@ static void drawDashed(int x0, int y0, int x1, int y1, uint16_t color)
 // Returns false when already inside.
 static bool clampToWire(int cx, int cy, int& x, int& y)
 {
-    const int x0 = MAP_X + 5, y0 = MAP_Y + 5;
+    const int x0 = MAP_X + 5, y0 = WIRE_TOP + 5;
     const int x1 = MAP_X + MAP_W - 5, y1 = WIRE_Y1 - 5;
     if (x >= x0 && x <= x1 && y >= y0 && y <= y1) return false;
     const double dx = (double)(x - cx), dy = (double)(y - cy);
@@ -342,12 +343,12 @@ static void drawRaceMap(TinyGPSPlus& gps, bool full)
 {
     if (!raceSession.valid) {
         if (full) {
-            tft.fillRect(MAP_X, MAP_Y, MAP_W, WIRE_Y1 - MAP_Y, RBG);
+            tft.fillRect(MAP_X, WIRE_TOP, MAP_W, WIRE_Y1 - WIRE_TOP, RBG);
             tft.drawRect(MAP_X, MAP_Y, MAP_W, STRIP_Y1 - MAP_Y, RDIM);
             tft.setTextDatum(MC_DATUM);
             tft.setTextColor(RDIM, RBG);
-            tft.drawString("NO COURSE", MAP_X + MAP_W / 2, MAP_Y + (WIRE_Y1 - MAP_Y) / 2, 4);
-            tft.drawString("assign a session", MAP_X + MAP_W / 2, MAP_Y + (WIRE_Y1 - MAP_Y) / 2 + 28, 2);
+            tft.drawString("NO COURSE", MAP_X + MAP_W / 2, WIRE_TOP + (WIRE_Y1 - WIRE_TOP) / 2, 4);
+            tft.drawString("assign a session", MAP_X + MAP_W / 2, WIRE_TOP + (WIRE_Y1 - WIRE_TOP) / 2 + 28, 2);
         }
         dynOk = false;
         return;
@@ -405,7 +406,7 @@ static void drawRaceMap(TinyGPSPlus& gps, bool full)
         lastFixOk = fixOk;
     }
     if (full) {
-        tft.fillRect(MAP_X, MAP_Y, MAP_W, WIRE_Y1 - MAP_Y, RBG);
+        tft.fillRect(MAP_X, WIRE_TOP, MAP_W, WIRE_Y1 - WIRE_TOP, RBG);
         tft.drawRect(MAP_X, MAP_Y, MAP_W, STRIP_Y1 - MAP_Y, RDIM);
         drawStaticLayer(p, rotEff);
         oldRotEff = rotEff;
@@ -430,7 +431,7 @@ static void drawRaceMap(TinyGPSPlus& gps, bool full)
     double ang = 0.0;
     if (gps.location.isValid()) {
         projToPx(p, gps.location.lat(), gps.location.lng(), px, py);
-        const int cx = MAP_X + MAP_W / 2, cy = MAP_Y + (WIRE_Y1 - MAP_Y) / 2;
+        const int cx = MAP_X + MAP_W / 2, cy = WIRE_TOP + (WIRE_Y1 - WIRE_TOP) / 2;
         bx = px; by = py;
         isDot = clampToWire(cx, cy, bx, by);
         haveBoat = true;
@@ -525,9 +526,13 @@ static int16_t lastDbufW = 0;
 static char lastMsg[24] = {0};
 static int16_t lastMsgW = 0;
 
+static char lastSpd[10] = {0};
+static int16_t lastSpdW = 0;
+
 static void resetRaceText()
 {
     // Called on full clears so change-detect redraws everything next pass.
+    lastSpd[0] = 0; lastSpdW = 0;
     lastCd[0] = 0; lastCdW = 0;
     lastTag[0] = 0; lastTagW = 0;
     lastPrac[0] = 0; lastPracW = 0;
@@ -539,6 +544,16 @@ static void resetRaceText()
 
 static void drawRaceText(TinyGPSPlus& gps)
 {
+    // Instant speed, big white, top-left frame corner (dedicated solid zone).
+    char spd[10];
+    if (gps.speed.isValid()) {
+        snprintf(spd, sizeof(spd), "%4.1fkn", gps.speed.knots());
+    } else {
+        snprintf(spd, sizeof(spd), "  ---  ");
+    }
+    drawSmart(8, 31, 4, TL_DATUM, RFG, spd, lastSpd, sizeof(lastSpd), lastSpdW);
+
+    // Header: countdown center, next-passage tag right (bright white).
     // Header: countdown center, next-passage tag right (bright white).
     char cd[12];
     const long now = raceGpsEpoch(gps);
