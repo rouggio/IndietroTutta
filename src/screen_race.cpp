@@ -1,6 +1,7 @@
 #include "screen_race.h"
 #include "screens.h"
 #include "race_session.h"
+#include "race_run.h"
 #include "backend.h"
 #include "gps_mock.h"
 
@@ -237,24 +238,15 @@ static bool clampToWire(int cx, int cy, int& x, int& y)
     return true;
 }
 
-// Start-crossing state (owned by the tracker below; read by nextDestination).
-static int lastSide = 0;      // +1/-1, 0 unknown
-static int gunSide = 0;       // side at the gun (pre-start reference)
-static bool hasGunSide = false;
-static bool raceStarted = false;
-static long raceStartEpoch = 0;
-static bool ocsNow = false;
-
 // Next destination: pre-start it's the start (line center, else start
-// point, else marks[0]); after the gun it's marks[0] (gates resolve to
-// the pair center). Fills tag ("ST" / "1G") and position.
+// point, else the current target); racing it's marks[progIdx] (gates resolve
+// to the pair center); finished it's the finish ("FIN"). Fills tag.
 static bool nextDestination(TinyGPSPlus& gps, double& lat, double& lon, char* tag, size_t tagLen)
 {
     (void)gps;
     if (!raceSession.valid) return false;
-    const long now = raceGpsEpoch(gps);
-    const bool preStart = (raceSession.startTime <= 0 || now <= 0 ||
-        (raceSession.startTime + raceSession.startOffsetSec) > now || !raceStarted);
+    const long gun = raceGunEpoch();
+    const bool preStart = (gun <= 0 || !raceRunStarted());
     if (preStart) {
         if (raceSession.startLine.valid) {
             lat = (raceSession.startLine.latA + raceSession.startLine.latB) / 2.0;
@@ -272,7 +264,25 @@ static bool nextDestination(TinyGPSPlus& gps, double& lat, double& lon, char* ta
         }
     }
     if (raceSession.markCount == 0) return false;
-    uint8_t idx = 0;
+    if (raceRunFinished()) {
+        const RaceSeg* fin = nullptr;
+        if (raceSession.finishSameAsStart && raceSession.startLine.valid) {
+            lat = (raceSession.startLine.latA + raceSession.startLine.latB) / 2.0;
+            lon = (raceSession.startLine.lonA + raceSession.startLine.lonB) / 2.0;
+        } else if (raceSession.finishLine.valid) {
+            fin = &raceSession.finishLine;
+            lat = (fin->latA + fin->latB) / 2.0;
+            lon = (fin->lonA + fin->lonB) / 2.0;
+        } else {
+            const RaceMark& last = raceSession.marks[raceSession.markCount - 1];
+            lat = last.lat;
+            lon = last.lon;
+        }
+        snprintf(tag, tagLen, "FIN ");
+        return true;
+    }
+    uint8_t idx = raceProgIdx();
+    if (idx >= raceSession.markCount) idx = raceSession.markCount - 1;
     const RaceMark& m = raceSession.marks[idx];
     if (m.type == RaceMarkGate && m.gate[0]) {
         // Pair center: find the sibling buoy.
@@ -537,6 +547,18 @@ static int16_t lastMsgW = 0;
 static char lastSpd[10] = {0};
 static int16_t lastSpdW = 0;
 
+// Last GPS epoch seen on this page (buttons have no gps handle).
+static long lastGpsNow = 0;
+// Transient header message (duration cycling), 2s.
+static char transientMsg[12] = {0};
+static unsigned long transientUntil = 0;
+static void showTransient(const char* msg)
+{
+    strncpy(transientMsg, msg, sizeof(transientMsg) - 1);
+    transientMsg[sizeof(transientMsg) - 1] = '\0';
+    transientUntil = millis() + 2000;
+}
+
 static void resetRaceText()
 {
     // Called on full clears so change-detect redraws everything next pass.
@@ -548,106 +570,6 @@ static void resetRaceText()
     lastDbuf[0] = 0; lastDbufW = 0;
     lastMsg[0] = 0; lastMsgW = 0;
     lastMode[0] = 0; lastModeW = 0;
-}
-
-// Start-crossing tracker (display-level; the Step 5 engine refines it).
-// Side of the start segment per fix; a bounded flip starts the race clock,
-// a pre-gun flip raises OCS. Point-start courses fall back to gun time.
-static void resetStartState()
-{
-    lastSide = 0; gunSide = 0; hasGunSide = false;
-    raceStarted = false; raceStartEpoch = 0; ocsNow = false;
-}
-
-// +1/-1 by cross-product sign vs the start segment (boat-relative ENU).
-// 0 when there is no start line.
-static int lineSide(double lat, double lon)
-{
-    if (!raceSession.startLine.valid) return 0;
-    const RaceSeg& s = raceSession.startLine;
-    const double cosLat = cos(lat * M_PI / 180.0);
-    const double ax = (s.lonA - lon) * DEG_M * cosLat;
-    const double ay = (s.latA - lat) * DEG_M;
-    const double dx = (s.lonB - s.lonA) * DEG_M * cosLat;
-    const double dy = (s.latB - s.latA) * DEG_M;
-    const double cross = dx * (-ay) - dy * (-ax);
-    if (cross == 0.0) return lastSide;
-    return cross > 0.0 ? 1 : -1;
-}
-
-// Meters from the boat to the start segment. -1 when there is no line.
-static double lineDistM(double lat, double lon)
-{
-    if (!raceSession.startLine.valid) return -1.0;
-    const RaceSeg& s = raceSession.startLine;
-    const double cosLat = cos(lat * M_PI / 180.0);
-    const double ax = (s.lonA - lon) * DEG_M * cosLat;
-    const double ay = (s.latA - lat) * DEG_M;
-    const double bx = (s.lonB - lon) * DEG_M * cosLat;
-    const double by = (s.latB - lat) * DEG_M;
-    const double dx = bx - ax, dy = by - ay;
-    const double len2 = dx * dx + dy * dy;
-    double t = 0.0;
-    if (len2 > 1.0) {
-        t = -(ax * dx + ay * dy) / len2;
-        if (t < 0.0) t = 0.0;
-        if (t > 1.0) t = 1.0;
-    }
-    const double nx = ax + t * dx, ny = ay + t * dy;
-    return sqrt(nx * nx + ny * ny);
-}
-
-static void updateStartState(TinyGPSPlus& gps)
-{
-    if (!raceSession.valid || !gps.location.isValid()) return;
-    const long now = raceGpsEpoch(gps);
-    if (now <= 0) return;
-    // Point-start fallback: the gun starts the clock (no geometry to judge).
-    if (!raceSession.startLine.valid) {
-        if (raceSession.startTime > 0 && now >= raceSession.startTime + raceSession.startOffsetSec) {
-            raceStarted = true;
-            raceStartEpoch = raceSession.startTime + raceSession.startOffsetSec;
-        }
-        return;
-    }
-    if (raceSession.startTime <= 0) return; // practice not started yet
-    const long gun = raceSession.startTime + raceSession.startOffsetSec;
-    const double lat = gps.location.lat(), lon = gps.location.lng();
-    const int side = lineSide(lat, lon);
-    const double dist = lineDistM(lat, lon);
-    const bool near = dist >= 0.0 && dist < 150.0;
-    if (side == 0) return;
-    if (now < gun) {
-        gunSide = side;
-        hasGunSide = true;
-        if (near && lastSide != 0 && side != lastSide) ocsNow = true;
-    } else if (!raceStarted) {
-        if (near && hasGunSide && lastSide != 0 && side != lastSide && side != gunSide) {
-            raceStarted = true; // proper re-cross after the gun
-            raceStartEpoch = now;
-            ocsNow = false;
-        } else if (now - gun > 60) {
-            // Late joiner past the line unseen: course side + a minute past
-            // the gun means the start was missed, not pending.
-            int courseSide = 0;
-            if (raceSession.markCount > 0) {
-                const RaceMark& m = raceSession.marks[0];
-                const RaceSeg& s = raceSession.startLine;
-                const double cosLat = cos(lat * M_PI / 180.0);
-                const double dx = (s.lonB - s.lonA) * DEG_M * cosLat;
-                const double dy = (s.latB - s.latA) * DEG_M;
-                const double mx = (m.lon - s.lonA) * DEG_M * cosLat;
-                const double my = (m.lat - s.latA) * DEG_M;
-                const double c = dx * my - dy * mx;
-                courseSide = c >= 0.0 ? 1 : -1;
-            }
-            if (courseSide != 0 && side == courseSide && (!hasGunSide || side != gunSide)) {
-                raceStarted = true;
-                raceStartEpoch = gun;
-            }
-        }
-    }
-    lastSide = side;
 }
 
 static void drawRaceText(TinyGPSPlus& gps)
@@ -665,15 +587,19 @@ static void drawRaceText(TinyGPSPlus& gps)
     // Header: countdown pre-gun, GO/OCS while pending, elapsed once started.
     char cd[12];
     const long now = raceGpsEpoch(gps);
-    if (raceSession.valid && raceSession.startTime > 0 && now > 0) {
-        const long gun = raceSession.startTime + raceSession.startOffsetSec;
+    lastGpsNow = now;
+    const long gun = raceGunEpoch();
+    if (millis() < transientUntil && transientMsg[0]) {
+        snprintf(cd, sizeof(cd), "%-8.8s", transientMsg);
+    } else if (raceSession.valid && gun > 0 && now > 0) {
         if (now < gun) {
             const long rem = gun - now;
             snprintf(cd, sizeof(cd), " %2ld:%02ld  ", rem / 60, rem % 60);
-        } else if (!raceStarted) {
-            snprintf(cd, sizeof(cd), ocsNow ? "OCS     " : "   GO   ");
+        } else if (!raceRunStarted()) {
+            snprintf(cd, sizeof(cd), raceRunOcs() ? "OCS     " : "   GO   ");
         } else {
-            const long el = now - raceStartEpoch;
+            const long base = raceRunFinished() && raceRunEndEpoch() > 0 ? raceRunEndEpoch() : now;
+            const long el = base - raceRunStartEpoch();
             snprintf(cd, sizeof(cd), "+%2ld:%02ld  ", el / 60, el % 60);
         }
     } else {
@@ -737,12 +663,12 @@ static void drawRaceText(TinyGPSPlus& gps)
     const char* viewTxt = gEffMode == 1 ? "BRG " : (gEffMode == 2 ? "FIT " : "N-UP");
     drawSmart(312, 184, 2, TR_DATUM, RDIM, viewTxt, lastMode, sizeof(lastMode), lastModeW);
 
-    // Hint bar.
+    // Hint bar (mode-dependent, fixed widths so re-modes overwrite cleanly).
     tft.setTextColor(RDIM, RBG);
     tft.setTextDatum(BL_DATUM);
-    tft.drawString("L Next", 8, 235, 2);
+    tft.drawString(isRace ? "L Next LL Sync" : "L Next LL Go  ", 8, 235, 2);
     tft.setTextDatum(BR_DATUM);
-    tft.drawString("R View RR Sync", tft.width() - 8, 235, 2);
+    tft.drawString(isRace ? "R --- RR View " : "R Dur RR View ", tft.width() - 8, 235, 2);
 }
 
 void drawScreenRace(TinyGPSPlus &gps, bool requiresInit)
@@ -751,18 +677,21 @@ void drawScreenRace(TinyGPSPlus &gps, bool requiresInit)
         tft.fillScreen(RBG);
         lastRaceCourseKey = -2; // force map redraw
         resetRaceText();
-        resetStartState();
+        raceRunReset();
     }
     const int key = raceCourseKey();
     const bool courseChanged = (key != lastRaceCourseKey);
     if (courseChanged) {
         lastRaceCourseKey = key;
-        resetStartState();
+        raceRunReset();
     }
-    updateStartState(gps);
+    raceRunUpdate(gps);
     drawRaceMap(gps, requiresInit || courseChanged);
     drawRaceText(gps);
 }
+
+// Transient duration banner for LL cycling ("SET 3:00", 2s).
+static unsigned long durMsgUntil = 0;
 
 void screenRaceButton(Button button, ButtonEvent event)
 {
@@ -770,16 +699,42 @@ void screenRaceButton(Button button, ButtonEvent event)
         nextScreen();
         return;
     }
-    // Right short: cycle views — north-up → bearing-up → best-fit.
-    // Right long: re-poll health now (pull a freshly pushed session
-    // without waiting for the 30s tick).
-    if (button == Button::Right && event == ButtonEvent::ShortPress) {
-        viewMode = (viewMode + 1) % 3;
-        redrawCurrentPage();
+    const bool isPractice = !(raceSession.valid && strcmp(raceSession.mode, "race") == 0);
+    // Left long: the action button. Practice → start/reset the local run
+    // (mirrors LL-flag on Waypoints); race → health resync now.
+    if (button == Button::Left && event == ButtonEvent::LongPress) {
+        if (isPractice) {
+            if (!raceRunStarted() && !raceRunFinished() && raceGunEpoch() > 0) {
+                raceRunReset(); // gun set, not started: LL clears it
+            } else if (!raceRunStarted() && !raceRunFinished()) {
+                if (lastGpsNow > 0) {
+                    racePracticeStart(lastGpsNow + racePracticeDur());
+                } else {
+                    showTransient("NO TIME ");
+                }
+            } else {
+                raceRunReset();
+            }
+        } else {
+            backendPollHealthNow();
+        }
         return;
     }
+    // Right short: practice durations 1 → 3 → 5 min.
+    if (button == Button::Right && event == ButtonEvent::ShortPress) {
+        if (isPractice) {
+            racePracticeCycleDur();
+            const long d = racePracticeDur();
+            char msg[12];
+            snprintf(msg, sizeof(msg), "SET %1ld:%02ld", d / 60, d % 60);
+            showTransient(msg);
+        }
+        return;
+    }
+    // Right long: cycle views — north-up → bearing-up → best-fit.
     if (button == Button::Right && event == ButtonEvent::LongPress) {
-        backendPollHealthNow();
+        viewMode = (viewMode + 1) % 3;
+        redrawCurrentPage();
         return;
     }
 }
