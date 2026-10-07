@@ -1,6 +1,8 @@
 #include <Arduino.h>
 #include <TinyGPSPlus.h>
 
+#include "gps_mock.h"
+
 HardwareSerial GPSSerial(2);
 
 #define GPS_RX 16
@@ -14,9 +16,18 @@ void gpsInit()
 
 void gpsLoop(TinyGPSPlus &gps)
 {
-  while (GPSSerial.available())
-  {
-    char c = GPSSerial.read();
-    gps.encode(c);
-  }
+    // Mock mode owns the fix exclusively: drain (don't parse) the UART so a
+    // flaky real fix can never blend with the script. Buffer is still drained
+    // to avoid overflow/framing rot while mocked.
+    if (gpsMockActive()) {
+        while (GPSSerial.available()) {
+            (void)GPSSerial.read();
+        }
+        return;
+    }
+    while (GPSSerial.available())
+    {
+        char c = GPSSerial.read();
+        gps.encode(c);
+    }
 }

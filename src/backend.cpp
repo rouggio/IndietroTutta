@@ -240,8 +240,8 @@ static void backendTask(void *param)
         }
 
         // Mock GPS source (indoor testing): scripted fixes in, nothing out.
-        // NOTE: encode runs on this task while screens read on the UI thread;
-        // transient torn reads are possible — acceptable for a test rig.
+        // The UART is drained unparsed while mocked (see gpsLoop), so the
+        // mock owns the fix exclusively — no blending with flaky real fixes.
         const bool mock = gpsMockActive();
         if (mock && mainGps) {
             gpsMockPoll(*mainGps);
