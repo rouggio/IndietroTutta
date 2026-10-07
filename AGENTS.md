@@ -30,8 +30,10 @@ No RTOS tasks except `backend.cpp` FreeRTOS task (12288 stack, core 0):
 Key modules: `screens.*` router + 200ms throttle, `screen_speed.*` main
 (big speed nudged right of center; right column MAX/CRS/SES — gray font-2 labels,
 white font-4 values, redrawn only on change, width-capped; POS line removed),
-`screen_race.*` shared RACE/PRAC screen (wireframe map + boat triangle + wind arrow,
-GPS countdown header, next-mark bearing/dist/side; map layer ≤1Hz, text padded),
+`screen_race.*` shared RACE/PRAC screen (frame = all but header/hints; wireframe +
+boat triangle/edge-dot + dashed yellow to destination center + wind arrow;
+GPS countdown header + next-tag; strip with mode tag + next data + N-UP/BRG/FIT;
+map layer ≤1Hz, text padded),
 `race_session.*` health-pulled session cache (marks/lines/wind/startTime+offset,
 NVS `race` ns, ArduinoJson heap doc; unassigned keeps cache),
 `screen_waypoints.*` (LL flag, max 10 FIFO RAM-only), `screen_timers.*` chrono,
@@ -44,7 +46,7 @@ NVS `race` ns, ArduinoJson heap doc; unassigned keeps cache),
 ## UI navigation (hints: L/LL left, R/RR right)
 
 - L-cycle = MAIN → WAYPOINTS → TIMERS → RACE → MAIN (`PAGE_CYCLE=4`). DIAGNOSTICS + CONFIG excluded.
-- MAIN: `L` next, `LL`→CONFIG, `RR`→DIAGNOSTICS. RACE: `L` next, `R` resync health now (pull pushed session). DIAGNOSTICS/CONFIG: `L` back to MAIN.
+- MAIN: `L` next, `LL`→CONFIG, `RR`→DIAGNOSTICS. RACE: `L` next, `R` resync health now (pull pushed session), `RR` cycles N-UP → BRG → FIT. DIAGNOSTICS/CONFIG: `L` back to MAIN.
 - WAYPOINTS: `R` cycle, `LL` flag (also `POST /gps flagged:true`), `RR` delete.
 - TIMERS: `R` start/stop, `RR` lap/reset. CONFIG: `R` select row, `RR` apply, `LL` force OTA now.
 - Every page switch full-black clear; ghost-clear readouts in speed/timers.

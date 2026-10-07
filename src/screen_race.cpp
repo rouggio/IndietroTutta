@@ -16,15 +16,25 @@ static const uint16_t RFG = TFT_WHITE;
 static const uint16_t RDIM = 0x8410; // neutral gray
 static const uint16_t RBOAT = TFT_YELLOW;
 
-// Map area (landscape 320x240). Text rows update every pass with padded
-// strings (no clears); the map layer redraws at most 1Hz (region clear is
-// acceptable off the 200ms path) or when the course changes.
-static const int MAP_X = 6;
-static const int MAP_Y = 26;
-static const int MAP_W = 308;
-static const int MAP_H = 140;
+// Frame: everything except the header (top) and the hint bar (bottom).
+// Wire area holds the course; the solid strip holds PRAC tag + next data.
+static const int HDR_H = 28;
+static const int MAP_X = 2;
+static const int MAP_Y = 30;
+static const int MAP_W = 316;
+static const int WIRE_Y1 = 178;   // wire area: MAP_Y..WIRE_Y1
+static const int STRIP_Y0 = 180;  // data strip: STRIP_Y0..208
+static const int STRIP_Y1 = 208;
 
 static const double DEG_M = 111320.0;
+
+// View state (RAM only). RR cycles: 0 north-up, 1 bearing-up (next
+// destination up), 2 best-fit (0°/90° whichever fills the screen).
+static uint8_t viewMode = 0;
+// Effective rotation applied by the last map draw (deg clockwise that
+// points up) + effective mode, shared with the text row.
+static double gRotEff = 0.0;
+static int gEffMode = 0;
 
 static int lastRaceCourseKey = -2; // sessionId+version fingerprint, -2 = none
 static unsigned long lastMapDraw = 0;
@@ -35,59 +45,97 @@ static int raceCourseKey()
     return (int)(raceSession.sessionId * 31 + raceSession.courseVersion);
 }
 
-// Project wind-frame-free absolute course into the map rect.
-// Equirectangular around the course center; uniform scale, north up.
+// Projection: equirectangular around the course, uniform scale, with an
+// optional rotation for course-up (heading points up).
 struct RaceProj {
     double lat0 = 0.0;
     double lon0 = 0.0;
     double cosLat = 1.0;
-    double scale = 1.0; // px per degree lat
-    int ox = 0;         // rect origin px (map-relative)
+    double cosH = 1.0;
+    double sinH = 0.0;
+    double rcx = 0.0; // rotated bbox center (course units)
+    double rcy = 0.0;
+    double scale = 1.0; // px per course unit
+    int ox = 0;
     int oy = 0;
     bool ok = false;
 };
 
-static void buildProjection(RaceProj& p)
+static void buildProjection(RaceProj& p, double rotDeg)
 {
-    double minLat = 1e9, maxLat = -1e9, minLon = 1e9, maxLon = -1e9;
+    const double H = rotDeg * M_PI / 180.0;
+    p.cosH = cos(H);
+    p.sinH = sin(H);
+    // Gather course points in raw units (deg lat, deg lon * cosLat).
+    double raw[14][2];
     int n = 0;
-    auto eat = [&](double lat, double lon) {
+    // Center on the course bbox first for a stable cosLat.
+    double minLat = 1e9, maxLat = -1e9, minLon = 1e9, maxLon = -1e9;
+    auto eatBox = [&](double lat, double lon) {
         if (lat < minLat) minLat = lat;
         if (lat > maxLat) maxLat = lat;
         if (lon < minLon) minLon = lon;
         if (lon > maxLon) maxLon = lon;
-        n++;
     };
     for (uint8_t i = 0; i < raceSession.markCount; i++) {
-        eat(raceSession.marks[i].lat, raceSession.marks[i].lon);
+        eatBox(raceSession.marks[i].lat, raceSession.marks[i].lon);
     }
     if (raceSession.startLine.valid) {
-        eat(raceSession.startLine.latA, raceSession.startLine.lonA);
-        eat(raceSession.startLine.latB, raceSession.startLine.lonB);
+        eatBox(raceSession.startLine.latA, raceSession.startLine.lonA);
+        eatBox(raceSession.startLine.latB, raceSession.startLine.lonB);
     }
     if (raceSession.finishLine.valid && !raceSession.finishSameAsStart) {
-        eat(raceSession.finishLine.latA, raceSession.finishLine.lonA);
-        eat(raceSession.finishLine.latB, raceSession.finishLine.lonB);
+        eatBox(raceSession.finishLine.latA, raceSession.finishLine.lonA);
+        eatBox(raceSession.finishLine.latB, raceSession.finishLine.lonB);
     }
-    if (n == 0) {
+    if (minLat > 900.0) {
         p.ok = false;
         return;
     }
-    // Include the boat so it never leaves the frame (pad when alone).
     p.lat0 = (minLat + maxLat) / 2.0;
     p.lon0 = (minLon + maxLon) / 2.0;
     p.cosLat = cos(p.lat0 * M_PI / 180.0);
     if (p.cosLat < 0.2) p.cosLat = 0.2;
-    double spanLat = maxLat - minLat;
-    double spanLon = (maxLon - minLon) * p.cosLat;
-    if (spanLat < 0.0005) spanLat = 0.0005;
-    if (spanLon < 0.0005) spanLon = 0.0005;
+
+    auto push = [&](double lat, double lon) {
+        if (n >= 14) return;
+        const double dE = (lon - p.lon0) * p.cosLat;
+        const double dN = lat - p.lat0;
+        raw[n][0] = dE * p.cosH - dN * p.sinH;
+        raw[n][1] = dE * p.sinH + dN * p.cosH;
+        n++;
+    };
+    for (uint8_t i = 0; i < raceSession.markCount; i++) {
+        push(raceSession.marks[i].lat, raceSession.marks[i].lon);
+    }
+    if (raceSession.startLine.valid) {
+        push(raceSession.startLine.latA, raceSession.startLine.lonA);
+        push(raceSession.startLine.latB, raceSession.startLine.lonB);
+    }
+    if (raceSession.finishLine.valid && !raceSession.finishSameAsStart) {
+        push(raceSession.finishLine.latA, raceSession.finishLine.lonA);
+        push(raceSession.finishLine.latB, raceSession.finishLine.lonB);
+    }
+    double rminx = 1e9, rmaxx = -1e9, rminy = 1e9, rmaxy = -1e9;
+    for (int i = 0; i < n; i++) {
+        if (raw[i][0] < rminx) rminx = raw[i][0];
+        if (raw[i][0] > rmaxx) rmaxx = raw[i][0];
+        if (raw[i][1] < rminy) rminy = raw[i][1];
+        if (raw[i][1] > rmaxy) rmaxy = raw[i][1];
+    }
+    double spanX = rmaxx - rminx, spanY = rmaxy - rminy;
+    if (spanX < 0.0005) spanX = 0.0005;
+    if (spanY < 0.0005) spanY = 0.0005;
     const int pad = 10;
-    const double sx = (MAP_W - 2 * pad) / spanLat;
-    const double sy = (MAP_H - 2 * pad) / spanLon;
+    const int ww = MAP_W - 2 * pad;
+    const int wh = (WIRE_Y1 - MAP_Y) - 2 * pad;
+    const double sx = ww / spanX;
+    const double sy = wh / spanY;
     p.scale = sx < sy ? sx : sy;
+    p.rcx = (rminx + rmaxx) / 2.0;
+    p.rcy = (rminy + rmaxy) / 2.0;
     p.ox = MAP_X + MAP_W / 2;
-    p.oy = MAP_Y + MAP_H / 2;
+    p.oy = MAP_Y + (WIRE_Y1 - MAP_Y) / 2;
     p.ok = true;
 }
 
@@ -95,8 +143,10 @@ static void projToPx(const RaceProj& p, double lat, double lon, int& x, int& y)
 {
     const double dE = (lon - p.lon0) * p.cosLat;
     const double dN = lat - p.lat0;
-    x = (int)(p.ox + dE * p.scale);
-    y = (int)(p.oy - dN * p.scale);
+    const double er = dE * p.cosH - dN * p.sinH;
+    const double nr = dE * p.sinH + dN * p.cosH;
+    x = (int)(p.ox + (er - p.rcx) * p.scale);
+    y = (int)(p.oy - (nr - p.rcy) * p.scale);
 }
 
 static uint16_t markColor(RaceMarkType t)
@@ -109,10 +159,10 @@ static uint16_t markColor(RaceMarkType t)
     }
 }
 
-static void drawBoatAt(int x, int y, double cogDeg, bool hasCog)
+static void drawBoatAt(int x, int y, double screenDeg)
 {
-    const double a = hasCog ? cogDeg * M_PI / 180.0 : 0.0;
-    // Triangle pointing along COG (screen: 0° = up). Size ~7px.
+    // Triangle pointing along the screen heading (0° = up). Size ~7px.
+    const double a = screenDeg * M_PI / 180.0;
     const int s = 7;
     const double dx = sin(a), dy = -cos(a);
     const double px = cos(a), py = sin(a);
@@ -122,34 +172,149 @@ static void drawBoatAt(int x, int y, double cogDeg, bool hasCog)
     tft.fillTriangle(x1, y1, x2, y2, x3, y3, RBOAT);
 }
 
-static void drawWindArrow(int cx, int cy, int windDir)
+static void drawWindArrow(int cx, int cy, double screenDeg)
 {
-    // Points where the wind comes FROM. 0° = up.
-    const double a = windDir * M_PI / 180.0;
+    // Points where the wind comes FROM, in screen frame. Bright white.
+    const double a = screenDeg * M_PI / 180.0;
     const int len = 14;
     const int x2 = (int)(cx + sin(a) * len), y2 = (int)(cy - cos(a) * len);
-    tft.drawLine(cx, cy, x2, y2, RDIM);
-    // Arrowhead at the tip (toward the source).
+    tft.drawLine(cx, cy, x2, y2, RFG);
     const double ha = 0.5;
     const int hx1 = (int)(x2 - sin(a - ha) * 5), hy1 = (int)(y2 + cos(a - ha) * 5);
     const int hx2 = (int)(x2 - sin(a + ha) * 5), hy2 = (int)(y2 + cos(a + ha) * 5);
-    tft.drawLine(x2, y2, hx1, hy1, RDIM);
-    tft.drawLine(x2, y2, hx2, hy2, RDIM);
+    tft.drawLine(x2, y2, hx1, hy1, RFG);
+    tft.drawLine(x2, y2, hx2, hy2, RFG);
+}
+
+static void drawDashed(int x0, int y0, int x1, int y1, uint16_t color)
+{
+    const double len = hypot((double)(x1 - x0), (double)(y1 - y0));
+    if (len < 2.0) return;
+    const double dash = 5.0, gap = 4.0;
+    double d = 0.0;
+    while (d < len) {
+        const double d2 = d + dash < len ? d + dash : len;
+        tft.drawLine((int)(x0 + (x1 - x0) * d / len), (int)(y0 + (y1 - y0) * d / len),
+                     (int)(x0 + (x1 - x0) * d2 / len), (int)(y0 + (y1 - y0) * d2 / len), color);
+        d += dash + gap;
+    }
+}
+
+// Clamp an off-frame point onto the wire rect border (from the rect center).
+// Returns false when already inside.
+static bool clampToWire(int cx, int cy, int& x, int& y)
+{
+    const int x0 = MAP_X + 5, y0 = MAP_Y + 5;
+    const int x1 = MAP_X + MAP_W - 5, y1 = WIRE_Y1 - 5;
+    if (x >= x0 && x <= x1 && y >= y0 && y <= y1) return false;
+    const double dx = (double)(x - cx), dy = (double)(y - cy);
+    double t = 1e9;
+    if (dx > 0) t = fmin(t, (double)(x1 - cx) / dx);
+    if (dx < 0) t = fmin(t, (double)(x0 - cx) / dx);
+    if (dy > 0) t = fmin(t, (double)(y1 - cy) / dy);
+    if (dy < 0) t = fmin(t, (double)(y0 - cy) / dy);
+    if (!(t > 0.0) || !(t < 1e8)) return false;
+    x = (int)(cx + dx * t);
+    y = (int)(cy + dy * t);
+    return true;
+}
+
+// Next destination: pre-start it's the start (line center, else start
+// point, else marks[0]); after the gun it's marks[0] (gates resolve to
+// the pair center). Fills tag ("ST" / "1G") and position.
+static bool nextDestination(TinyGPSPlus& gps, double& lat, double& lon, char* tag, size_t tagLen)
+{
+    (void)gps;
+    if (!raceSession.valid) return false;
+    const long now = raceGpsEpoch(gps);
+    const bool preStart = (raceSession.startTime <= 0 || now <= 0 ||
+        (raceSession.startTime + raceSession.startOffsetSec) > now);
+    if (preStart) {
+        if (raceSession.startLine.valid) {
+            lat = (raceSession.startLine.latA + raceSession.startLine.latB) / 2.0;
+            lon = (raceSession.startLine.lonA + raceSession.startLine.lonB) / 2.0;
+            snprintf(tag, tagLen, "ST  ");
+            return true;
+        }
+        for (uint8_t i = 0; i < raceSession.markCount; i++) {
+            if (raceSession.marks[i].type == RaceMarkStart) {
+                lat = raceSession.marks[i].lat;
+                lon = raceSession.marks[i].lon;
+                snprintf(tag, tagLen, "ST  ");
+                return true;
+            }
+        }
+    }
+    if (raceSession.markCount == 0) return false;
+    uint8_t idx = 0;
+    const RaceMark& m = raceSession.marks[idx];
+    if (m.type == RaceMarkGate && m.gate[0]) {
+        // Pair center: find the sibling buoy.
+        for (uint8_t i = 0; i < raceSession.markCount; i++) {
+            if (i != idx && raceSession.marks[i].type == RaceMarkGate &&
+                strcmp(raceSession.marks[i].gate, m.gate) == 0) {
+                lat = (m.lat + raceSession.marks[i].lat) / 2.0;
+                lon = (m.lon + raceSession.marks[i].lon) / 2.0;
+                snprintf(tag, tagLen, "%d%c  ", idx + 1, m.side ? m.side : 'P');
+                return true;
+            }
+        }
+    }
+    lat = m.lat;
+    lon = m.lon;
+    snprintf(tag, tagLen, "%d%c  ", idx + 1, m.side ? m.side : 'P');
+    return true;
 }
 
 static void drawRaceMap(TinyGPSPlus& gps)
 {
-    tft.fillRect(MAP_X, MAP_Y, MAP_W, MAP_H, RBG);
-    tft.drawRect(MAP_X, MAP_Y, MAP_W, MAP_H, RDIM);
+    // Wire area only — the strip keeps its text (updated every pass).
+    tft.fillRect(MAP_X, MAP_Y, MAP_W, WIRE_Y1 - MAP_Y, RBG);
+    tft.drawRect(MAP_X, MAP_Y, MAP_W, WIRE_Y1 - MAP_Y, RDIM);
+    tft.drawRect(MAP_X, STRIP_Y0, MAP_W, STRIP_Y1 - STRIP_Y0, RDIM);
     if (!raceSession.valid) {
         tft.setTextDatum(MC_DATUM);
         tft.setTextColor(RDIM, RBG);
-        tft.drawString("NO COURSE", MAP_X + MAP_W / 2, MAP_Y + MAP_H / 2, 4);
-        tft.drawString("assign a session", MAP_X + MAP_W / 2, MAP_Y + MAP_H / 2 + 28, 2);
+        tft.drawString("NO COURSE", MAP_X + MAP_W / 2, MAP_Y + (WIRE_Y1 - MAP_Y) / 2, 4);
+        tft.drawString("assign a session", MAP_X + MAP_W / 2, MAP_Y + (WIRE_Y1 - MAP_Y) / 2 + 28, 2);
         return;
     }
+    // Effective rotation: 0 north-up, bearing-to-destination up, or best
+    // screen fit (0°/90° whichever fills more). Falls back to north-up
+    // whenever the fix/destination is missing.
+    double rotEff = 0.0;
+    int effMode = 0;
+    double destLat = 0.0, destLon = 0.0;
+    char destTag[8] = {0};
+    const bool haveDestHere = nextDestination(gps, destLat, destLon, destTag, sizeof(destTag));
+    if (viewMode == 1 && gps.location.isValid() && haveDestHere) {
+        double brg = TinyGPSPlus::courseTo(
+            gps.location.lat(), gps.location.lng(), destLat, destLon);
+        if (brg < 0) brg += 360.0;
+        if (brg >= 360.0) brg -= 360.0;
+        rotEff = brg;
+        effMode = 1;
+    }
+    gRotEff = rotEff;
+    gEffMode = effMode;
+
     RaceProj p;
-    buildProjection(p);
+    if (viewMode == 2) {
+        RaceProj p0, p90;
+        buildProjection(p0, 0.0);
+        buildProjection(p90, 90.0);
+        if (p90.ok && (!p0.ok || p90.scale > p0.scale)) {
+            p = p90;
+            rotEff = 90.0;
+        } else {
+            p = p0;
+            rotEff = 0.0;
+        }
+        gRotEff = rotEff;
+        gEffMode = 2;
+    } else {
+        buildProjection(p, rotEff);
+    }
     if (!p.ok) return;
 
     // Legs: consecutive marks in order.
@@ -172,7 +337,7 @@ static void drawRaceMap(TinyGPSPlus& gps)
         projToPx(p, s.latB, s.lonB, qx, qy);
         tft.drawWideLine(px, py, qx, qy, 2, TFT_RED);
     }
-    // Marks: circles + index. Next mark (marks[0] in Step 3) brighter.
+    // Marks: circles + index.
     char num[4];
     for (uint8_t i = 0; i < raceSession.markCount; i++) {
         const RaceMark& m = raceSession.marks[i];
@@ -186,24 +351,36 @@ static void drawRaceMap(TinyGPSPlus& gps)
         tft.setTextColor(i == 0 ? RFG : RDIM, RBG);
         tft.drawString(num, px, py - rPx - 8, 2);
     }
-    // Wind arrow, top-right inside the map.
-    drawWindArrow(MAP_X + MAP_W - 24, MAP_Y + 22, raceSession.windDir);
-    // Boat.
+    // Wind arrow, top-left inside the frame, bright white (rotated frame).
+    const double windScreen = raceSession.windDir - rotEff;
+    drawWindArrow(MAP_X + 24, MAP_Y + 22, windScreen);
+
+    // Boat: triangle on the chart, or a projected dot on the frame edge.
+    // Dashed yellow line from the boat (or edge dot) to the destination.
     if (gps.location.isValid()) {
         projToPx(p, gps.location.lat(), gps.location.lng(), px, py);
-        drawBoatAt(px, py, gps.course.deg(), gps.course.isValid());
+        const int cx = MAP_X + MAP_W / 2, cy = MAP_Y + (WIRE_Y1 - MAP_Y) / 2;
+        int bx = px, by = py;
+        const bool outside = clampToWire(cx, cy, bx, by);
+        double dLat = 0.0, dLon = 0.0;
+        char tag[8] = {0};
+        if (nextDestination(gps, dLat, dLon, tag, sizeof(tag))) {
+            int dx = 0, dy = 0;
+            projToPx(p, dLat, dLon, dx, dy);
+            drawDashed(bx, by, dx, dy, RBOAT);
+        }
+        if (outside) {
+            tft.drawCircle(bx, by, 4, RBOAT);
+        } else {
+            const double boatScreen = gps.course.isValid() ? (gps.course.deg() - rotEff) : 0.0;
+            drawBoatAt(px, py, boatScreen);
+        }
     }
 }
 
 static void drawRaceText(TinyGPSPlus& gps)
 {
-    // Header: tag left, countdown center, sats right. Fixed-width fields,
-    // padded — overwrite in place, no clears.
-    const bool isRace = strcmp(raceSession.mode, "race") == 0;
-    tft.setTextColor(RDIM, RBG);
-    tft.setTextDatum(TL_DATUM);
-    tft.drawString(raceSession.valid ? (isRace ? "RACE" : "PRAC") : "----", 8, 4, 2);
-
+    // Header: countdown center, next-passage tag right (bright white).
     char cd[12];
     const long now = raceGpsEpoch(gps);
     if (raceSession.valid && raceSession.startTime > 0 && now > 0) {
@@ -221,94 +398,56 @@ static void drawRaceText(TinyGPSPlus& gps)
     tft.setTextDatum(TC_DATUM);
     tft.drawString(cd, 160, 2, 4);
 
-    tft.setTextColor(RDIM, RBG);
+    // Next-passage tag (ST pre-start, else number+side), bright white.
+    char tag[8];
+    double dLat = 0.0, dLon = 0.0;
+    const bool haveDest = nextDestination(gps, dLat, dLon, tag, sizeof(tag));
+    tft.setTextColor(RFG, RBG);
     tft.setTextDatum(TR_DATUM);
-    if (gps.satellites.isValid()) {
-        char sats[8];
-        snprintf(sats, sizeof(sats), "S%02d", gps.satellites.value());
-        tft.drawString(sats, 312, 4, 2);
+    if (!raceSession.valid) {
+        tft.drawString("----", 312, 2, 4);
     } else {
-        tft.drawString("S--", 312, 4, 2);
+        tft.drawString(haveDest ? tag : "----", 312, 2, 4);
     }
 
-    // Next-passage row. Pre-start the next passage is the START (line, else
-    // start point, else marks[0]); after the gun the marks take over in
-    // order (auto-advance arrives with pass detection in Step 4/5).
-    tft.setTextColor(RFG, RBG);
+    // Strip: PRAC/RACE tag bottom-left, next data center, view mode right.
+    tft.setTextColor(RDIM, RBG);
     tft.setTextDatum(TL_DATUM);
-    char row[32];
-    const long nowMark = raceGpsEpoch(gps);
-    const bool preStart = !raceSession.valid ? true :
-        (raceSession.startTime <= 0 || nowMark <= 0 ||
-         (raceSession.startTime + raceSession.startOffsetSec) > nowMark);
-    if (!raceSession.valid || (raceSession.markCount == 0 && !raceSession.startLine.valid)) {
-        snprintf(row, sizeof(row), "NO COURSE            ");
+    const bool isRace = strcmp(raceSession.mode, "race") == 0;
+    tft.drawString(raceSession.valid ? (isRace ? "RACE" : "PRAC") : "----", 8, 184, 2);
+
+    tft.setTextColor(RFG, RBG);
+    tft.setTextDatum(TC_DATUM);
+    char row[24];
+    if (!raceSession.valid) {
+        snprintf(row, sizeof(row), "NO COURSE       ");
     } else if (!gps.location.isValid()) {
-        snprintf(row, sizeof(row), "NO FIX               ");
-    } else if (preStart) {
-        // Nearest point on the start segment (or the start point mark).
-        double tgtLat = 0.0, tgtLon = 0.0, lineDist = -1.0;
-        bool haveLine = false;
-        if (raceSession.startLine.valid) {
-            // Equirectangular projection around the boat, meters.
-            const double lat0 = gps.location.lat();
-            const double cosLat = cos(lat0 * M_PI / 180.0);
-            const double ax = (raceSession.startLine.lonA - gps.location.lng()) * DEG_M * cosLat;
-            const double ay = (raceSession.startLine.latA - lat0) * DEG_M;
-            const double cx = (raceSession.startLine.lonB - gps.location.lng()) * DEG_M * cosLat;
-            const double cy = (raceSession.startLine.latB - lat0) * DEG_M;
-            const double dx = cx - ax, dy = cy - ay;
-            const double len2 = dx * dx + dy * dy;
-            double t = 0.0;
-            if (len2 > 1.0) {
-                t = -((ax * dx + ay * dy) / len2);
-                if (t < 0.0) t = 0.0;
-                if (t > 1.0) t = 1.0;
-            }
-            const double nx = ax + t * dx, ny = ay + t * dy;
-            lineDist = sqrt(nx * nx + ny * ny);
-            // Back to lat/lon for the bearing.
-            tgtLat = lat0 + (ny / DEG_M);
-            tgtLon = gps.location.lng() + (nx / (DEG_M * (cosLat < 0.2 ? 0.2 : cosLat)));
-            haveLine = true;
-        }
-        if (!haveLine) {
-            // Fall back to the start point mark, else marks[0].
-            const RaceMark* sm = nullptr;
-            for (uint8_t i = 0; i < raceSession.markCount; i++) {
-                if (raceSession.marks[i].type == RaceMarkStart) { sm = &raceSession.marks[i]; break; }
-            }
-            if (!sm && raceSession.markCount > 0) sm = &raceSession.marks[0];
-            if (sm) { tgtLat = sm->lat; tgtLon = sm->lon; }
-        }
-        const double dist = haveLine ? lineDist : TinyGPSPlus::distanceBetween(
-            gps.location.lat(), gps.location.lng(), tgtLat, tgtLon);
+        snprintf(row, sizeof(row), "NO FIX          ");
+    } else if (haveDest) {
+        const double dist = TinyGPSPlus::distanceBetween(
+            gps.location.lat(), gps.location.lng(), dLat, dLon);
         double brg = TinyGPSPlus::courseTo(
-            gps.location.lat(), gps.location.lng(), tgtLat, tgtLon);
+            gps.location.lat(), gps.location.lng(), dLat, dLon);
         if (brg < 0) brg += 360.0;
         if (brg >= 360.0) brg -= 360.0;
         const long d = (long)dist > 9999 ? 9999 : (long)dist;
-        snprintf(row, sizeof(row), "ST %3d %4ldm     ",
-                 (int)brg, d);
+        snprintf(row, sizeof(row), " %3d° %4ldm   ", (int)brg, d);
     } else {
-        const RaceMark& m = raceSession.marks[0];
-        const double dist = TinyGPSPlus::distanceBetween(
-            gps.location.lat(), gps.location.lng(), m.lat, m.lon);
-        double brg = TinyGPSPlus::courseTo(
-            gps.location.lat(), gps.location.lng(), m.lat, m.lon);
-        if (brg < 0) brg += 360.0;
-        if (brg >= 360.0) brg -= 360.0;
-        snprintf(row, sizeof(row), "1%c %3d %4dm      ",
-                 m.side ? m.side : 'P', (int)brg, (int)dist);
+        snprintf(row, sizeof(row), " ---           ");
     }
-    tft.drawString(row, 8, 178, 4);
+    tft.drawString(row, 170, 182, 4);
+
+    tft.setTextColor(RDIM, RBG);
+    tft.setTextDatum(TR_DATUM);
+    const char* viewTxt = gEffMode == 1 ? "BRG " : (gEffMode == 2 ? "FIT " : "N-UP");
+    tft.drawString(viewTxt, 312, 184, 2);
 
     // Hint bar.
     tft.setTextColor(RDIM, RBG);
     tft.setTextDatum(BL_DATUM);
     tft.drawString("L Next", 8, 235, 2);
     tft.setTextDatum(BR_DATUM);
-    tft.drawString("R Sync", tft.width() - 8, 235, 2);
+    tft.drawString("R Sync RR View", tft.width() - 8, 235, 2);
 }
 
 void drawScreenRace(TinyGPSPlus &gps, bool requiresInit)
@@ -339,6 +478,12 @@ void screenRaceButton(Button button, ButtonEvent event)
     // without waiting for the 30s tick).
     if (button == Button::Right && event == ButtonEvent::ShortPress) {
         backendPollHealthNow();
+        return;
+    }
+    // Right long: cycle views — north-up → bearing-up → best-fit.
+    if (button == Button::Right && event == ButtonEvent::LongPress) {
+        viewMode = (viewMode + 1) % 3;
+        lastMapDraw = 0; // force map redraw with the new orientation
         return;
     }
 }
