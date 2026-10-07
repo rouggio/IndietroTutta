@@ -159,18 +159,34 @@ static uint16_t markColor(RaceMarkType t)
     }
 }
 
-static void drawBoatAt(int x, int y, double screenDeg)
+static void boatTri(int x, int y, double screenDeg,
+                    int& x1, int& y1, int& x2, int& y2, int& x3, int& y3)
 {
-    // Triangle pointing along the screen heading (0° = up). Size ~7px.
     const double a = screenDeg * M_PI / 180.0;
     const int s = 7;
     const double dx = sin(a), dy = -cos(a);
     const double px = cos(a), py = sin(a);
-    const int x1 = (int)(x + dx * s), y1 = (int)(y + dy * s);
-    const int x2 = (int)(x - dx * s * 0.7 + px * s * 0.6), y2 = (int)(y - dy * s * 0.7 + py * s * 0.6);
-    const int x3 = (int)(x - dx * s * 0.7 - px * s * 0.6), y3 = (int)(y - dy * s * 0.7 - py * s * 0.6);
+    x1 = (int)(x + dx * s); y1 = (int)(y + dy * s);
+    x2 = (int)(x - dx * s * 0.7 + px * s * 0.6); y2 = (int)(y - dy * s * 0.7 + py * s * 0.6);
+    x3 = (int)(x - dx * s * 0.7 - px * s * 0.6); y3 = (int)(y - dy * s * 0.7 - py * s * 0.6);
+}
+
+static void drawBoatAt(int x, int y, double screenDeg)
+{
+    int x1, y1, x2, y2, x3, y3;
+    boatTri(x, y, screenDeg, x1, y1, x2, y2, x3, y3);
     tft.fillTriangle(x1, y1, x2, y2, x3, y3, RBOAT);
 }
+
+// Dynamic boat/dash state for dirty updates (no full clears on the fast path).
+static int oldBx = -1, oldBy = -1;
+static double oldAng = 0.0;
+static bool oldWasDot = false;
+static bool oldHaveBoat = false;
+static int oldDash[4] = {0, 0, 0, 0};
+static bool oldHaveDash = false;
+static bool dynOk = false;
+static double oldRotEff = 0.0;
 
 static void drawWindArrow(int cx, int cy, double screenDeg)
 {
@@ -266,17 +282,63 @@ static bool nextDestination(TinyGPSPlus& gps, double& lat, double& lon, char* ta
     return true;
 }
 
-static void drawRaceMap(TinyGPSPlus& gps)
+// Static course layer: legs, segments, circles, numbers, header wind.
+// Identical pixels every time — safe to repaint over dirty regions.
+static void drawStaticLayer(const RaceProj& p, double rotEff)
 {
-    // Wire area only — the strip keeps its text (updated every pass).
-    tft.fillRect(MAP_X, MAP_Y, MAP_W, WIRE_Y1 - MAP_Y, RBG);
-    tft.drawRect(MAP_X, MAP_Y, MAP_W, WIRE_Y1 - MAP_Y, RDIM);
-    tft.drawRect(MAP_X, STRIP_Y0, MAP_W, STRIP_Y1 - STRIP_Y0, RDIM);
-    if (!raceSession.valid) {
+    int px = 0, py = 0, qx = 0, qy = 0;
+    for (uint8_t i = 0; i + 1 < raceSession.markCount; i++) {
+        projToPx(p, raceSession.marks[i].lat, raceSession.marks[i].lon, px, py);
+        projToPx(p, raceSession.marks[i + 1].lat, raceSession.marks[i + 1].lon, qx, qy);
+        tft.drawLine(px, py, qx, qy, RDIM);
+    }
+    if (raceSession.startLine.valid) {
+        const RaceSeg& s = raceSession.startLine;
+        projToPx(p, s.latA, s.lonA, px, py);
+        projToPx(p, s.latB, s.lonB, qx, qy);
+        tft.drawWideLine(px, py, qx, qy, 3, TFT_GREEN);
+    }
+    if (raceSession.finishLine.valid) {
+        const RaceSeg& s = raceSession.finishSameAsStart ? raceSession.startLine : raceSession.finishLine;
+        projToPx(p, s.latA, s.lonA, px, py);
+        projToPx(p, s.latB, s.lonB, qx, qy);
+        tft.drawWideLine(px, py, qx, qy, 2, TFT_RED);
+    }
+    char num[4];
+    for (uint8_t i = 0; i < raceSession.markCount; i++) {
+        const RaceMark& m = raceSession.marks[i];
+        projToPx(p, m.lat, m.lon, px, py);
+        int rPx = (int)(m.r / DEG_M * p.scale);
+        if (rPx < 3) rPx = 3;
+        if (rPx > 40) rPx = 40;
+        tft.drawCircle(px, py, rPx, markColor(m.type));
+        snprintf(num, sizeof(num), "%d", i + 1);
         tft.setTextDatum(MC_DATUM);
-        tft.setTextColor(RDIM, RBG);
-        tft.drawString("NO COURSE", MAP_X + MAP_W / 2, MAP_Y + (WIRE_Y1 - MAP_Y) / 2, 4);
-        tft.drawString("assign a session", MAP_X + MAP_W / 2, MAP_Y + (WIRE_Y1 - MAP_Y) / 2 + 28, 2);
+        tft.setTextColor(i == 0 ? RFG : RDIM, RBG);
+        tft.drawString(num, px, py - rPx - 8, 2);
+    }
+    // Header wind (out of frame, top-left): arrow + degrees, bright/white-gray.
+    const double windScreen = raceSession.windDir - rotEff;
+    drawWindArrow(20, 14, windScreen);
+    char wdeg[8];
+    snprintf(wdeg, sizeof(wdeg), "%d", raceSession.windDir);
+    tft.setTextDatum(TL_DATUM);
+    tft.setTextColor(RDIM, RBG);
+    tft.drawString(wdeg, 34, 6, 2);
+}
+
+static void drawRaceMap(TinyGPSPlus& gps, bool full)
+{
+    if (!raceSession.valid) {
+        if (full) {
+            tft.fillRect(MAP_X, MAP_Y, MAP_W, WIRE_Y1 - MAP_Y, RBG);
+            tft.drawRect(MAP_X, MAP_Y, MAP_W, STRIP_Y1 - MAP_Y, RDIM);
+            tft.setTextDatum(MC_DATUM);
+            tft.setTextColor(RDIM, RBG);
+            tft.drawString("NO COURSE", MAP_X + MAP_W / 2, MAP_Y + (WIRE_Y1 - MAP_Y) / 2, 4);
+            tft.drawString("assign a session", MAP_X + MAP_W / 2, MAP_Y + (WIRE_Y1 - MAP_Y) / 2 + 28, 2);
+        }
+        dynOk = false;
         return;
     }
     // Effective rotation: 0 north-up, bearing-to-destination up, or best
@@ -317,65 +379,82 @@ static void drawRaceMap(TinyGPSPlus& gps)
     }
     if (!p.ok) return;
 
-    // Legs: consecutive marks in order.
-    int px = 0, py = 0, qx = 0, qy = 0;
-    for (uint8_t i = 0; i + 1 < raceSession.markCount; i++) {
-        projToPx(p, raceSession.marks[i].lat, raceSession.marks[i].lon, px, py);
-        projToPx(p, raceSession.marks[i + 1].lat, raceSession.marks[i + 1].lon, qx, qy);
-        tft.drawLine(px, py, qx, qy, RDIM);
+    // Rotating views can't use dirty updates (the whole frame turns):
+    // throttle them to 1Hz full redraws instead.
+    const bool rotating = fabs(rotEff - oldRotEff) > 0.1;
+    if (!full && rotating) {
+        if (millis() - lastMapDraw < 1000) return;
+        full = true;
     }
-    // Start/finish segments.
-    if (raceSession.startLine.valid) {
-        const RaceSeg& s = raceSession.startLine;
-        projToPx(p, s.latA, s.lonA, px, py);
-        projToPx(p, s.latB, s.lonB, qx, qy);
-        tft.drawWideLine(px, py, qx, qy, 3, TFT_GREEN);
+    if (full) {
+        tft.fillRect(MAP_X, MAP_Y, MAP_W, WIRE_Y1 - MAP_Y, RBG);
+        tft.drawRect(MAP_X, MAP_Y, MAP_W, STRIP_Y1 - MAP_Y, RDIM);
+        drawStaticLayer(p, rotEff);
+        oldRotEff = rotEff;
+        lastMapDraw = millis();
+        dynOk = false;
     }
-    if (raceSession.finishLine.valid) {
-        const RaceSeg& s = raceSession.finishSameAsStart ? raceSession.startLine : raceSession.finishLine;
-        projToPx(p, s.latA, s.lonA, px, py);
-        projToPx(p, s.latB, s.lonB, qx, qy);
-        tft.drawWideLine(px, py, qx, qy, 2, TFT_RED);
-    }
-    // Marks: circles + index.
-    char num[4];
-    for (uint8_t i = 0; i < raceSession.markCount; i++) {
-        const RaceMark& m = raceSession.marks[i];
-        projToPx(p, m.lat, m.lon, px, py);
-        int rPx = (int)(m.r / DEG_M * p.scale);
-        if (rPx < 3) rPx = 3;
-        if (rPx > 40) rPx = 40;
-        tft.drawCircle(px, py, rPx, markColor(m.type));
-        snprintf(num, sizeof(num), "%d", i + 1);
-        tft.setTextDatum(MC_DATUM);
-        tft.setTextColor(i == 0 ? RFG : RDIM, RBG);
-        tft.drawString(num, px, py - rPx - 8, 2);
-    }
-    // Wind arrow, top-left inside the frame, bright white (rotated frame).
-    const double windScreen = raceSession.windDir - rotEff;
-    drawWindArrow(MAP_X + 24, MAP_Y + 22, windScreen);
 
     // Boat: triangle on the chart, or a projected dot on the frame edge.
     // Dashed yellow line from the boat (or edge dot) to the destination.
+    // Dirty path: erase old dash + old boat, repaint identical static pixels,
+    // draw the new dash + boat. Skipped entirely when nothing moved.
+    int px = 0, py = 0;
+    int bx = -1, by = -1, dx = -1, dy = -1;
+    bool haveBoat = false, haveDash = false, isDot = false;
+    double ang = 0.0;
     if (gps.location.isValid()) {
         projToPx(p, gps.location.lat(), gps.location.lng(), px, py);
         const int cx = MAP_X + MAP_W / 2, cy = MAP_Y + (WIRE_Y1 - MAP_Y) / 2;
-        int bx = px, by = py;
-        const bool outside = clampToWire(cx, cy, bx, by);
+        bx = px; by = py;
+        isDot = clampToWire(cx, cy, bx, by);
+        haveBoat = true;
         double dLat = 0.0, dLon = 0.0;
         char tag[8] = {0};
         if (nextDestination(gps, dLat, dLon, tag, sizeof(tag))) {
-            int dx = 0, dy = 0;
             projToPx(p, dLat, dLon, dx, dy);
-            drawDashed(bx, by, dx, dy, RBOAT);
+            haveDash = true;
         }
-        if (outside) {
+        ang = gps.course.isValid() ? (gps.course.deg() - rotEff) : 0.0;
+    }
+    if (!dynOk) {
+        // Fresh draw, nothing to erase.
+    } else if (haveBoat == oldHaveBoat && (!haveBoat ||
+               (bx == oldBx && by == oldBy && ang == oldAng && isDot == oldWasDot &&
+                haveDash == oldHaveDash && (!haveDash ||
+                 (dx == oldDash[0] && dy == oldDash[1]))))) {
+        return; // nothing moved
+    } else {
+        // Erase old dash + old boat, then restore identical static pixels.
+        if (oldHaveDash) {
+            drawDashed(oldBx, oldBy, oldDash[0], oldDash[1], RBG);
+        }
+        if (oldHaveBoat) {
+            if (oldWasDot) {
+                tft.drawCircle(oldBx, oldBy, 4, RBG);
+            } else {
+                int x1, y1, x2, y2, x3, y3;
+                boatTri(oldBx, oldBy, oldAng, x1, y1, x2, y2, x3, y3);
+                tft.fillTriangle(x1, y1, x2, y2, x3, y3, RBG);
+            }
+        }
+        drawStaticLayer(p, rotEff);
+        tft.drawRect(MAP_X, MAP_Y, MAP_W, STRIP_Y1 - MAP_Y, RDIM);
+    }
+    if (haveDash) {
+        drawDashed(bx, by, dx, dy, RBOAT);
+    }
+    if (haveBoat) {
+        if (isDot) {
             tft.drawCircle(bx, by, 4, RBOAT);
         } else {
-            const double boatScreen = gps.course.isValid() ? (gps.course.deg() - rotEff) : 0.0;
-            drawBoatAt(px, py, boatScreen);
+            drawBoatAt(bx, by, ang);
         }
     }
+    oldBx = bx; oldBy = by; oldAng = ang; oldWasDot = isDot;
+    oldHaveBoat = haveBoat; oldHaveDash = haveDash;
+    oldDash[0] = dx; oldDash[1] = dy; oldDash[2] = 0; oldDash[3] = 0;
+    dynOk = true;
 }
 
 static int fontPxH(uint8_t font)
@@ -411,10 +490,27 @@ static char lastTag[8] = {0};
 static int16_t lastTagW = 0;
 static char lastPrac[8] = {0};
 static int16_t lastPracW = 0;
-static char lastRow[24] = {0};
-static int16_t lastRowW = 0;
 static char lastMode[8] = {0};
 static int16_t lastModeW = 0;
+
+static char lastBbuf[8] = {0};
+static int16_t lastBbufW = 0;
+static char lastDbuf[14] = {0};
+static int16_t lastDbufW = 0;
+static char lastMsg[24] = {0};
+static int16_t lastMsgW = 0;
+
+static void resetRaceText()
+{
+    // Called on full clears so change-detect redraws everything next pass.
+    lastCd[0] = 0; lastCdW = 0;
+    lastTag[0] = 0; lastTagW = 0;
+    lastPrac[0] = 0; lastPracW = 0;
+    lastBbuf[0] = 0; lastBbufW = 0;
+    lastDbuf[0] = 0; lastDbufW = 0;
+    lastMsg[0] = 0; lastMsgW = 0;
+    lastMode[0] = 0; lastModeW = 0;
+}
 
 static void drawRaceText(TinyGPSPlus& gps)
 {
@@ -432,46 +528,40 @@ static void drawRaceText(TinyGPSPlus& gps)
     } else {
         snprintf(cd, sizeof(cd), " --:--   ");
     }
-    tft.setTextColor(RFG, RBG);
-    tft.setTextDatum(TC_DATUM);
-    tft.drawString(cd, 160, 2, 4);
+    drawSmart(160, 2, 4, TC_DATUM, RFG, cd, lastCd, sizeof(lastCd), lastCdW);
 
     // Next-passage tag (ST pre-start, else number+side), bright white.
     char tag[8];
     double dLat = 0.0, dLon = 0.0;
     const bool haveDest = nextDestination(gps, dLat, dLon, tag, sizeof(tag));
-    tft.setTextColor(RFG, RBG);
-    tft.setTextDatum(TR_DATUM);
-    if (!raceSession.valid) {
-        tft.drawString("----", 312, 2, 4);
-    } else {
-        tft.drawString(haveDest ? tag : "----", 312, 2, 4);
-    }
+    drawSmart(312, 2, 4, TR_DATUM, RFG,
+              !raceSession.valid ? "----" : (haveDest ? tag : "----"),
+              lastTag, sizeof(lastTag), lastTagW);
 
-    // Strip: PRAC/RACE tag bottom-left, next data center, view mode right.
-    tft.setTextColor(RDIM, RBG);
-    tft.setTextDatum(TL_DATUM);
-    const bool isRace = strcmp(raceSession.mode, "race") == 0;
-    tft.drawString(raceSession.valid ? (isRace ? "RACE" : "PRAC") : "----", 8, 184, 2);
-
-    tft.setTextColor(RFG, RBG);
-    char bbuf[8], dbuf[14];
-    bool showBrg = false;
-    // Strip layout changes between centered messages and the split bearing
-    // view — clear the text band once on transition (rare, never per-pass).
+    // Bottom zone: PRAC/RACE tag left, next data center, view mode right.
+    // Layout flips between centered messages and the split bearing view —
+    // clear the band once on transition, then draw everything change-detect.
     static int lastStripMode = -1;
+    static bool lastShowBrg = false;
     const int stripMode = (!raceSession.valid || !gps.location.isValid()) ? 0 : (haveDest ? 1 : 0);
     if (stripMode != lastStripMode) {
         tft.fillRect(8, STRIP_Y0, MAP_W - 16, STRIP_Y1 - STRIP_Y0, RBG);
-        tft.drawFastHLine(MAP_X, STRIP_Y0, MAP_W, RDIM);
+        lastMsg[0] = 0; lastMsgW = 0;
+        lastBbuf[0] = 0; lastBbufW = 0;
+        lastDbuf[0] = 0; lastDbufW = 0;
         lastStripMode = stripMode;
     }
+    const bool isRace = strcmp(raceSession.mode, "race") == 0;
+    drawSmart(8, 184, 2, TL_DATUM, RDIM,
+              raceSession.valid ? (isRace ? "RACE" : "PRAC") : "----",
+              lastPrac, sizeof(lastPrac), lastPracW);
+
+    char bbuf[8], dbuf[14];
+    bool showBrg = false;
     if (!raceSession.valid) {
-        tft.setTextDatum(TC_DATUM);
-        tft.drawString("NO COURSE       ", 170, 182, 4);
+        drawSmart(170, 182, 4, TC_DATUM, RFG, "NO COURSE       ", lastMsg, sizeof(lastMsg), lastMsgW);
     } else if (!gps.location.isValid()) {
-        tft.setTextDatum(TC_DATUM);
-        tft.drawString("NO FIX          ", 170, 182, 4);
+        drawSmart(170, 182, 4, TC_DATUM, RFG, "NO FIX          ", lastMsg, sizeof(lastMsg), lastMsgW);
     } else if (haveDest) {
         const double dist = TinyGPSPlus::distanceBetween(
             gps.location.lat(), gps.location.lng(), dLat, dLon);
@@ -484,25 +574,19 @@ static void drawRaceText(TinyGPSPlus& gps)
         // fixed slot (the font has no ° glyph), distance from x=178.
         snprintf(bbuf, sizeof(bbuf), "%3d", (int)brg);
         snprintf(dbuf, sizeof(dbuf), "%4ldm   ", d);
-        tft.setTextDatum(TR_DATUM);
-        tft.drawString(bbuf, 158, 182, 4);
-        tft.drawCircle(168, 188, 2, RFG);
-        tft.setTextDatum(TL_DATUM);
-        tft.drawString(dbuf, 178, 182, 4);
+        drawSmart(158, 182, 4, TR_DATUM, RFG, bbuf, lastBbuf, sizeof(lastBbuf), lastBbufW);
+        drawSmart(178, 182, 4, TL_DATUM, RFG, dbuf, lastDbuf, sizeof(lastDbuf), lastDbufW);
         showBrg = true;
     } else {
-        tft.setTextDatum(TC_DATUM);
-        tft.drawString(" ---           ", 170, 182, 4);
+        drawSmart(170, 182, 4, TC_DATUM, RFG, " ---           ", lastMsg, sizeof(lastMsg), lastMsgW);
     }
-    if (!showBrg) {
-        // Erase a stale ring when leaving the bearing view.
-        tft.drawCircle(168, 188, 2, RBG);
+    if (showBrg != lastShowBrg) {
+        tft.drawCircle(168, 188, 2, showBrg ? RFG : RBG);
+        lastShowBrg = showBrg;
     }
 
-    tft.setTextColor(RDIM, RBG);
-    tft.setTextDatum(TR_DATUM);
     const char* viewTxt = gEffMode == 1 ? "BRG " : (gEffMode == 2 ? "FIT " : "N-UP");
-    tft.drawString(viewTxt, 312, 184, 2);
+    drawSmart(312, 184, 2, TR_DATUM, RDIM, viewTxt, lastMode, sizeof(lastMode), lastModeW);
 
     // Hint bar.
     tft.setTextColor(RDIM, RBG);
@@ -517,16 +601,14 @@ void drawScreenRace(TinyGPSPlus &gps, bool requiresInit)
     if (requiresInit) {
         tft.fillScreen(RBG);
         lastRaceCourseKey = -2; // force map redraw
+        resetRaceText();
     }
     const int key = raceCourseKey();
     const bool courseChanged = (key != lastRaceCourseKey);
     if (courseChanged) {
         lastRaceCourseKey = key;
     }
-    if (requiresInit || courseChanged || millis() - lastMapDraw > 1000) {
-        drawRaceMap(gps);
-        lastMapDraw = millis();
-    }
+    drawRaceMap(gps, requiresInit || courseChanged);
     drawRaceText(gps);
 }
 
@@ -543,9 +625,10 @@ void screenRaceButton(Button button, ButtonEvent event)
         return;
     }
     // Right long: cycle views — north-up → bearing-up → best-fit.
+    // Full clear is a user gesture, so a one-time redraw is acceptable.
     if (button == Button::Right && event == ButtonEvent::LongPress) {
         viewMode = (viewMode + 1) % 3;
-        lastMapDraw = 0; // force map redraw with the new orientation
+        redrawCurrentPage();
         return;
     }
 }
