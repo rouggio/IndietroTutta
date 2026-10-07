@@ -27,7 +27,7 @@ void setup(void) {
   wifiInit(gps);
   buttonsInit();
   buttonsSetCallback(screenButtonEvent);
-  backendInit();
+  backendInit(&gps);
   otaInit();
   endSplash(); // setup done: release the splash on the next loop pass
   bufferedSerialPrintln("Indietro Tutta - Setup Complete");

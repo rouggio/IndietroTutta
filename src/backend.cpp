@@ -3,6 +3,7 @@
 #include "config_store.h"
 #include "serial_buffer.h"
 #include "race_session.h"
+#include "gps_mock.h"
 
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
@@ -61,6 +62,7 @@ static QueueHandle_t workQueue = nullptr;
 static QueueHandle_t deleteQueue = nullptr;
 static volatile bool online = false;
 static volatile bool healthNow = false;
+static TinyGPSPlus* mainGps = nullptr;
 
 bool backendOnline()
 {
@@ -237,7 +239,15 @@ static void backendTask(void *param)
             healthCheck();
         }
 
-        if (haveItem) {
+        // Mock GPS source (indoor testing): scripted fixes in, nothing out.
+        // NOTE: encode runs on this task while screens read on the UI thread;
+        // transient torn reads are possible — acceptable for a test rig.
+        const bool mock = gpsMockActive();
+        if (mock && mainGps) {
+            gpsMockPoll(*mainGps);
+        }
+
+        if (haveItem && !mock) {
             const bool sent = sendPosition(w);
 
             bufferedSerialPrintln(
@@ -247,7 +257,7 @@ static void backendTask(void *param)
         }
 
         BackendDelete del;
-        if (xQueueReceive(deleteQueue, &del, 0) == pdTRUE) {
+        if (!mock && xQueueReceive(deleteQueue, &del, 0) == pdTRUE) {
             if (sendDeleteWaypoint(del)) {
                 bufferedSerialPrintln("[BACKEND] Waypoint delete sent");
             } else {
@@ -261,8 +271,9 @@ static void backendTask(void *param)
 // UI-thread side: cheap, never blocking
 // ---------------------------------------------------------
 
-void backendInit()
+void backendInit(TinyGPSPlus* gps)
 {
+    mainGps = gps;
     if (workQueue && deleteQueue) {
         return;
     }
@@ -288,6 +299,11 @@ void backendInit()
 
 bool backendSendFlaggedPosition(TinyGPSPlus &gps, const char* uid)
 {
+    // Mock mode: never upload scripted fixes as real waypoints.
+    if (gpsMockActive()) {
+        bufferedSerialPrintln("[BACKEND] Flag suppressed (mock GPS)");
+        return false;
+    }
     if (!gps.location.isValid()) {
         bufferedSerialPrintln("[GPS] Cannot flag position: no valid GPS fix");
         return false;
@@ -346,6 +362,11 @@ bool backendEnqueueDeleteWaypoint(const char* uid)
 void backendLoop(TinyGPSPlus &gps)
 {
     static unsigned long gpsTransmissionLastCheck = 0;
+
+    // Mock mode: fixes come from the script, nothing is uploaded.
+    if (gpsMockActive()) {
+        return;
+    }
 
     double speedKnots = gps.speed.isValid() ? gps.speed.knots() : 0;
     if (speedKnots < 0) speedKnots = 0;

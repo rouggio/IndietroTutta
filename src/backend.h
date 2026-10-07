@@ -8,7 +8,7 @@ bool backendOnline();
 // waiting for the 30s tick (race screen manual resync).
 void backendPollHealthNow();
 
-void backendInit();
+void backendInit(TinyGPSPlus* gps);
 
 void backendLoop(TinyGPSPlus &gps);
 

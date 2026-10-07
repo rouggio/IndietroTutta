@@ -9,6 +9,8 @@
 #include "config.h"
 #include "serial_buffer.h"
 #include "wifi_manager.h"
+#include "gps_mock.h"
+#include "screens.h"
 
 static WebServer server(80);
 
@@ -455,6 +457,18 @@ static void handleReset()
 }
 
 // Simple reboot endpoint (POST) to remotely restart the device
+// Mock GPS toggle (POST /mock?on=1|0) — scripted fixes for indoor testing.
+// Uploads stay suppressed while mock is on; the race screen shows MOCK.
+static void handleMock()
+{
+    const bool on = server.hasArg("on") && server.arg("on") != "0";
+    gpsMockSet(on);
+    redrawCurrentPage();
+    bufferedSerialPrintln(on ? "[HTTP] mock GPS on" : "[HTTP] mock GPS off");
+    server.send(200, "application/json",
+                String("{\"mock\":") + (on ? "true" : "false") + "}");
+}
+
 static void handleReboot()
 {
     bufferedSerialPrintln("[HTTP] Reboot requested via /reboot");
@@ -494,6 +508,7 @@ static void handleStatus()
     sys["version"] = BUILD_VERSION;
     sys["otaCheckOnStart"] = config.otaCheckOnStart;
     sys["username"] = config.username;
+    sys["mock"] = gpsMockActive();
 
     String json;
     serializeJson(doc, json);
@@ -570,6 +585,7 @@ void httpServerInit(TinyGPSPlus &gps)
     server.on("/wifi/remove", HTTP_POST, handleWiFiRemove);
     server.on("/reset", HTTP_POST, handleReset);
     server.on("/reboot", HTTP_POST, handleReboot);
+    server.on("/mock", HTTP_POST, handleMock);
 
     // Expose serial buffer as plain text at /serial
     server.on("/serial", HTTP_GET, []() {

@@ -2,6 +2,7 @@
 #include "screens.h"
 #include "race_session.h"
 #include "backend.h"
+#include "gps_mock.h"
 
 #include <TFT_eSPI.h>
 #include <TinyGPSPlus.h>
@@ -318,13 +319,23 @@ static void drawStaticLayer(const RaceProj& p, double rotEff)
         tft.drawString(num, px, py - rPx - 8, 2);
     }
     // Header wind (out of frame, top-left): arrow + degrees, bright/white-gray.
+    // Mock banner sits left of it when scripted fixes drive the screen.
     const double windScreen = raceSession.windDir - rotEff;
-    drawWindArrow(20, 14, windScreen);
+    if (gpsMockActive()) {
+        tft.setTextDatum(TL_DATUM);
+        tft.setTextColor(TFT_YELLOW, RBG);
+        tft.drawString("MOCK", 8, 6, 2);
+    } else {
+        tft.setTextDatum(TL_DATUM);
+        tft.setTextColor(RBG, RBG);
+        tft.drawString("MOCK", 8, 6, 2);
+    }
+    drawWindArrow(64, 14, windScreen);
     char wdeg[8];
     snprintf(wdeg, sizeof(wdeg), "%d", raceSession.windDir);
     tft.setTextDatum(TL_DATUM);
     tft.setTextColor(RDIM, RBG);
-    tft.drawString(wdeg, 34, 6, 2);
+    tft.drawString(wdeg, 78, 6, 2);
 }
 
 static void drawRaceMap(TinyGPSPlus& gps, bool full)

@@ -34,6 +34,8 @@ white font-4 values, redrawn only on change, width-capped; POS line removed),
 boat triangle/edge-dot + dashed yellow to destination center + wind arrow;
 GPS countdown header + next-tag; strip with mode tag + next data + N-UP/BRG/FIT;
 map layer ≤1Hz, text padded),
+`gps_mock.*` scripted GPS for indoor testing (synthetic RMC+GGA from `GET /sim/next`
+into `gps.encode()`; NVS flag; uploads suppressed; MOCK banner; portal `/mock`),
 `race_session.*` health-pulled session cache (marks/lines/wind/startTime+offset,
 NVS `race` ns, ArduinoJson heap doc; unassigned keeps cache),
 `screen_waypoints.*` (LL flag, max 10 FIFO RAM-only), `screen_timers.*` chrono,
@@ -63,7 +65,7 @@ NVS `race` ns, ArduinoJson heap doc; unassigned keeps cache),
 - `GET /health` headers `DeviceId:<MAC>` + `Username:`; response body parsed for
   `session` push (course + startTime + offset, cached in NVS); `POST /gps` JSON lat/lon/speed/course/alt/sats/flagged/username. `setInsecure()` everywhere, no auth.
 - Portal always up: open AP `IndietroTutta`, DNS → `192.168.4.1` → `/config`.
-  Routes: `/config /save /wifi/remove /reset (wipe all!) /reboot /status /health /serial`. All unauthenticated.
+  Routes: `/config /save /wifi/remove /reset (wipe all!) /reboot /status /health /serial /mock?on=1|0`. All unauthenticated.
 - OTA: `GET ota/latest.txt` → semver compare → `HTTPUpdate firmware.bin` + progress bar + `redrawCurrentPage()`. Boot check if `otaCheckOnStart`, 60s WiFi timeout.
 - Bruno in `bruno/` covers portal routes (`access-point` + `local-network` envs).
 - Quirks: empty portal name keeps stored username; username regex both sides; WiFi rotate-on-5s-fail never blocks UI; OTA download blocks loop; waypoints/laps RAM-only.
