@@ -48,7 +48,7 @@ void drawScreenConfig(bool requiresInit)
     tft.setTextColor(WHITE, BG);
     tft.setTextDatum(MC_DATUM);
     tft.drawString("CONFIG", tft.width() / 2, 20, 4);
-    tft.drawFastHLine(20, 44, tft.width() - 40, GRAY);
+    tft.drawFastHLine(0, 44, tft.width(), GRAY);
 
     // ---- Selectable rows ----
     if (needsRedraw) {
@@ -75,7 +75,8 @@ void drawScreenConfig(bool requiresInit)
     }
 
     // ---- Hint bar: L/LL on the left, R/RR on the right ----
-    tft.setTextColor(WHITE, BG);
+    tft.drawFastHLine(0, 214, tft.width(), GRAY);
+    tft.setTextColor(GRAY, BG);
     tft.setTextDatum(BL_DATUM);
     tft.drawString("L Main  LL OTA", 8, 235, 2);
     tft.setTextDatum(BR_DATUM);

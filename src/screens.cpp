@@ -3,6 +3,7 @@
 #include "screen_diagnostics.h"
 #include "screen_waypoints.h"
 #include "screen_timers.h"
+#include "screen_race.h"
 #include "screen_config.h"
 #include "splash_screen.h"
 #include "buttons.h"
@@ -66,6 +67,7 @@ void drawScreen(TinyGPSPlus &gps, bool requiresInit, ScreenPage page) {
     case PageDiagnostics: drawScreenDiagnostics(gps); break;
     case PageWaypoints: drawScreenWaypoints(gps, requiresInit); break;
     case PageTimers: drawScreenTimers(requiresInit); break;
+    case PageRace: drawScreenRace(gps, requiresInit); break;
     case PageConfig: drawScreenConfig(requiresInit); break;
 
     default:
@@ -120,6 +122,7 @@ void screenButtonEvent(
         case PageDiagnostics: screenDiagnosticsButton(button, event); break;
         case PageWaypoints: screenWaypointsButton(button, event); break;
         case PageTimers: screenTimersButton(button, event); break;
+        case PageRace: screenRaceButton(button, event); break;
         case PageConfig: screenConfigButton(button, event); break;
     }
 }

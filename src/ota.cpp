@@ -11,15 +11,16 @@
 
 extern TFT_eSPI tft;
 
+#define GRAY 0x7BEF
 
 // --------------------------------------------------
 // OTA SCREEN
 // --------------------------------------------------
 
-static const int OTA_MAX_LINES = 10;
+static const int OTA_MAX_LINES = 8;
 static const int OTA_LINE_HEIGHT = 18;
 static const int OTA_LOG_X = 5;
-static const int OTA_LOG_Y = 8;
+static const int OTA_LOG_Y = 52;
 
 static String otaLines[OTA_MAX_LINES];
 static int otaLineCount = 0;
@@ -70,67 +71,28 @@ void drawOTAProgress(int progress) {
     }
 }
 
-// Redraw the complete OTA screen
-static void redrawOTAScreen() {
 
-  tft.fillScreen(TFT_BLACK);
-
-  tft.setTextDatum(TL_DATUM);
-  tft.setTextColor(TFT_WHITE, TFT_BLACK);
-
-  for (int i = 0; i < otaLineCount; i++) {
-    tft.drawString(
-      otaLines[i],
-      OTA_LOG_X,
-      OTA_LOG_Y + i * OTA_LINE_HEIGHT,
-      2
-    );
-  }
-
-  // Progress bar / percentage at bottom
-  if (otaProgress >= 0) {
-
-    int y = tft.height() - 35;
-
-    tft.setTextColor(TFT_BLUE, TFT_BLACK);
-
-    tft.drawString(
-      "Downloading: " + String(otaProgress) + "%",
-      OTA_LOG_X,
-      y,
-      2
-    );
-
-    // Progress bar
-    int barX = OTA_LOG_X;
-    int barY = tft.height() - 15;
-    int barW = tft.width() - 10;
-    int barH = 8;
-
-    tft.drawRect(
-      barX,
-      barY,
-      barW,
-      barH,
-      TFT_WHITE
-    );
-
-    int fillW = ((barW - 2) * otaProgress) / 100;
-
-    if (fillW > 0) {
-      tft.fillRect(
-        barX + 1,
-        barY + 1,
-        fillW,
-        barH - 2,
-        TFT_BLUE
-      );
-    }
-  }
+// Fixed-width log lines so a shorter line fully overwrites a longer one
+// (no clear on the refresh path — it flickers)
+static String padOtaLine(const String& s) {
+  String out = s;
+  while (out.length() < 36) out += " ";
+  return out;
 }
 
+// Draw one log slot in place (same pixels overwritten, no flicker)
+static void drawOtaSlot(int i) {
+  tft.setTextDatum(TL_DATUM);
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+  tft.drawString(
+    padOtaLine(otaLines[i]),
+    OTA_LOG_X,
+    OTA_LOG_Y + i * OTA_LINE_HEIGHT,
+    2
+  );
+}
 
-// Start a new OTA screen
+// Start a new OTA screen (the only full clear on this screen)
 void initOTAScreen() {
 
   otaLineCount = 0;
@@ -141,28 +103,27 @@ void initOTAScreen() {
   }
 
   tft.fillScreen(TFT_BLACK);
+
+  // Title + rule, same style as the other screens
+  tft.setTextDatum(MC_DATUM);
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+  tft.drawString("UPDATE", tft.width() / 2, 20, 4);
+  tft.drawFastHLine(0, 44, tft.width(), GRAY);
 }
 
-// Update only the progress display
-void drawOTAScreen() {
-    tft.fillScreen(TFT_BLACK);
-
-    tft.setTextDatum(TL_DATUM);
-    tft.setTextColor(TFT_WHITE, TFT_BLACK);
-
-    for (int i = 0; i < otaLineCount; i++) {
-        tft.drawString(
-            otaLines[i],
-            OTA_LOG_X,
-            OTA_LOG_Y + i * OTA_LINE_HEIGHT,
-            2
-        );
-    }
+// Repaint new content: only the fresh line, or all slots after a scroll shift
+void drawOTAScreen(bool scrolled) {
+  if (scrolled) {
+    for (int i = 0; i < otaLineCount; i++) drawOtaSlot(i);
+  } else if (otaLineCount > 0) {
+    drawOtaSlot(otaLineCount - 1);
+  }
 }
-
 
 // Append a line to the OTA screen
 void appendOTAScreen(const String& message) {
+
+    bool scrolled = false;
 
     if (otaLineCount >= OTA_MAX_LINES) {
 
@@ -171,11 +132,12 @@ void appendOTAScreen(const String& message) {
         }
 
         otaLineCount = OTA_MAX_LINES - 1;
+        scrolled = true;
     }
 
     otaLines[otaLineCount++] = message;
 
-    drawOTAScreen();
+    drawOTAScreen(scrolled);
 }
 
 

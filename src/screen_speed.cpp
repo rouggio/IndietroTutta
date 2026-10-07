@@ -7,6 +7,7 @@
 #include "backend.h"
 #include "buttons.h"
 #include "screens.h"
+#include "screen_timers.h"
 
 #include "screen_speed.h"
 
@@ -221,7 +222,7 @@ static void drawRightValue(const String& padded, int y, uint8_t font, String& la
   last = padded;
   tft.setTextColor(WHITE, BG);
   tft.setTextDatum(TR_DATUM);
-  tft.drawString(padded, tft.width() - 8, y, font);
+  tft.drawString(padded, tft.width() - 4, y, font);
 }
 
 static void drawRightLabel(const char* label, int y)
@@ -233,7 +234,7 @@ static void drawRightLabel(const char* label, int y)
 
 // Grid: same 1px GRAY as the top separator (drawTopBar).
 // Redrawn every frame over the same pixels — no flicker, no clear needed.
-static const int GRID_X = 224;
+static const int GRID_X = 222;
 static const int GRID_TOP = 30;
 static const int GRID_BOTTOM = 210;
 // East column: 3 equal cells between top and bottom line
@@ -267,59 +268,62 @@ void drawSpeed(TinyGPSPlus &gps)
   if (config.speedUnit == 1) { value *= 1.852; maxValue *= 1.852; }         // km/h
   else if (config.speedUnit == 2) { value *= 1.15078; maxValue *= 1.15078; } // mph
 
-  // Instant speed centered in the west grid slot
+  // Instant speed centered in the west grid slot — recentered higher while
+  // the chrono south cell is visible
+  static bool lastRunning = false;
+  bool running = chronoIsRunning();
+  int labelY = running ? 62 : 78;
+  int bigY = running ? 112 : 128;
+  if (running != lastRunning) {
+    tft.fillRect(0, 34, GRID_X, 134, BG);
+    lastRunning = running;
+  }
   const int cx = GRID_X / 2;
   tft.setTextDatum(MC_DATUM);
 
-  tft.setTextColor(WHITE, BG);
+  tft.setTextColor(GRAY, BG);
   String label = "SPEED (" + String(unitLabels[config.speedUnit]) + ")";
-  tft.drawString(label, cx, 80, 2);
+  tft.drawString(label, cx, labelY, 2);
 
   tft.setTextColor(TFT_YELLOW, BG);
   if (gps.speed.isValid()) {
     String spd = " " + String(value, 1) + " ";
-    tft.drawString(spd, cx, 125, 8);
+    tft.drawString(spd, cx, bigY, 8);
   } else {
     String spd = "  ---  ";
-    tft.drawString(spd, cx, 125, 8);
+    tft.drawString(spd, cx, bigY, 8);
   }
 
   // Right column: Max / Course / Session, one per equal grid cell.
   // Labels gray, values white. No fillRect/clear on the refresh path.
-  drawRightLabel("Max", 42);
+  drawRightLabel("Max", 39);
   String maxPadded;
   if (hasSessionMax) {
-    char maxBuf[16];
-    snprintf(maxBuf, sizeof(maxBuf), "%04.1f", maxValue);
-    maxPadded = "  " + String(maxBuf) + " ";
+    maxPadded = "  " + String(maxValue, 1) + " ";
   } else {
     maxPadded = "  ---  ";
   }
-  drawRightValue(maxPadded, 64, 4, lastMaxStr);
+  drawRightValue(maxPadded, 61, 4, lastMaxStr);
 
-  drawRightLabel("Course", 102);
+  drawRightLabel("Course", 99);
   String crsVal;
   if (gps.course.isValid()) {
-    int deg = (int)gps.course.deg();
-    String full = String(deg) + " (" + String(TinyGPSPlus::cardinal(gps.course.deg())) + ")";
-    String padded = "  " + full + " ";
-    if (tft.textWidth(padded, 4) > 90) {
-      padded = "  " + String(deg) + "° ";
-    }
-    crsVal = padded;
+    // Fixed-width (3-digit field) so shrinking bearings fully overwrite
+    String deg = String((int)gps.course.deg());
+    while (deg.length() < 3) deg = " " + deg;
+    crsVal = "  " + deg + "°  ";
   } else {
     crsVal = "  ---  ";
   }
-  drawRightValue(crsVal, 124, 4, lastCrsStr);
+  drawRightValue(crsVal, 121, 4, lastCrsStr);
 
-  drawRightLabel("Session", 162);
+  drawRightLabel("Session", 159);
   unsigned long totalSec = millis() / 1000UL;
-  unsigned long hh = totalSec / 3600UL;
-  unsigned long mm = (totalSec % 3600UL) / 60UL;
-  unsigned long ss = totalSec % 60UL;
+  unsigned long sesMm = totalSec / 60UL;
+  unsigned long sesSs = totalSec % 60UL;
   char sesBuf[16];
-  snprintf(sesBuf, sizeof(sesBuf), "%02lu:%02lu:%02lu", hh, mm, ss);
-  drawRightValue("  " + String(sesBuf) + " ", 184, 2, lastSesStr);
+  snprintf(sesBuf, sizeof(sesBuf), "%02lu'%02lu\"", sesMm, sesSs);
+  drawRightValue("  " + String(sesBuf) + " ", 181, 4, lastSesStr);
 }
 
 void initScreen() {
@@ -339,6 +343,21 @@ void drawScreenSpeed(TinyGPSPlus &gps, bool requiresInit)
   // Normal display
   drawTopBar(gps);
   drawSpeed(gps);
+
+  // Chrono-running indicator: grid line at the bottom of the speed cell
+  // plus the live timer value in the new south cell (only while running)
+  static bool runningLineDrawn = false;
+  if (chronoIsRunning()) {
+    tft.drawFastHLine(0, 172, GRID_X, GRAY);
+    tft.setTextColor(WHITE, BG);
+    tft.setTextDatum(MC_DATUM);
+    String chronoStr = "   " + chronoDisplayText() + "   ";
+    tft.drawString(chronoStr, GRID_X / 2, 193, 4);
+    runningLineDrawn = true;
+  } else if (runningLineDrawn) {
+    tft.fillRect(0, 172, GRID_X, 210 - 172, BG);
+    runningLineDrawn = false;
+  }
 
   drawMainGrid();
 

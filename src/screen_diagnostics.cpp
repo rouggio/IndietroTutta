@@ -33,7 +33,7 @@ void drawScreenDiagnosticsMain(TinyGPSPlus &gps)
   tft.setTextDatum(MC_DATUM);
   tft.drawString("DIAGNOSTICS", tft.width() / 2, 20, 4);
 
-  tft.drawFastHLine(20, 44, tft.width() - 40, GRAY);
+  tft.drawFastHLine(0, 44, tft.width(), GRAY);
   tft.drawFastVLine(DIVIDER_X, 52, 152, GRAY);
 
   char buf[24];
@@ -101,7 +101,8 @@ void drawScreenDiagnosticsMain(TinyGPSPlus &gps)
   tft.drawString(padRight("User " + user, 14), COL_R_X, 176, 2);
 
   // Hint bar: L/LL left, R/RR right (subscreen: L returns to speed)
-  tft.setTextColor(WHITE, BG);
+  tft.drawFastHLine(0, 217, tft.width(), GRAY);
+  tft.setTextColor(GRAY, BG);
   tft.setTextDatum(BL_DATUM);
   tft.drawString("L Back", 8, 235, 2);
 }

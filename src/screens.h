@@ -16,13 +16,14 @@ enum ScreenPage {
     PageDiagnostics = 1,
     PageWaypoints = 2,
     PageTimers = 3,
-    PageConfig = 4
+    PageRace = 4,
+    PageConfig = 5
 };
 
 // Number of pages in the L-short cycle. DIAGNOSTICS and CONFIG are
 // intentionally excluded — reachable only via speed-screen gestures
 // (RR = diagnostics, LL = config).
-static constexpr int PAGE_CYCLE = 3;
+static constexpr int PAGE_CYCLE = 4;
 
 // Non-blocking splash: drawn once at boot, kept on screen while setup
 // runs underneath; endSplash() releases it as soon as the loop is ready

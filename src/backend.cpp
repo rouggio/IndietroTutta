@@ -2,6 +2,7 @@
 #include "backend.h"
 #include "config_store.h"
 #include "serial_buffer.h"
+#include "race_session.h"
 
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
@@ -14,6 +15,7 @@
 
 #define HEALTH_URL BASE_URL "/health"
 #define GPS_URL    BASE_URL "/gps"
+#define GPS_FLAGGED_URL BASE_URL "/gps/flagged"
 
 // ---------------------------------------------------------
 // Background server interactions.
@@ -48,14 +50,26 @@ struct BackendWork {
     double altitude;
     int sats;
     bool flagged;
+    char uid[41]; // waypoint id for flagged posts, "" otherwise
+};
+
+struct BackendDelete {
+    char uid[41];
 };
 
 static QueueHandle_t workQueue = nullptr;
+static QueueHandle_t deleteQueue = nullptr;
 static volatile bool online = false;
+static volatile bool healthNow = false;
 
 bool backendOnline()
 {
     return online;
+}
+
+void backendPollHealthNow()
+{
+    healthNow = true;
 }
 
 // ---------------------------------------------------------
@@ -103,6 +117,12 @@ static void healthCheck()
         int code = http.GET();
         if (code == HTTP_CODE_OK) {
             online = true;
+            // Race push rides the heartbeat: parse the session (if any).
+            // ~2KB body, heap-backed JSON — safe on the task stack.
+            String body = http.getString();
+            if (body.length() > 0 && body.length() < 8192) {
+                raceSessionParse(body.c_str());
+            }
         } else {
             online = false;
         }
@@ -143,6 +163,9 @@ static bool sendPosition(const BackendWork &w)
     body += ",\"sats\":" + String(w.sats);
     body += ",\"flagged\":" + String(w.flagged ? "true" : "false");
     body += ",\"fw\":\"" BUILD_VERSION "\"";
+    if (w.flagged && w.uid[0] != '\0') {
+        body += ",\"uid\":\"" + String(w.uid) + "\"";
+    }
 
     if (config.username[0] != '\0') {
         body += ",\"username\":\"" + String(config.username) + "\"";
@@ -163,6 +186,38 @@ static bool sendPosition(const BackendWork &w)
     return false;
 }
 
+// true when done (sent, rejected, or already gone); false to retry later
+static bool sendDeleteWaypoint(const BackendDelete &d)
+{
+    if (WiFi.status() != WL_CONNECTED) {
+        return false;
+    }
+
+    WiFiClientSecure client;
+    client.setInsecure();
+
+    HTTPClient http;
+
+    if (!http.begin(client, GPS_FLAGGED_URL)) {
+        return false;
+    }
+
+    http.addHeader("Content-Type", "application/json");
+    http.addHeader("DeviceId", String(WiFi.macAddress()));
+
+    String body = "{\"uid\":\"" + String(d.uid) + "\"}";
+
+    int code = http.sendRequest("DELETE", body);
+
+    http.end();
+
+    if (code <= 0 || code >= 500) {
+        return false;
+    }
+
+    return true;
+}
+
 static void backendTask(void *param)
 {
     (void)param;
@@ -176,7 +231,8 @@ static void backendTask(void *param)
 
         unsigned long now = millis();
 
-        if (now - lastHealthCheck >= HEALTH_CHECK_INTERVAL) {
+        if (healthNow || now - lastHealthCheck >= HEALTH_CHECK_INTERVAL) {
+            healthNow = false;
             lastHealthCheck = now;
             healthCheck();
         }
@@ -189,6 +245,15 @@ static void backendTask(void *param)
                        "[BACKEND] Position send failed"
             );
         }
+
+        BackendDelete del;
+        if (xQueueReceive(deleteQueue, &del, 0) == pdTRUE) {
+            if (sendDeleteWaypoint(del)) {
+                bufferedSerialPrintln("[BACKEND] Waypoint delete sent");
+            } else {
+                xQueueSendToFront(deleteQueue, &del, 0);
+            }
+        }
     }
 }
 
@@ -198,11 +263,17 @@ static void backendTask(void *param)
 
 void backendInit()
 {
-    if (workQueue) {
+    if (workQueue && deleteQueue) {
         return;
     }
 
-    workQueue = xQueueCreate(4, sizeof(BackendWork));
+    if (!workQueue) {
+        workQueue = xQueueCreate(16, sizeof(BackendWork));
+    }
+
+    if (!deleteQueue) {
+        deleteQueue = xQueueCreate(8, sizeof(BackendDelete));
+    }
 
     xTaskCreatePinnedToCore(
         backendTask,
@@ -215,7 +286,7 @@ void backendInit()
     );
 }
 
-bool backendSendFlaggedPosition(TinyGPSPlus &gps)
+bool backendSendFlaggedPosition(TinyGPSPlus &gps, const char* uid)
 {
     if (!gps.location.isValid()) {
         bufferedSerialPrintln("[GPS] Cannot flag position: no valid GPS fix");
@@ -229,14 +300,44 @@ bool backendSendFlaggedPosition(TinyGPSPlus &gps)
         gps.course.deg(),
         gps.altitude.meters(),
         gps.satellites.value(),
-        true
+        true,
+        {0}
     };
+
+    if (uid) {
+        strncpy(w.uid, uid, sizeof(w.uid) - 1);
+    }
 
     const bool queued = enqueueWork(w);
 
     bufferedSerialPrintln(
         queued ? "[BACKEND] Flagged position queued" :
                  "[BACKEND] Cannot flag position: queue unavailable"
+    );
+
+    return queued;
+}
+
+bool backendEnqueueDeleteWaypoint(const char* uid)
+{
+    if (!deleteQueue || !uid || uid[0] == '\0') {
+        return false;
+    }
+
+    BackendDelete d = {{0}};
+    strncpy(d.uid, uid, sizeof(d.uid) - 1);
+
+    if (uxQueueSpacesAvailable(deleteQueue) == 0) {
+        BackendDelete dropped;
+        xQueueReceive(deleteQueue, &dropped, 0);
+        bufferedSerialPrintln("[BACKEND] Delete queue full, dropped oldest");
+    }
+
+    const bool queued = xQueueSend(deleteQueue, &d, 0) == pdTRUE;
+
+    bufferedSerialPrintln(
+        queued ? "[BACKEND] Waypoint delete queued" :
+                 "[BACKEND] Cannot queue waypoint delete"
     );
 
     return queued;

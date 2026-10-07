@@ -19,6 +19,7 @@ struct FlaggedMarker {
   double lat;
   double lon;
   unsigned long startedAt;
+  char uid[41]; // backend id for this waypoint, "" if never sent
 };
 
 static constexpr int MAX_FLAGGED_MARKERS = 10;
@@ -46,8 +47,6 @@ static String markerElapsed(unsigned long startedAt)
 
 static void drawBottomBar(String timeStr, String dateStr)
 {
-  tft.drawFastHLine(20, 200, tft.width() - 40, GRAY);
-
   tft.setTextColor(WHITE, BG);
   tft.setTextDatum(BC_DATUM);
 
@@ -56,7 +55,14 @@ static void drawBottomBar(String timeStr, String dateStr)
   tft.drawString(bottom, tft.width() / 2, 208, 4);
 }
 
-static void rememberFlaggedMarker(TinyGPSPlus &gps)
+static unsigned int waypointSeq = 0;
+
+static void makeWaypointUid(char* out, size_t len)
+{
+  snprintf(out, len, "wp-%lu-%u", (unsigned long)millis(), ++waypointSeq);
+}
+
+static void rememberFlaggedMarker(TinyGPSPlus &gps, const char* uid)
 {
   if (flaggedMarkerCount == MAX_FLAGGED_MARKERS)
   {
@@ -66,11 +72,18 @@ static void rememberFlaggedMarker(TinyGPSPlus &gps)
     flaggedMarkerCount--;
   }
 
-  flaggedMarkers[flaggedMarkerCount++] = {
+  FlaggedMarker m = {
     gps.location.lat(),
     gps.location.lng(),
-    millis()
+    millis(),
+    {0}
   };
+
+  if (uid) {
+    strncpy(m.uid, uid, sizeof(m.uid) - 1);
+  }
+
+  flaggedMarkers[flaggedMarkerCount++] = m;
 
   // When a new marker is remembered, show it
   displayedMarker = flaggedMarkerCount - 1;
@@ -97,6 +110,9 @@ static void deleteDisplayedMarker()
 {
   if (displayedMarker < 0 || displayedMarker >= flaggedMarkerCount)
     return;
+
+  // Sync the delete to the backend (best effort, queued)
+  backendEnqueueDeleteWaypoint(flaggedMarkers[displayedMarker].uid);
 
   // Shift later markers down to overwrite the deleted one
   for (int i = displayedMarker + 1; i < flaggedMarkerCount; i++) {
@@ -137,7 +153,8 @@ void drawScreenWaypoints(TinyGPSPlus &gps, bool requiresInit)
 
   tft.setTextColor(WHITE, BG);
   tft.setTextDatum(MC_DATUM);
-  tft.drawString("WAYPOINTS", tft.width() / 2, 25, 4);
+  tft.drawString("WAYPOINTS", tft.width() / 2, 20, 4);
+  tft.drawFastHLine(0, 44, tft.width(), GRAY);
 
   if (flaggedMarkerCount == 0) {
     tft.drawString("No waypoints", tft.width() / 2, 110, 4);
@@ -157,7 +174,8 @@ void drawScreenWaypoints(TinyGPSPlus &gps, bool requiresInit)
   }
 
   // Bottom labels: L/LL on the left, R/RR on the right
-  tft.setTextColor(WHITE, BG);
+  tft.drawFastHLine(0, 214, tft.width(), GRAY);
+  tft.setTextColor(GRAY, BG);
   tft.setTextDatum(BL_DATUM);
   tft.drawString("L Next  LL Flag", 8, 235, 2);
   tft.setTextDatum(BR_DATUM);
@@ -187,8 +205,10 @@ void screenWaypointsButton(Button button, ButtonEvent event)
 
   // Left long: flag current position
   if (button == Button::Left && event == ButtonEvent::LongPress) {
-    if (waypointsGPS && backendSendFlaggedPosition(*waypointsGPS)) {
-      rememberFlaggedMarker(*waypointsGPS);
+    char uid[41];
+    makeWaypointUid(uid, sizeof(uid));
+    if (waypointsGPS && backendSendFlaggedPosition(*waypointsGPS, uid)) {
+      rememberFlaggedMarker(*waypointsGPS, uid);
     }
     return;
   }

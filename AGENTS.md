@@ -18,7 +18,10 @@ OTA self-update. Main screen is always big `speed` + right column (Max/Course/Se
 `src/main.cpp loop()`: serial_buffer → buttons → gps → screens → wifi → backend → ota.
 No RTOS tasks except `backend.cpp` FreeRTOS task (12288 stack, core 0):
 
-- UI thread only snapshots GPS + `enqueueWork()` (4-deep queue, drops oldest).
+- UI thread only snapshots GPS + `enqueueWork()` (16-deep queue, drops oldest).
+  Waypoints carry a device-generated `uid` (`wp-<millis>-<seq>`, stored on the
+  marker); deletes go through an 8-deep uid queue (`DELETE /gps/flagged`,
+  retried until sent/gone).
 - Task drains queue → `POST /gps`, plus `GET /health` every 30s.
 - `backendLoop()` adaptive GPS throttle: `30s@0kn → 2s@5kn` linear (`gpsIntervalForSpeed`).
 - `backend.h: backendOnline()`, `backendSendFlaggedPosition()`, `backendInit/Loop`.
@@ -27,6 +30,10 @@ No RTOS tasks except `backend.cpp` FreeRTOS task (12288 stack, core 0):
 Key modules: `screens.*` router + 200ms throttle, `screen_speed.*` main
 (big speed nudged right of center; right column MAX/CRS/SES — gray font-2 labels,
 white font-4 values, redrawn only on change, width-capped; POS line removed),
+`screen_race.*` shared RACE/PRAC screen (wireframe map + boat triangle + wind arrow,
+GPS countdown header, next-mark bearing/dist/side; map layer ≤1Hz, text padded),
+`race_session.*` health-pulled session cache (marks/lines/wind/startTime+offset,
+NVS `race` ns, ArduinoJson heap doc; unassigned keeps cache),
 `screen_waypoints.*` (LL flag, max 10 FIFO RAM-only), `screen_timers.*` chrono,
 `screen_diagnostics.*` (RR from main), `screen_config.*` (LL from main),
 `wifi_manager.*` non-blocking AP+STA (scan prefers visible strongest, park/retry),
@@ -36,8 +43,8 @@ white font-4 values, redrawn only on change, width-capped; POS line removed),
 
 ## UI navigation (hints: L/LL left, R/RR right)
 
-- L-cycle = MAIN → WAYPOINTS → TIMERS → MAIN (`PAGE_CYCLE=3`). DIAGNOSTICS + CONFIG excluded.
-- MAIN: `L` next, `LL`→CONFIG, `RR`→DIAGNOSTICS. DIAGNOSTICS/CONFIG: `L` back to MAIN.
+- L-cycle = MAIN → WAYPOINTS → TIMERS → RACE → MAIN (`PAGE_CYCLE=4`). DIAGNOSTICS + CONFIG excluded.
+- MAIN: `L` next, `LL`→CONFIG, `RR`→DIAGNOSTICS. RACE: `L` next, `R` resync health now (pull pushed session). DIAGNOSTICS/CONFIG: `L` back to MAIN.
 - WAYPOINTS: `R` cycle, `LL` flag (also `POST /gps flagged:true`), `RR` delete.
 - TIMERS: `R` start/stop, `RR` lap/reset. CONFIG: `R` select row, `RR` apply, `LL` force OTA now.
 - Every page switch full-black clear; ghost-clear readouts in speed/timers.
@@ -51,7 +58,8 @@ white font-4 values, redrawn only on change, width-capped; POS line removed),
 
 ## Network / portal / OTA
 
-- `GET /health` headers `DeviceId:<MAC>` + `Username:`; `POST /gps` JSON lat/lon/speed/course/alt/sats/flagged/username. `setInsecure()` everywhere, no auth.
+- `GET /health` headers `DeviceId:<MAC>` + `Username:`; response body parsed for
+  `session` push (course + startTime + offset, cached in NVS); `POST /gps` JSON lat/lon/speed/course/alt/sats/flagged/username. `setInsecure()` everywhere, no auth.
 - Portal always up: open AP `IndietroTutta`, DNS → `192.168.4.1` → `/config`.
   Routes: `/config /save /wifi/remove /reset (wipe all!) /reboot /status /health /serial`. All unauthenticated.
 - OTA: `GET ota/latest.txt` → semver compare → `HTTPUpdate firmware.bin` + progress bar + `redrawCurrentPage()`. Boot check if `otaCheckOnStart`, 60s WiFi timeout.

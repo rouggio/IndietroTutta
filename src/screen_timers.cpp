@@ -97,10 +97,16 @@ void drawScreenTimers(bool requiresInit)
 
   const unsigned long now = chronoNow();
 
+  // ---- Title, same style as the other screens ----
+  tft.setTextColor(WHITE, BG);
+  tft.setTextDatum(MC_DATUM);
+  tft.drawString("STOPWATCH", tft.width() / 2, 20, 4);
+  tft.drawFastHLine(0, 44, tft.width(), GRAY);
+
   // ---- Left half: status + time ----
 
   if (!statusDrawn || drawnState != chronoState) {
-    tft.fillRect(TIME_CENTER_X - 55, 24, 110, 22, BG);
+    tft.fillRect(TIME_CENTER_X - 55, 50, 110, 22, BG);
     drawnState = chronoState;
     statusDrawn = true;
   }
@@ -108,56 +114,74 @@ void drawScreenTimers(bool requiresInit)
   tft.setTextDatum(MC_DATUM);
   if (chronoState == ChronoState::Running) {
     tft.setTextColor(TFT_GREEN, BG);
-    tft.drawString("RUNNING", TIME_CENTER_X, 35, 2);
+    tft.drawString("RUNNING", TIME_CENTER_X, 62, 2);
   } else if (chronoState == ChronoState::Stopped) {
     tft.setTextColor(TFT_ORANGE, BG);
-    tft.drawString("STOPPED", TIME_CENTER_X, 35, 2);
+    tft.drawString("STOPPED", TIME_CENTER_X, 62, 2);
   } else {
     tft.setTextColor(GRAY, BG);
-    tft.drawString("READY", TIME_CENTER_X, 35, 2);
+    tft.drawString("READY", TIME_CENTER_X, 62, 2);
   }
 
   String bigTime = formatBig(now);
 
   if (bigTime.length() < lastBigTime.length()) {
-    tft.fillRect(TIME_CENTER_X - 85, 62, 170, 58, BG);
+    tft.fillRect(TIME_CENTER_X - 85, 88, 170, 58, BG);
   }
   lastBigTime = bigTime;
 
   tft.setTextColor(WHITE, BG);
-  tft.drawString(bigTime, TIME_CENTER_X, 95, 6);
+  tft.drawString(bigTime, TIME_CENTER_X, 112, 6);
 
   char cs[3];
   snprintf(cs, sizeof(cs), "%02lu", (now % 1000) / 10);
   tft.setTextColor(GRAY, BG);
-  tft.drawString("." + String(cs), TIME_CENTER_X, 140, 4);
+  tft.drawString("." + String(cs), TIME_CENTER_X, 158, 4);
 
   // ---- Right column: laps (newest last) ----
-  tft.drawFastVLine(LAPS_DIVIDER_X, 28, 160, GRAY);
+  tft.drawFastVLine(LAPS_DIVIDER_X, 44, 170, GRAY);
 
   const int shown = (lapCount < LAPS_MAX_SHOWN) ? lapCount : LAPS_MAX_SHOWN;
   int first = lapCount - shown;
 
   for (int i = first; i < lapCount; i++) {
-    int y = 32 + (i - first) * 22;
+    int y = 54 + (i - first) * 20;
 
+    // Single line per lap: tag + lap/total share one baseline
     tft.setTextColor(TFT_YELLOW, BG);
     tft.setTextDatum(TL_DATUM);
     tft.drawString("L" + String(i + 1), LAPS_X, y, 2);
 
     tft.setTextColor(WHITE, BG);
-    tft.drawString(formatLap(laps[i].lapMs), LAPS_X, y + 14, 1);
-
-    tft.setTextColor(GRAY, BG);
-    tft.drawString("/ " + formatLap(laps[i].totalMs), LAPS_X + 52, y + 14, 1);
+    tft.drawString(formatLap(laps[i].lapMs) + "/" + formatLap(laps[i].totalMs), LAPS_X + 30, y + 4, 1);
   }
 
   // ---- Hint bar: L/LL on the left, R/RR on the right ----
-  tft.setTextColor(WHITE, BG);
+  tft.drawFastHLine(0, 214, tft.width(), GRAY);
+  tft.setTextColor(GRAY, BG);
   tft.setTextDatum(BL_DATUM);
   tft.drawString("L Next", 8, 235, 2);
   tft.setTextDatum(BR_DATUM);
   tft.drawString("R Run  RR Lap/Rst", tft.width() - 8, 235, 2);
+}
+
+bool chronoIsRunning()
+{
+    return chronoState == ChronoState::Running;
+}
+
+String chronoDisplayText()
+{
+    unsigned long now = chronoNow();
+    // From the second lap on (L2, L3, ...) show the current lap with its tag,
+    // otherwise the overall time
+    if (lapCount > 0) {
+        unsigned long base = laps[lapCount - 1].totalMs;
+        return "L" + String(lapCount + 1) + " " + formatLap(now >= base ? now - base : 0);
+    }
+    char cs[3];
+    snprintf(cs, sizeof(cs), "%02lu", (now % 1000) / 10);
+    return formatBig(now) + "." + String(cs);
 }
 
 void screenTimersButton(Button button, ButtonEvent event)
