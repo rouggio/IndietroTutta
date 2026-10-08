@@ -7,6 +7,7 @@
 #include "screens.h"
 #include "serial_buffer.h"
 #include "screen_config.h"
+#include "server_link.h"
 
 extern TFT_eSPI tft;
 
@@ -17,7 +18,8 @@ extern TFT_eSPI tft;
 
 enum ConfigRow {
     ROW_OTA = 0,
-    ROW_SPEED = 1,
+    ROW_SERVER = 1,
+    ROW_SPEED = 2,
     ROW_COUNT
 };
 
@@ -52,7 +54,7 @@ void drawScreenConfig(bool requiresInit)
 
     // ---- Selectable rows ----
     if (needsRedraw) {
-        tft.fillRect(0, 60, tft.width(), 70, BG);
+        tft.fillRect(0, 60, tft.width(), 120, BG);
 
         for (int i = 0; i < ROW_COUNT; i++) {
             int y = 68 + i * 30;
@@ -64,12 +66,29 @@ void drawScreenConfig(bool requiresInit)
             if (i == ROW_OTA)
                 row += String("OTA on boot : ") +
                        (config.otaCheckOnStart ? "ON" : "OFF");
+            else if (i == ROW_SERVER)
+                row += String("Server      : ") +
+                       (serverMode() == 1 ? "DEV" : "PROD");
             else
                 row += String("Speed unit  : ") + speedLabel();
 
             tft.setTextDatum(TL_DATUM);
             tft.drawString(row, 12, y, 2);
         }
+
+        // Detail line under the rows: what PROD/DEV actually means right
+        // now. Host is set once via portal `/server` (typing an IP with
+        // two buttons is nobody's idea of fun); the toggle here flips mode.
+        String detail;
+        if (serverMode() == 1) {
+            const String host = serverDevHost();
+            detail = host.length() ? String("-> ") + host : "-> no host! use portal";
+        } else {
+            detail = "-> Render prod";
+        }
+        tft.setTextColor(GRAY, BG);
+        tft.setTextDatum(TL_DATUM);
+        tft.drawString(detail, 12, 162, 2);
 
         needsRedraw = false;
     }
@@ -114,12 +133,18 @@ void screenConfigButton(Button button, ButtonEvent event)
             bufferedSerialPrintln(config.otaCheckOnStart ?
                 "[CONFIG] OTA on boot enabled" :
                 "[CONFIG] OTA on boot disabled");
+            persistConfig();
+        } else if (selRow == ROW_SERVER) {
+            const int next = (serverMode() == 1) ? 0 : 1;
+            serverSetMode(next);
+            bufferedSerialPrintln(String("[CONFIG] Server -> ") + serverBaseUrl());
+            // server keys persist in their own NVS namespace, not cfg blob
         } else {
             config.speedUnit = (config.speedUnit + 1) % SPEED_UNITS;
             bufferedSerialPrintln("[CONFIG] Speed unit changed");
+            persistConfig();
         }
 
-        persistConfig();
         needsRedraw = true;
         return;
     }
