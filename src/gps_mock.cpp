@@ -138,31 +138,34 @@ static void feedWander(TinyGPSPlus& gps, double lat, double lon, double speedKn,
 static void wanderTick(TinyGPSPlus& gps)
 {
     if (!wInit) {
-        // Anchor: live fix first, else last known coords, else the course
-        // itself (UART is drained in mock, so a fix may never arrive —
-        // without the session fallback wandering could never start).
+        // Anchor: the course first (the only certain open water — sessions
+        // live at sea), else live fix, else last coords, else NVS seed.
+        // UART is drained in mock, so a fix may never arrive; the session
+        // fallback keeps wander from deadlocking on an empty ocean.
         double slat = 0.0, slon = 0.0;
         bool haveSeed = false;
-        if (gps.location.isValid()) {
+        if (raceSession.valid) {
+            if (raceSession.startLine.valid) {
+                slat = (raceSession.startLine.latA + raceSession.startLine.latB) / 2.0;
+                slon = (raceSession.startLine.lonA + raceSession.startLine.lonB) / 2.0;
+                haveSeed = true;
+            } else if (raceSession.markCount > 0) {
+                slat = raceSession.marks[0].lat;
+                slon = raceSession.marks[0].lon;
+                haveSeed = true;
+            }
+        }
+        if (!haveSeed && gps.location.isValid()) {
             slat = gps.location.lat();
             slon = gps.location.lng();
             haveSeed = true;
-        } else {
+        }
+        if (!haveSeed) {
             const double ll = gps.location.lat(), lo = gps.location.lng();
             if (ll != 0.0 || lo != 0.0) {
                 slat = ll;
                 slon = lo;
                 haveSeed = true;
-            } else if (raceSession.valid) {
-                if (raceSession.startLine.valid) {
-                    slat = (raceSession.startLine.latA + raceSession.startLine.latB) / 2.0;
-                    slon = (raceSession.startLine.lonA + raceSession.startLine.lonB) / 2.0;
-                    haveSeed = true;
-                } else if (raceSession.markCount > 0) {
-                    slat = raceSession.marks[0].lat;
-                    slon = raceSession.marks[0].lon;
-                    haveSeed = true;
-                }
             }
         }
         if (!haveSeed) {
@@ -187,7 +190,7 @@ static void wanderTick(TinyGPSPlus& gps)
     } else {
         mockClock += 3; // poll cadence
     }
-    // Gentle heading wander; steer home past the 150m leash.
+    // Brisk reach: 6kn with gentle helm; steer home past the 150m leash.
     const double cosLat = cos(aLat * M_PI / 180.0);
     const double dx = (wLon - aLon) * 111320.0 * cosLat;
     const double dy = (wLat - aLat) * 111320.0;
@@ -196,15 +199,15 @@ static void wanderTick(TinyGPSPlus& gps)
         if (home < 0) home += 360.0;
         wHead = home;
     } else {
-        wHead += (double)((int)(esp_random() % 51)) - 25.0;
+        wHead += (double)((int)(esp_random() % 31)) - 15.0;
         if (wHead < 0) wHead += 360.0;
         if (wHead >= 360.0) wHead -= 360.0;
     }
-    const double stepM = 1.5 * 0.514444 * 3.0;
+    const double stepM = 6.0 * 0.514444 * 3.0;
     const double hr = wHead * M_PI / 180.0;
     wLat += (stepM * cos(hr)) / 111320.0;
     wLon += (stepM * sin(hr)) / (111320.0 * cosLat);
-    feedWander(gps, wLat, wLon, 1.5, wHead, mockClock);
+    feedWander(gps, wLat, wLon, 6.0, wHead, mockClock);
 }
 
 void gpsMockPoll(TinyGPSPlus& gps)
