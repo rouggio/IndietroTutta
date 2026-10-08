@@ -18,6 +18,7 @@ static const uint16_t RBG = TFT_BLACK;
 static const uint16_t RFG = TFT_WHITE;
 static const uint16_t RDIM = 0x8410; // neutral gray
 static const uint16_t RBOAT = TFT_YELLOW;
+static const uint16_t MENU_GRAY = 0x7BEF; // CONFIG gray: menu reference color
 
 // Frame: full-bleed N/W/E border, south edge +4. Left viewport holds the
 // map (below the header); right viewport (1/5 width) holds the values.
@@ -876,32 +877,32 @@ static void menuText(bool isPractice, uint8_t i, char* buf, size_t n)
 
 static void drawRaceMenu(bool full)
 {
-    // Full-screen menu, same chrome as CONFIG: centered title + rule,
-    // `>` rows with yellow selection, hint bar below.
+    // CONFIG is the menu reference: centered title + rule, `>` rows with
+    // yellow selection, hint bar with rule. Same geometry, same grays.
     const bool isPractice = !(raceSession.valid && strcmp(raceSession.mode, "race") == 0);
     if (full) {
-        tft.fillScreen(RBG);
-        tft.setTextColor(RFG, RBG);
-        tft.setTextDatum(TC_DATUM);
+        tft.fillScreen(TFT_BLACK);
+        tft.setTextColor(TFT_WHITE, TFT_BLACK);
+        tft.setTextDatum(MC_DATUM);
         tft.drawString(isPractice ? "PRAC MENU" : "RACE MENU", tft.width() / 2, 20, 4);
-        tft.drawFastHLine(0, 44, tft.width(), RDIM);
+        tft.drawFastHLine(0, 44, tft.width(), MENU_GRAY);
     } else {
-        tft.fillRect(0, 60, tft.width(), 70, RBG);
+        tft.fillRect(0, 60, tft.width(), 70, TFT_BLACK);
     }
     char buf[16], row[20];
     for (uint8_t i = 0; i < menuN; i++) {
         menuText(isPractice, i, buf, sizeof(buf));
         snprintf(row, sizeof(row), "%s %s", i == menuSel ? ">" : " ", buf);
         tft.setTextDatum(TL_DATUM);
-        tft.setTextColor(i == menuSel ? TFT_YELLOW : RFG, RBG);
+        tft.setTextColor(i == menuSel ? TFT_YELLOW : TFT_WHITE, TFT_BLACK);
         tft.drawString(row, 12, 68 + i * 30, 2);
     }
-    tft.setTextColor(RDIM, RBG);
-    tft.drawFastHLine(0, 214, tft.width(), RDIM);
+    tft.drawFastHLine(0, 214, tft.width(), MENU_GRAY);
+    tft.setTextColor(MENU_GRAY, TFT_BLACK);
     tft.setTextDatum(BL_DATUM);
-    tft.drawString("L Back", 8, 239, 2);
+    tft.drawString("L Back", 8, 235, 2);
     tft.setTextDatum(BR_DATUM);
-    tft.drawString("R Sel RR Pick", tft.width() - 8, 239, 2);
+    tft.drawString("R Next  RR Pick", tft.width() - 8, 235, 2);
 }
 
 static void menuClose()
