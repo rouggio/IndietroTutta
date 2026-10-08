@@ -138,11 +138,36 @@ static void feedWander(TinyGPSPlus& gps, double lat, double lon, double speedKn,
 static void wanderTick(TinyGPSPlus& gps)
 {
     if (!wInit) {
-        // Anchor on the last known fix; without one there is nowhere local
-        // (and plausibly wet) to wander from.
-        if (!gps.location.isValid()) return;
-        aLat = wLat = gps.location.lat();
-        aLon = wLon = gps.location.lng();
+        // Anchor: live fix first, else last known coords, else the course
+        // itself (UART is drained in mock, so a fix may never arrive —
+        // without the session fallback wandering could never start).
+        double slat = 0.0, slon = 0.0;
+        bool haveSeed = false;
+        if (gps.location.isValid()) {
+            slat = gps.location.lat();
+            slon = gps.location.lng();
+            haveSeed = true;
+        } else {
+            const double ll = gps.location.lat(), lo = gps.location.lng();
+            if (ll != 0.0 || lo != 0.0) {
+                slat = ll;
+                slon = lo;
+                haveSeed = true;
+            } else if (raceSession.valid) {
+                if (raceSession.startLine.valid) {
+                    slat = (raceSession.startLine.latA + raceSession.startLine.latB) / 2.0;
+                    slon = (raceSession.startLine.lonA + raceSession.startLine.lonB) / 2.0;
+                    haveSeed = true;
+                } else if (raceSession.markCount > 0) {
+                    slat = raceSession.marks[0].lat;
+                    slon = raceSession.marks[0].lon;
+                    haveSeed = true;
+                }
+            }
+        }
+        if (!haveSeed) return;
+        aLat = wLat = slat;
+        aLon = wLon = slon;
         wHead = gps.course.isValid() ? gps.course.deg() : (double)(esp_random() % 360);
         const long e = raceGpsEpoch(gps);
         mockClock = e > 0 ? e : 946684800L + (long)(millis() / 1000); // else Y2K+uptime
