@@ -114,65 +114,25 @@ static bool feedServerFix(TinyGPSPlus& gps, double lat, double lon,
     return true;
 }
 
-// Server wander (GET /sim/wander): the committee's random-walk brain.
-// True when a fix was fed; false (no anchor/offline) → the caller holds
-// the last fix. The device never invents positions.
-static bool pollServerWander(TinyGPSPlus& gps)
-{
-    if (WiFi.status() != WL_CONNECTED) return false;
-    ServerLink link;
-    if (!link.begin(serverBaseUrl() + "/sim/wander?deviceId=" + String(WiFi.macAddress())))
-        return false;
-    const int code = link.http.GET();
-    if (code != HTTP_CODE_OK) {
-        link.http.end();
-        return false;
-    }
-    String payload = link.http.getString();
-    link.http.end();
-    if (payload.isEmpty() || payload.length() > 2048) return false;
-    DynamicJsonDocument doc(1024);
-    if (deserializeJson(doc, payload)) return false;
-    if (!(doc["wander"] | false)) return false;
-    const bool ok = feedServerFix(gps,
-                                  doc["lat"] | 0.0, doc["lon"] | 0.0,
-                                  doc["speed"] | 0.0, doc["course"] | 0.0,
-                                  doc["serverTime"] | "");
-    if (ok) {
-        bufferedSerialPrintln("[MOCK] wander fix (server)");
-    }
-    return ok;
-}
-
-// No server answer → hold the last fix (TinyGPS keeps it until aged out).
-// A mid-race dropout holds too, instead of inventing a position.
-static void wanderMaybe(TinyGPSPlus& gps)
-{
-    if (raceRunStarted() && !raceRunFinished()) return;
-    pollServerWander(gps);
-}
-
+// Single mock poll (1Hz): GET /sim/next answers with a scripted sample,
+// the server walk, or 404 (anchorless/offline) → hold the last fix.
+// The device never invents positions; mid-race it stays out entirely.
 void gpsMockPoll(TinyGPSPlus& gps)
 {
     if (!gpsMockActive()) return;
     if (WiFi.status() != WL_CONNECTED) return;
+    if (raceRunStarted() && !raceRunFinished()) return;
     static unsigned long lastPoll = 0;
-    // A scripted run owns the fix exclusively: while its fixes arrive the
-    // server walk stays silent, whatever the race state (pre-gun
-    // practice gets scripts too — racing them against wander mixes positions).
-    static unsigned long lastScriptFix = 0;
     const unsigned long now = millis();
     // 1Hz server poll: consumes 1Hz scripts losslessly, smoother walk.
     if (now - lastPoll < 1000) return;
     lastPoll = now;
-    const bool scriptLive = (now - lastScriptFix < 9000);
 
     ServerLink link;
     if (!link.begin(serverBaseUrl() + "/sim/next?deviceId=" + String(WiFi.macAddress()))) return;
     const int code = link.http.GET();
     if (code != HTTP_CODE_OK) {
         link.http.end();
-        if (!scriptLive) wanderMaybe(gps);
         return;
     }
     String payload = link.http.getString();
@@ -181,21 +141,15 @@ void gpsMockPoll(TinyGPSPlus& gps)
 
     DynamicJsonDocument doc(1024);
     if (deserializeJson(doc, payload)) return;
-    if (doc["done"] | false) {
-        bufferedSerialPrintln("[MOCK] run finished");
-        lastScriptFix = 0; // script over: walk-or-hold starts fresh
-        wanderMaybe(gps);  // holds mid-race, else server walk
-        return;
-    }
     const double lat = doc["lat"] | 0.0;
     const double lon = doc["lon"] | 0.0;
     const double speed = doc["speed"] | 0.0;   // knots
     const double course = doc["course"] | 0.0; // degrees
     const char* st = doc["serverTime"] | "";
-    const char* runId = doc["runId"] | "";
     if (!feedServerFix(gps, lat, lon, speed, course, st)) return;
-    lastScriptFix = now;
-    bufferedSerialPrintln("[MOCK] fix injected");
+    const bool wander = doc["wander"] | false;
+    const char* runId = wander ? "" : (doc["runId"] | "");
+    bufferedSerialPrintln(wander ? "[MOCK] wander fix (server)" : "[MOCK] fix injected");
 
     // Echo every 5th fix back (~15s): pipeline proof without touching tracks.
     static int pollCount = 0;

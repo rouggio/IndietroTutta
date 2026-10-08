@@ -16,7 +16,10 @@ OTA self-update. Main screen is always big `speed` + right column (Max/Course/Se
 ## Architecture — superloop + backend task
 
 `src/main.cpp loop()`: serial_buffer → buttons → gps → screens → wifi → backend → ota.
-No RTOS tasks except `backend.cpp` FreeRTOS task (12288 stack, core 0):
+Two FreeRTOS tasks in `backend.cpp` (12288 stack each, core 0): feed task
+(mock poll + telemetry upload + deletes + template fetch; slow passes
+>2s logged with leg split) and health task (heartbeat 30s idle / 5s live
++ run upload) so a slow `/health` never starves the GPS feed.
 
 - UI thread only snapshots GPS + `enqueueWork()` (16-deep queue, drops oldest).
   Waypoints carry a device-generated `uid` (`wp-<millis>-<seq>`, stored on the

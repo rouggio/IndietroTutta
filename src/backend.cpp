@@ -254,7 +254,6 @@ static void sendRunResult()
 static void backendTask(void *param){
     (void)param;
 
-    unsigned long lastHealthCheck = 0;
     BackendWork w;
 
     for (;;) {
@@ -262,18 +261,8 @@ static void backendTask(void *param){
             xQueueReceive(workQueue, &w, pdMS_TO_TICKS(TASK_TICK_MS)) == pdTRUE;
 
         unsigned long now = millis();
-
-        // Committee signals ride the heartbeat: poll fast while live.
-        const unsigned long healthInterval =
-            raceSessionLive() ? HEALTH_LIVE_INTERVAL : HEALTH_CHECK_INTERVAL;
-        if (healthNow || now - lastHealthCheck >= healthInterval) {
-            healthNow = false;
-            lastHealthCheck = now;
-            healthCheck();
-            if (online && raceUploadPending()) {
-                sendRunResult();
-            }
-        }
+        const unsigned long passStart = now;
+        unsigned long mockMs = 0, sendMs = 0;
 
         // One-shot template library fetch for instant practice setup.
         if (tplWant) {
@@ -287,7 +276,9 @@ static void backendTask(void *param){
         // Uploads carry simulated:true so the map can show them as such.
         const bool mock = gpsMockActive();
         if (mock && mainGps) {
+            const unsigned long t0 = millis();
             gpsMockPoll(*mainGps);
+            mockMs = millis() - t0;
         }
 
         if (haveItem) {
@@ -295,7 +286,9 @@ static void backendTask(void *param){
             // time), so real fixes queued before mock-on stay real.
             // Transient failures requeue to the front (same as deletes);
             // 4xx is a poison payload — drop it, don't wedge the queue.
+            const unsigned long t0 = millis();
             const int code = sendPosition(w);
+            sendMs = millis() - t0;
             if (code == HTTP_CODE_OK) {
                 bufferedSerialPrintln("[BACKEND] Position sent");
             } else if (code <= 0 || code >= 500) {
@@ -314,6 +307,38 @@ static void backendTask(void *param){
                 xQueueSendToFront(deleteQueue, &del, 0);
             }
         }
+
+        // Slow-pass telemetry: a stalled pass starves the GPS feed, so the
+        // diagnostics Age spikes. Log the split to find the hog.
+        // (Heartbeat runs on its own task now — health no longer appears here.)
+        const unsigned long passMs = millis() - passStart;
+        if (passMs > 2000) {
+            bufferedSerialPrintln(String("[BACKEND] slow pass ") + passMs +
+                "ms (mock " + mockMs + " send " + sendMs + ")");
+        }
+    }
+}
+
+// Heartbeat on its own task: a slow /health round trip (session geometry
+// + signals + Turso writes) must never starve the GPS feed. Same rand
+// intervals as before — 30s idle, 5s when the session is live.
+static void healthTask(void *param)
+{
+    (void)param;
+    unsigned long lastHealthCheck = 0;
+    for (;;) {
+        const unsigned long now = millis();
+        const unsigned long healthInterval =
+            raceSessionLive() ? HEALTH_LIVE_INTERVAL : HEALTH_CHECK_INTERVAL;
+        if (healthNow || now - lastHealthCheck >= healthInterval) {
+            healthNow = false;
+            lastHealthCheck = now;
+            healthCheck();
+            if (online && raceUploadPending()) {
+                sendRunResult();
+            }
+        }
+        vTaskDelay(pdMS_TO_TICKS(TASK_TICK_MS));
     }
 }
 
@@ -339,6 +364,16 @@ void backendInit(TinyGPSPlus* gps)
     xTaskCreatePinnedToCore(
         backendTask,
         "backend",
+        12288,
+        nullptr,
+        1,
+        nullptr,
+        0
+    );
+
+    xTaskCreatePinnedToCore(
+        healthTask,
+        "health",
         12288,
         nullptr,
         1,
