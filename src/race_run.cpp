@@ -157,7 +157,12 @@ long raceGunEpoch()
         if (raceSession.startTime <= 0) return 0;
         return raceSession.startTime + raceSession.startOffsetSec;
     }
-    return practiceGun;
+    // Practice: a locally armed gun (LL) wins; otherwise a pushed session
+    // gun counts down like a race gun (coach-driven practice). No pushed
+    // startTime → 0, same as solo unarmed.
+    if (practiceGun > 0) return practiceGun;
+    if (raceSession.startTime <= 0) return 0;
+    return raceSession.startTime + raceSession.startOffsetSec;
 }
 
 void racePracticeStart(long gunEpoch)

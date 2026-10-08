@@ -12,7 +12,9 @@
 //   IDLE/PRE-START → RACING (start line crossed, or gun for point starts)
 //   → marks advance by radius pass with required-side check (gates: either
 //   buoy, no side check) → FINISHED (line cross or last-mark pass).
-// Practice countdown is local (LL starts, R cycles 1/3/5 min, NVS-backed);
+// Practice countdown is local (LL arms now+duration, R cycles 1/3/5 min,
+// NVS-backed) unless a pushed session gun exists — then the session gun
+// counts (coach-driven practice) until LL overrides locally;
 // race guns come from the session. 360/720 are sailor-declared (LL/R while
 // racing) and verified by heading-rotation integration. The run (splits +
 // event log) uploads once at finish; committee signals apply idempotently.
