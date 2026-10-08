@@ -53,6 +53,7 @@ struct BackendWork {
     int sats;
     bool flagged;
     char uid[41]; // waypoint id for flagged posts, "" otherwise
+    bool simulated; // true when the fix came from mock GPS (indoor testing)
 };
 
 struct BackendDelete {
@@ -165,6 +166,7 @@ static bool sendPosition(const BackendWork &w)
     body += ",\"altitude\":" + String(w.altitude, 1);
     body += ",\"sats\":" + String(w.sats);
     body += ",\"flagged\":" + String(w.flagged ? "true" : "false");
+    body += ",\"simulated\":" + String(w.simulated ? "true" : "false");
     body += ",\"fw\":\"" BUILD_VERSION "\"";
     if (w.flagged && w.uid[0] != '\0') {
         body += ",\"uid\":\"" + String(w.uid) + "\"";
@@ -283,15 +285,18 @@ static void backendTask(void *param){
             tplFetch();
         }
 
-        // Mock GPS source (indoor testing): scripted fixes in, nothing out.
+        // Mock GPS source (indoor testing): scripted fixes in, tagged out.
         // The UART is drained unparsed while mocked (see gpsLoop), so the
         // mock owns the fix exclusively — no blending with flaky real fixes.
+        // Uploads carry simulated:true so the map can show them as such.
         const bool mock = gpsMockActive();
         if (mock && mainGps) {
             gpsMockPoll(*mainGps);
         }
 
-        if (haveItem && !mock) {
+        if (haveItem) {
+            // Queued items carry their own simulated tag (set at enqueue
+            // time), so real fixes queued before mock-on stay real.
             const bool sent = sendPosition(w);
 
             bufferedSerialPrintln(
@@ -407,10 +412,10 @@ void backendLoop(TinyGPSPlus &gps)
 {
     static unsigned long gpsTransmissionLastCheck = 0;
 
-    // Mock mode: fixes come from the script, nothing is uploaded.
-    if (gpsMockActive()) {
-        return;
-    }
+    // Mock mode no longer suppresses uploads: fixes are tagged simulated
+    // at enqueue time and the map shows them as such. Flagged waypoints
+    // and deletes stay real-only (see backendSendFlaggedPosition + task).
+    const bool mock = gpsMockActive();
 
     double speedKnots = gps.speed.isValid() ? gps.speed.knots() : 0;
     if (speedKnots < 0) speedKnots = 0;
@@ -428,8 +433,10 @@ void backendLoop(TinyGPSPlus &gps)
 
     // Last-fix seed for mock wander (NVS, throttled: ~144 writes/day max).
     // Lets wander anchor after a cold boot with no session and no history.
+    // Real fixes only — seeding from the script would anchor wander on
+    // itself.
     static unsigned long lastSeedSave = 0;
-    if (millis() - lastSeedSave > 600000UL) {
+    if (!mock && millis() - lastSeedSave > 600000UL) {
         lastSeedSave = millis();
         Preferences prefs;
         if (prefs.begin("mock", false)) {
@@ -448,6 +455,7 @@ void backendLoop(TinyGPSPlus &gps)
         gps.satellites.value(),
         false
     };
+    w.simulated = mock;
 
     enqueueWork(w);
 }
