@@ -401,6 +401,15 @@ void wifiInit(TinyGPSPlus& gps)
 
     loadSavedNetworks();
 
+#ifdef WOKWI_SIM
+    // Simulator: no provisioned credentials exist, so join the virtual AP.
+    // The stock rotation/timeout state machine below just works from here.
+    if (wifiNetworkCount() == 0) {
+        saveWiFiNetwork(0, "Wokwi-GUEST", "");
+        bufferedSerialPrintln("[WiFi] Wokwi sim: using Wokwi-GUEST");
+    }
+#endif
+
     if (wifiNetworkCount() > 0)
     {
         bufferedSerialPrintln(
