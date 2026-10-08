@@ -1,7 +1,6 @@
 #include "gps_mock.h"
 #include "config.h"
 #include "serial_buffer.h"
-#include "race_run.h"
 #include "server_link.h"
 
 #include <Arduino.h>
@@ -121,7 +120,9 @@ void gpsMockPoll(TinyGPSPlus& gps)
 {
     if (!gpsMockActive()) return;
     if (WiFi.status() != WL_CONNECTED) return;
-    if (raceRunStarted() && !raceRunFinished()) return;
+    // NOTE: no mid-race hold here. Mock means testing: freezing the fix
+    // for the whole run strands the engine (and the diagnostics Age).
+    // A true dropout (no server answer) still holds via the 404 path.
     static unsigned long lastPoll = 0;
     const unsigned long now = millis();
     // 1Hz server poll: consumes 1Hz scripts losslessly, smoother walk.
