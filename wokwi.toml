@@ -1,6 +1,0 @@
-# Wokwi simulator config (Wokwi for VS Code: F1 → "Wokwi: Start Simulator").
-# Build first with `make sim` — Wokwi loads the firmware, it never compiles.
-[wokwi]
-version = 1
-firmware = '.pio/build/wokwi/firmware.bin'
-elf = '.pio/build/wokwi/firmware.elf'

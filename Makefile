@@ -36,7 +36,7 @@ ifneq ($(strip $(PORT)),)
 	MONITOR_ARGS := --port $(PORT)
 endif
 
-.PHONY: venv install compile sim build bump-version dist upload monitor clean watch git-push deploy all
+.PHONY: venv install compile build bump-version dist upload monitor clean watch git-push deploy all
 
 venv:
 	$(BASE_PYTHON) -m venv $(VENV)
@@ -60,9 +60,6 @@ bump-version:
 
 compile:
 	$(PY) -m platformio run
-
-sim:
-	$(PY) -m platformio run -e wokwi
 
 build: compile
 

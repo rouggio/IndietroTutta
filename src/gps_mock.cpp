@@ -32,11 +32,6 @@ static bool readMockFlag()
 
 bool gpsMockActive()
 {
-#ifdef WOKWI_SIM
-    // The simulator has no satellites; mock always owns the fix there.
-    // (The portal toggle still works, it just cannot switch mock off.)
-    return true;
-#endif
     const unsigned long now = millis();
     if (now - mockCacheAt > 5000) {
         mockCacheAt = now;
