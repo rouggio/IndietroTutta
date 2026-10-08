@@ -25,6 +25,8 @@ No RTOS tasks except `backend.cpp` FreeRTOS task (12288 stack, core 0):
 - Task drains queue → `POST /gps`, plus `GET /health` every 30s.
 - `backendLoop()` adaptive GPS throttle: `30s@0kn → 2s@5kn` linear (`gpsIntervalForSpeed`).
 - `backend.h: backendOnline()`, `backendSendFlaggedPosition()`, `backendInit/Loop`.
+  Telemetry uploads carry `simulated:true` when mock GPS is active (map shows
+  sim tracks); flagged waypoints + deletes stay real-only (suppressed in mock).
 - `serial_buffer.cpp`: 200-line mutex-guarded log for `/serial`.
 
 Key modules: `screens.*` router + 200ms throttle, `screen_speed.*` main
