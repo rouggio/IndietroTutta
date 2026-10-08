@@ -3,9 +3,9 @@
 #include "race_run.h"
 #include "config.h"
 #include "serial_buffer.h"
+#include "server_link.h"
 
 #include <WiFi.h>
-#include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
 #include <math.h>
@@ -106,21 +106,19 @@ static bool tplFill(JsonObject o, long id, const char* key)
 
 // Backend-task context: pull presets + user templates (heap JSON docs,
 // ~2KB each — safe off the task stack).
-static void tplFetchOnce(const char* url, bool preset)
+static void tplFetchOnce(const String& url, bool preset)
 {
     if (WiFi.status() != WL_CONNECTED) return;
-    WiFiClientSecure client;
-    client.setInsecure();
-    HTTPClient http;
-    if (!http.begin(client, url)) return;
-    http.addHeader("DeviceId", String(WiFi.macAddress()));
-    const int code = http.GET();
+    ServerLink link;
+    if (!link.begin(url)) return;
+    link.http.addHeader("DeviceId", String(WiFi.macAddress()));
+    const int code = link.http.GET();
     if (code != HTTP_CODE_OK) {
-        http.end();
+        link.http.end();
         return;
     }
-    String body = http.getString();
-    http.end();
+    String body = link.http.getString();
+    link.http.end();
     if (body.length() == 0 || body.length() > 16384) return;
     DynamicJsonDocument doc(12288);
     if (deserializeJson(doc, body)) return;
@@ -143,8 +141,8 @@ static void tplFetchOnce(const char* url, bool preset)
 void tplFetch()
 {
     tplClear();
-    tplFetchOnce(BASE_URL "/templates/presets", true);
-    tplFetchOnce(BASE_URL "/templates", false);
+    tplFetchOnce(serverBaseUrl() + "/templates/presets", true);
+    tplFetchOnce(serverBaseUrl() + "/templates", false);
     tplHave = true;
     bufferedSerialPrintln("[TPL] library ready");
 }

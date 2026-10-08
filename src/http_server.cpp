@@ -12,6 +12,7 @@
 #include "gps_mock.h"
 #include "screens.h"
 #include "buttons.h"
+#include "server_link.h"
 
 #include <TFT_eSPI.h>
 
@@ -474,10 +475,38 @@ static void handleMock()
                 String("{\"mock\":") + (on ? "true" : "false") + "}");
 }
 
+// Server select (GET /server → current; POST /server?mode=prod|dev&host=<ip:port>).
+// Dev mode with a host talks plain HTTP to the LAN backend (local :3000 serves
+// public/ota/, so OTA follows the same switch). Prod (or dev with no host)
+// stays on the TLS Render endpoint.
+static void handleServer()
+{
+    if (server.method() == HTTP_POST) {
+        if (server.hasArg("mode")) {
+            const String m = server.arg("mode");
+            serverSetMode((m == "dev" || m == "1") ? 1 : 0);
+        }
+        if (server.hasArg("host")) {
+            String h = server.arg("host");
+            h.trim();
+            if (h.startsWith("http://")) h = h.substring(7);
+            if (h.startsWith("https://")) h = h.substring(8);
+            while (h.endsWith("/")) h.remove(h.length() - 1);
+            serverSetDevHost(h);
+        }
+        bufferedSerialPrintln(String("[HTTP] server -> ") + serverBaseUrl());
+        redrawCurrentPage();
+    }
+    const int mode = serverMode();
+    const String host = serverDevHost();
+    String body = String("{\"mode\":\"") + (mode == 1 ? "dev" : "prod") +
+                  "\",\"host\":\"" + host + "\",\"base\":\"" + serverBaseUrl() + "\"}";
+    server.send(200, "application/json", body);
+}
+
 static void handleReboot()
 {
     bufferedSerialPrintln("[HTTP] Reboot requested via /reboot");
-
     server.send(200,
                 "text/html",
                 "<h2>Rebooting device</h2>\n<p>Device will restart shortly.</p>");
@@ -514,6 +543,7 @@ static void handleStatus()
     sys["otaCheckOnStart"] = config.otaCheckOnStart;
     sys["username"] = config.username;
     sys["mock"] = gpsMockActive();
+    sys["server"] = serverBaseUrl();
 
     String json;
     serializeJson(doc, json);
@@ -640,6 +670,8 @@ void httpServerInit(TinyGPSPlus &gps)
     server.on("/reset", HTTP_POST, handleReset);
     server.on("/reboot", HTTP_POST, handleReboot);
     server.on("/mock", HTTP_POST, handleMock);
+    server.on("/server", HTTP_GET, handleServer);
+    server.on("/server", HTTP_POST, handleServer);
     server.on("/btn", HTTP_POST, handleBtn);
     server.on("/screen", HTTP_GET, handleScreen);
 

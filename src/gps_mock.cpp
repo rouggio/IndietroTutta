@@ -3,18 +3,16 @@
 #include "serial_buffer.h"
 #include "race_run.h"
 #include "race_session.h"
+#include "server_link.h"
 
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <Preferences.h>
 #include <WiFi.h>
-#include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
-
-#define SIM_NEXT_URL BASE_URL "/sim/next?deviceId="
 
 // 5s-cached flag so the 200ms UI path never blocks on NVS.
 static bool mockCache = false;
@@ -135,6 +133,68 @@ static void feedWander(TinyGPSPlus& gps, double lat, double lon, double speedKn,
     feedSentence(gps, gga);
 }
 
+// Shared NMEA feed for server-driven fixes (scripted runs + server
+// wander): ISO serverTime → RMC+GGA sentences. False on bad timestamps.
+static void wanderTick(TinyGPSPlus& gps); // defined below; server-first arbiter calls it
+static bool feedServerFix(TinyGPSPlus& gps, double lat, double lon,
+                          double speed, double course, const char* st)
+{
+    int Y = 0, M = 0, D = 0, h = 0, mi = 0, s = 0;
+    if (!st || sscanf(st, "%4d-%2d-%2dT%2d:%2d:%2d", &Y, &M, &D, &h, &mi, &s) < 6)
+        return false;
+    char latB[16], lonB[16], ns = 'N', ew = 'E';
+    fmtLat(lat, latB, sizeof(latB), ns);
+    fmtLon(lon, lonB, sizeof(lonB), ew);
+    char rmc[128], gga[128];
+    snprintf(rmc, sizeof(rmc), "GPRMC,%02d%02d%02d.00,A,%s,%c,%s,%c,%.1f,%.1f,%02d%02d%02d,,",
+             h, mi, s, latB, ns, lonB, ew, speed, course, D, M, Y % 100);
+    snprintf(gga, sizeof(gga), "GPGGA,%02d%02d%02d.00,%s,%c,%s,%c,1,09,0.8,5.0,M,,,,",
+             h, mi, s, latB, ns, lonB, ew);
+    feedSentence(gps, rmc);
+    feedSentence(gps, gga);
+    return true;
+}
+
+// Server wander (GET /sim/wander): the committee's random-walk brain.
+// True when a fix was fed; false (no anchor/offline) → the caller falls
+// back to the local wanderTick below.
+static bool pollServerWander(TinyGPSPlus& gps)
+{
+    if (WiFi.status() != WL_CONNECTED) return false;
+    ServerLink link;
+    if (!link.begin(serverBaseUrl() + "/sim/wander?deviceId=" + String(WiFi.macAddress())))
+        return false;
+    const int code = link.http.GET();
+    if (code != HTTP_CODE_OK) {
+        link.http.end();
+        return false;
+    }
+    String payload = link.http.getString();
+    link.http.end();
+    if (payload.isEmpty() || payload.length() > 2048) return false;
+    DynamicJsonDocument doc(1024);
+    if (deserializeJson(doc, payload)) return false;
+    if (!(doc["wander"] | false)) return false;
+    const bool ok = feedServerFix(gps,
+                                  doc["lat"] | 0.0, doc["lon"] | 0.0,
+                                  doc["speed"] | 0.0, doc["course"] | 0.0,
+                                  doc["serverTime"] | "");
+    if (ok) {
+        const long e = raceGpsEpoch(gps);
+        if (e > 0) mockClock = e;
+        bufferedSerialPrintln("[MOCK] wander fix (server)");
+    }
+    return ok;
+}
+
+// Wander arbitration: a mid-race dropout holds the last fix instead of
+// inventing one; otherwise the server brain leads, local walk follows.
+static void wanderMaybe(TinyGPSPlus& gps)
+{
+    if (raceRunStarted() && !raceRunFinished()) return;
+    if (!pollServerWander(gps)) wanderTick(gps);
+}
+
 static void wanderTick(TinyGPSPlus& gps)
 {
     if (!wInit) {
@@ -223,51 +283,34 @@ void gpsMockPoll(TinyGPSPlus& gps)
     if (now - lastPoll < 3000) return;
     lastPoll = now;
     const bool scriptLive = (now - lastScriptFix < 9000);
-    // No scripted run: wander locally unless a race is actually on
-    // (a mid-race dropout holds the last fix instead of inventing one).
 
-    WiFiClientSecure client;
-    client.setInsecure();
-    HTTPClient http;
-    String url = String(SIM_NEXT_URL) + String(WiFi.macAddress());
-    if (!http.begin(client, url)) return;
-    const int code = http.GET();
+    ServerLink link;
+    if (!link.begin(serverBaseUrl() + "/sim/next?deviceId=" + String(WiFi.macAddress()))) return;
+    const int code = link.http.GET();
     if (code != HTTP_CODE_OK) {
-        http.end();
-        if (!scriptLive && (!raceRunStarted() || raceRunFinished())) wanderTick(gps);
+        link.http.end();
+        if (!scriptLive) wanderMaybe(gps);
         return;
     }
-    String payload = http.getString();
-    http.end();
+    String payload = link.http.getString();
+    link.http.end();
     if (payload.isEmpty() || payload.length() > 2048) return;
 
     DynamicJsonDocument doc(1024);
     if (deserializeJson(doc, payload)) return;
     if (doc["done"] | false) {
         bufferedSerialPrintln("[MOCK] run finished");
-        // Script exhausted: same wander rule as no-run (hold mid-race).
-        if (!raceRunStarted() || raceRunFinished()) wanderTick(gps);
-        return; // else hold last fix (TinyGPS keeps it until age-out)
-    }    const double lat = doc["lat"] | 0.0;
+        lastScriptFix = 0; // script over: wander arbitration starts fresh
+        wanderMaybe(gps);  // holds mid-race, else server/local wander
+        return;
+    }
+    const double lat = doc["lat"] | 0.0;
     const double lon = doc["lon"] | 0.0;
     const double speed = doc["speed"] | 0.0;   // knots
     const double course = doc["course"] | 0.0; // degrees
     const char* st = doc["serverTime"] | "";
     const char* runId = doc["runId"] | "";
-    int Y = 0, M = 0, D = 0, h = 0, mi = 0, s = 0;
-    if (sscanf(st, "%4d-%2d-%2dT%2d:%2d:%2d", &Y, &M, &D, &h, &mi, &s) < 6) return;
-
-    char latB[16], lonB[16], ns = 'N', ew = 'E';
-    fmtLat(lat, latB, sizeof(latB), ns);
-    fmtLon(lon, lonB, sizeof(lonB), ew);
-
-    char rmc[128], gga[128];
-    snprintf(rmc, sizeof(rmc), "GPRMC,%02d%02d%02d.00,A,%s,%c,%s,%c,%.1f,%.1f,%02d%02d%02d,,",
-             h, mi, s, latB, ns, lonB, ew, speed, course, D, M, Y % 100);
-    snprintf(gga, sizeof(gga), "GPGGA,%02d%02d%02d.00,%s,%c,%s,%c,1,09,0.8,5.0,M,,,,",
-             h, mi, s, latB, ns, lonB, ew);
-    feedSentence(gps, rmc);
-    feedSentence(gps, gga);
+    if (!feedServerFix(gps, lat, lon, speed, course, st)) return;
     lastScriptFix = now;
     bufferedSerialPrintln("[MOCK] fix injected");
     // Keep the wander clock truthful across script→wander handoffs.
@@ -277,17 +320,17 @@ void gpsMockPoll(TinyGPSPlus& gps)
     // Echo every 5th fix back (~15s): pipeline proof without touching tracks.
     static int pollCount = 0;
     if (runId[0] && (++pollCount % 5) == 0) {
-        HTTPClient echo;
-        if (echo.begin(client, String(BASE_URL "/sim/echo"))) {
-            echo.addHeader("Content-Type", "application/json");
+        ServerLink echoLink;
+        if (echoLink.begin(serverBaseUrl() + "/sim/echo")) {
+            echoLink.http.addHeader("Content-Type", "application/json");
             String body = String("{\"runId\":\"") + runId +
                           String("\",\"t\":") + (long)(doc["t"] | 0) +
                           String(",\"lat\":") + String(lat, 7) +
                           String(",\"lon\":") + String(lon, 7) +
                           String(",\"speed\":") + String(speed, 1) +
                           String(",\"course\":") + String(course, 1) + "}";
-            echo.POST(body);
-            echo.end();
+            echoLink.http.POST(body);
+            echoLink.http.end();
         }
     }
 }

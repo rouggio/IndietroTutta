@@ -6,6 +6,7 @@
 #include "race_run.h"
 #include "race_templates.h"
 #include "gps_mock.h"
+#include "server_link.h"
 
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
@@ -16,10 +17,6 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
 #include <freertos/task.h>
-
-#define HEALTH_URL BASE_URL "/health"
-#define GPS_URL    BASE_URL "/gps"
-#define GPS_FLAGGED_URL BASE_URL "/gps/flagged"
 
 // ---------------------------------------------------------
 // Background server interactions.
@@ -113,32 +110,29 @@ static void healthCheck()
         return;
     }
 
-    WiFiClientSecure client;
-    client.setInsecure();
+    ServerLink link;
 
-    HTTPClient http;
-
-    if (http.begin(client, HEALTH_URL)) {
-        http.addHeader("DeviceId", String(WiFi.macAddress()));
-        http.addHeader("Firmware-Version", BUILD_VERSION);
+    if (link.begin(serverBaseUrl() + "/health")) {
+        link.http.addHeader("DeviceId", String(WiFi.macAddress()));
+        link.http.addHeader("Firmware-Version", BUILD_VERSION);
 
         if (config.username[0] != '\0') {
-            http.addHeader("Username", String(config.username));
+            link.http.addHeader("Username", String(config.username));
         }
 
-        int code = http.GET();
+        int code = link.http.GET();
         if (code == HTTP_CODE_OK) {
             online = true;
             // Race push rides the heartbeat: parse the session (if any).
             // ~2KB body, heap-backed JSON — safe on the task stack.
-            String body = http.getString();
+            String body = link.http.getString();
             if (body.length() > 0 && body.length() < 8192) {
                 raceSessionParse(body.c_str());
             }
         } else {
             online = false;
         }
-        http.end();
+        link.http.end();
     }
     else {
         online = false;
@@ -152,19 +146,16 @@ static bool sendPosition(const BackendWork &w)
         return false;
     }
 
-    WiFiClientSecure client;
-    client.setInsecure();
+    ServerLink link;
 
-    HTTPClient http;
-
-    if (!http.begin(client, GPS_URL)) {
+    if (!link.begin(serverBaseUrl() + "/gps")) {
         online = false;
         return false;
     }
 
-    http.addHeader("Content-Type", "application/json");
-    http.addHeader("DeviceId", String(WiFi.macAddress()));
-    http.addHeader("Firmware-Version", BUILD_VERSION);
+    link.http.addHeader("Content-Type", "application/json");
+    link.http.addHeader("DeviceId", String(WiFi.macAddress()));
+    link.http.addHeader("Firmware-Version", BUILD_VERSION);
 
     String body = "{";
     body += "\"lat\":" + String(w.lat, 7);
@@ -185,9 +176,9 @@ static bool sendPosition(const BackendWork &w)
 
     body += "}";
 
-    int code = http.POST(body);
+    int code = link.http.POST(body);
 
-    http.end();
+    link.http.end();
 
     if (code == HTTP_CODE_OK) {
         online = true;
@@ -204,23 +195,20 @@ static bool sendDeleteWaypoint(const BackendDelete &d){
         return false;
     }
 
-    WiFiClientSecure client;
-    client.setInsecure();
+    ServerLink link;
 
-    HTTPClient http;
-
-    if (!http.begin(client, GPS_FLAGGED_URL)) {
+    if (!link.begin(serverBaseUrl() + "/gps/flagged")) {
         return false;
     }
 
-    http.addHeader("Content-Type", "application/json");
-    http.addHeader("DeviceId", String(WiFi.macAddress()));
+    link.http.addHeader("Content-Type", "application/json");
+    link.http.addHeader("DeviceId", String(WiFi.macAddress()));
 
     String body = "{\"uid\":\"" + String(d.uid) + "\"}";
 
-    int code = http.sendRequest("DELETE", body);
+    int code = link.http.sendRequest("DELETE", body);
 
-    http.end();
+    link.http.end();
 
     if (code <= 0 || code >= 500) {
         return false;
@@ -242,25 +230,21 @@ static void sendRunResult()
         return;
     }
 
-    WiFiClientSecure client;
-    client.setInsecure();
+    ServerLink link;
 
-    HTTPClient http;
-
-    char url[128];
-    snprintf(url, sizeof(url), BASE_URL "/sessions/%ld/runs", raceSession.sessionId);
-    if (!http.begin(client, url)) {
+    String url = serverBaseUrl() + "/sessions/" + String(raceSession.sessionId) + "/runs";
+    if (!link.begin(url)) {
         return;
     }
 
-    http.addHeader("Content-Type", "application/json");
-    http.addHeader("DeviceId", String(WiFi.macAddress()));
+    link.http.addHeader("Content-Type", "application/json");
+    link.http.addHeader("DeviceId", String(WiFi.macAddress()));
 
     char body[2048];
     raceUploadBody(WiFi.macAddress().c_str(), body, sizeof(body));
 
-    const int code = http.POST((uint8_t*)body, strlen(body));
-    http.end();
+    const int code = link.http.POST((uint8_t*)body, strlen(body));
+    link.http.end();
 
     if (code == HTTP_CODE_OK || code == HTTP_CODE_CREATED ||
         (code > 0 && code < 500)) {

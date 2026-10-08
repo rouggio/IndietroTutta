@@ -8,6 +8,7 @@
 #include "wifi_manager.h"
 #include "serial_buffer.h"
 #include "screens.h"
+#include "server_link.h"
 
 extern TFT_eSPI tft;
 
@@ -146,7 +147,8 @@ void appendOTAScreen(const String& message) {
 // --------------------------------------------------
 
 String baseURL() {
-  return OTA_BASE_URL;
+  // OTA rides the same dev/prod switch: local :3000 serves public/ota/.
+  return serverBaseUrl() + "/ota";
 }
 
 
@@ -173,35 +175,38 @@ String sanitizeVersion(const String& raw) {
 
 String fetchServerVersion() {
 
-  WiFiClientSecure client;
-  HTTPClient http;
-
-  client.setInsecure();
+  ServerLink link;
 
   String url = baseURL() + "/latest.txt";
 
-  http.begin(client, url);
+  if (!link.begin(url)) {
+    appendOTAScreen("Version check failed");
+    return "";
+  }
 
-  int code = http.GET();
+  int code = link.http.GET();
 
   if (code <= 0) {
 
     appendOTAScreen("Retrying...");
 
-    http.end();
+    link.http.end();
 
     delay(200);
 
-    http.begin(client, url);
+    if (!link.begin(url)) {
+      appendOTAScreen("Version check failed");
+      return "";
+    }
 
-    code = http.GET();
+    code = link.http.GET();
   }
 
   String ver = "";
 
   if (code == HTTP_CODE_OK) {
 
-    ver = http.getString();
+    ver = link.http.getString();
 
     ver.trim();
 
@@ -214,7 +219,7 @@ String fetchServerVersion() {
     );
   }
 
-  http.end();
+  link.http.end();
 
   return ver;
 }
@@ -273,9 +278,7 @@ void doUpdate() {
 
   appendOTAScreen("Downloading update...");
 
-  WiFiClientSecure client;
-
-  client.setInsecure();
+  ServerLink link;
 
   httpUpdate.onProgress([](int cur, int total) {
 
@@ -293,7 +296,8 @@ void doUpdate() {
   httpUpdate.rebootOnUpdate(true);
 
   t_httpUpdate_return ret =
-    httpUpdate.update(client, url);
+    serverUseTLS() ? httpUpdate.update(link.tls, url)
+                   : httpUpdate.update(link.plain, url);
 
   switch (ret) {
 
