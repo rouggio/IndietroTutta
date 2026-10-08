@@ -126,7 +126,8 @@ enum class TriState {
 
 TriState prevWifiConnected = TriState::Unknown;
 TriState prevDataConnected = TriState::Unknown;
-TriState prevFix = TriState::Unknown;
+TriState prevFix = TriState::Unknown; // legacy (fix tile now uses prevFixTile)
+static int prevFixTile = -1; // 0 nofix, 1 fix, 2 mock; -1 forces repaint
 
 // ====== LAYOUT ======
 void drawTopBar(TinyGPSPlus &gps)
@@ -176,7 +177,6 @@ void drawTopBar(TinyGPSPlus &gps)
   // Fix Icon (yellow FX tile while the mock drives the fix instead of GPS)
   icon_x += tile_width + tile_spacing;
   const int fixTile = gpsMockActive() ? 2 : (gps.location.isValid() ? 1 : 0);
-  static int prevFixTile = -1;
   if (fixTile != prevFixTile)
   {
     prevFixTile = fixTile;
@@ -348,6 +348,7 @@ void initScreen() {
   prevWifiConnected = TriState::Unknown;
   prevDataConnected = TriState::Unknown;
   prevFix = TriState::Unknown;
+  prevFixTile = -1;
   lastMaxStr = "";
   lastCrsStr = "";
   lastSesStr = "";
