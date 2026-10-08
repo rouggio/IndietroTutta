@@ -215,9 +215,16 @@ void gpsMockPoll(TinyGPSPlus& gps)
     if (!gpsMockActive()) return;
     if (WiFi.status() != WL_CONNECTED) return;
     static unsigned long lastPoll = 0;
+    // A scripted run owns the fix exclusively: while its fixes arrive the
+    // local wanderer stays silent, whatever the race state (pre-gun
+    // practice gets scripts too — racing them against wander mixes positions).
+    static unsigned long lastScriptFix = 0;
     const unsigned long now = millis();
     if (now - lastPoll < 3000) return;
     lastPoll = now;
+    const bool scriptLive = (now - lastScriptFix < 9000);
+    // No scripted run: wander locally unless a race is actually on
+    // (a mid-race dropout holds the last fix instead of inventing one).
 
     WiFiClientSecure client;
     client.setInsecure();
@@ -226,10 +233,8 @@ void gpsMockPoll(TinyGPSPlus& gps)
     if (!http.begin(client, url)) return;
     const int code = http.GET();
     if (code != HTTP_CODE_OK) {
-        // No scripted run: wander locally unless a race is actually on
-        // (a mid-race dropout holds the last fix instead of inventing one).
         http.end();
-        if (!raceRunStarted() || raceRunFinished()) wanderTick(gps);
+        if (!scriptLive && (!raceRunStarted() || raceRunFinished())) wanderTick(gps);
         return;
     }
     String payload = http.getString();
@@ -243,8 +248,7 @@ void gpsMockPoll(TinyGPSPlus& gps)
         // Script exhausted: same wander rule as no-run (hold mid-race).
         if (!raceRunStarted() || raceRunFinished()) wanderTick(gps);
         return; // else hold last fix (TinyGPS keeps it until age-out)
-    }
-    const double lat = doc["lat"] | 0.0;
+    }    const double lat = doc["lat"] | 0.0;
     const double lon = doc["lon"] | 0.0;
     const double speed = doc["speed"] | 0.0;   // knots
     const double course = doc["course"] | 0.0; // degrees
@@ -264,6 +268,7 @@ void gpsMockPoll(TinyGPSPlus& gps)
              h, mi, s, latB, ns, lonB, ew);
     feedSentence(gps, rmc);
     feedSentence(gps, gga);
+    lastScriptFix = now;
     bufferedSerialPrintln("[MOCK] fix injected");
     // Keep the wander clock truthful across script→wander handoffs.
     const long scriptEpoch = raceGpsEpoch(gps);
