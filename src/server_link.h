@@ -18,13 +18,16 @@ bool serverUseTLS();       // false in dev mode with a host set
 // One object per request; owns the right transport for the current mode.
 // Usage: ServerLink link; if (link.begin(url)) { link.http.GET(); ... link.http.end(); }
 // (doUpdate needs the raw client: link.tls / link.plain with httpUpdate.)
+// 8s timeout: a hung socket must never stall the backend task (which would
+// delay every later upload and spike displayed data age).
 struct ServerLink {
     WiFiClient plain;
     WiFiClientSecure tls;
     HTTPClient http;
     ServerLink() { tls.setInsecure(); }
     bool begin(const String& url) {
-        if (serverUseTLS()) return http.begin(tls, url);
-        return http.begin(plain, url);
+        const bool ok = serverUseTLS() ? http.begin(tls, url) : http.begin(plain, url);
+        if (ok) http.setTimeout(8000);
+        return ok;
     }
 };

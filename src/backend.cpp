@@ -12,7 +12,6 @@
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 #include <TinyGPSPlus.h>
-#include <Preferences.h>
 
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
@@ -140,18 +139,20 @@ static void healthCheck()
     }
 }
 
-static bool sendPosition(const BackendWork &w)
+// Returns the HTTP status (<=0 network error, >=500 retryable server
+// error, 200 stored, 4xx poison — caller decides retry vs drop).
+static int sendPosition(const BackendWork &w)
 {
     if (WiFi.status() != WL_CONNECTED) {
         online = false;
-        return false;
+        return -1;
     }
 
     ServerLink link;
 
     if (!link.begin(serverBaseUrl() + "/gps")) {
         online = false;
-        return false;
+        return -1;
     }
 
     link.http.addHeader("Content-Type", "application/json");
@@ -182,13 +183,8 @@ static bool sendPosition(const BackendWork &w)
 
     link.http.end();
 
-    if (code == HTTP_CODE_OK) {
-        online = true;
-        return true;
-    }
-
-    online = false;
-    return false;
+    online = (code == HTTP_CODE_OK);
+    return code;
 }
 
 // true when done (sent, rejected, or already gone); false to retry later
@@ -297,12 +293,17 @@ static void backendTask(void *param){
         if (haveItem) {
             // Queued items carry their own simulated tag (set at enqueue
             // time), so real fixes queued before mock-on stay real.
-            const bool sent = sendPosition(w);
-
-            bufferedSerialPrintln(
-                sent ? "[BACKEND] Position sent" :
-                       "[BACKEND] Position send failed"
-            );
+            // Transient failures requeue to the front (same as deletes);
+            // 4xx is a poison payload — drop it, don't wedge the queue.
+            const int code = sendPosition(w);
+            if (code == HTTP_CODE_OK) {
+                bufferedSerialPrintln("[BACKEND] Position sent");
+            } else if (code <= 0 || code >= 500) {
+                bufferedSerialPrintln("[BACKEND] Position send failed, retrying");
+                xQueueSendToFront(workQueue, &w, 0);
+            } else {
+                bufferedSerialPrintln("[BACKEND] Position rejected, dropping");
+            }
         }
 
         BackendDelete del;
@@ -429,21 +430,6 @@ void backendLoop(TinyGPSPlus &gps)
 
     if (!gps.location.isValid()) {
         return;
-    }
-
-    // Last-fix seed for mock wander (NVS, throttled: ~144 writes/day max).
-    // Lets wander anchor after a cold boot with no session and no history.
-    // Real fixes only — seeding from the script would anchor wander on
-    // itself.
-    static unsigned long lastSeedSave = 0;
-    if (!mock && millis() - lastSeedSave > 600000UL) {
-        lastSeedSave = millis();
-        Preferences prefs;
-        if (prefs.begin("mock", false)) {
-            prefs.putDouble("seedLat", gps.location.lat());
-            prefs.putDouble("seedLon", gps.location.lng());
-            prefs.end();
-        }
     }
 
     BackendWork w = {
