@@ -36,17 +36,6 @@ static uint8_t evCount = 0; // saturates at 32 (oldest dropped)
 // Wrong-side flag (consumed by the screen for the banner).
 static bool wrongFlag = false;
 
-// Turn verification: sailor declares, heading rotation confirms.
-static bool turnPending = false;
-static long turnT0 = 0;
-static double turnNet = 0.0;
-static double turnLastCog = 0.0;
-static bool turnHaveCog = false;
-static int turnVerdict = 0; // 0 none, 360/720 ready for poll
-static const long TURN_WINDOW_S = 180;
-static const double TURN_360_DEG = 300.0;
-static const double TURN_720_DEG = 660.0;
-
 // Run upload handshake with the backend task.
 static bool uploadPending = false;
 
@@ -118,8 +107,6 @@ void raceRunReset()
     scpSec = 0;
     evCount = 0;
     wrongFlag = false;
-    turnPending = false;
-    turnVerdict = 0;
     uploadPending = false;
     for (uint8_t i = 0; i < 10; i++) {
         splits[i] = 0;
@@ -421,34 +408,6 @@ void raceRunUpdate(TinyGPSPlus& gps)
 
     if (finished) return;
 
-    // Turn verification runs in the background once declared.
-    if (turnPending && gps.course.isValid()) {
-        const double cog = gps.course.deg();
-        if (turnHaveCog) {
-            double d = cog - turnLastCog;
-            while (d > 180.0) d -= 360.0;
-            while (d < -180.0) d += 360.0;
-            turnNet += d;
-        }
-        turnLastCog = cog;
-        turnHaveCog = true;
-        if (turnNet >= TURN_720_DEG || turnNet <= -TURN_720_DEG) {
-            turnPending = false;
-            turnVerdict = 720;
-            logEvent("TURN720", now, nullptr);
-            bufferedSerialPrintln("[RACE] 720 verified");
-        } else if (now - turnT0 > TURN_WINDOW_S) {
-            turnPending = false;
-            if (turnNet >= TURN_360_DEG || turnNet <= -TURN_360_DEG) {
-                turnVerdict = 360;
-                logEvent("TURN360", now, nullptr);
-                bufferedSerialPrintln("[RACE] 360 verified");
-            } else {
-                bufferedSerialPrintln("[RACE] turn unverified");
-            }
-        }
-    }
-
     // Racing: advance through marks by radius pass; finish at the line.
     const uint8_t lastIdx = raceSession.markCount > 0 ? raceSession.markCount - 1 : 0;
     if (progIdx >= raceSession.markCount) {
@@ -549,28 +508,7 @@ void raceRunUpdate(TinyGPSPlus& gps)
     }
 }
 
-// --- Step 5: turns ------------------------------------------------------
-
-void raceTurnDeclare(long now)
-{
-    if (!started || finished || turnPending) return;
-    turnPending = true;
-    turnT0 = now;
-    turnNet = 0.0;
-    turnHaveCog = false;
-    turnVerdict = 0;
-    logEvent("TURN", now, "decl");
-    bufferedSerialPrintln("[RACE] turn declared");
-}
-
-int raceTurnPoll()
-{
-    const int v = turnVerdict;
-    turnVerdict = 0;
-    return v;
-}
-
-bool raceTurnPending() { return turnPending; }
+// --- Step 5: events (turn declarations removed) ---------------------------
 
 bool raceWrongPoll()
 {

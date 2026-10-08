@@ -15,8 +15,7 @@
 // Practice countdown is local (LL arms now+duration, R cycles 1/3/5 min,
 // NVS-backed) unless a pushed session gun exists — then the session gun
 // counts (coach-driven practice) until LL overrides locally;
-// race guns come from the session. 360/720 are sailor-declared (LL/R while
-// racing) and verified by heading-rotation integration. The run (splits +
+// race guns come from the session. The run (splits +
 // event log) uploads once at finish; committee signals apply idempotently.
 
 void raceRunInit();   // load practice duration + signal cursor (NVS); call once at boot
@@ -39,10 +38,7 @@ void racePracticeStart(long gunEpoch); // LL in practice: gun = now + duration
 void racePracticeCycleDur();           // R in practice: 60 → 180 → 300
 long racePracticeDur();                // seconds
 
-// --- Step 5: turns, events, upload -------------------------------------
-void raceTurnDeclare(long now); // sailor logs a 360/720; verified by rotation
-int raceTurnPoll();             // 0 none, 360/720 just verified (consumed)
-bool raceTurnPending();
+// --- Step 5: events, upload ---------------------------------------------
 bool raceWrongPoll();           // true once per wrong-side call (consumed)
 
 void raceLogEvent(const char* code, long t, const char* v); // e.g. SIG

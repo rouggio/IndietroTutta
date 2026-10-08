@@ -1,7 +1,10 @@
 #include "gps_mock.h"
 #include "config.h"
 #include "serial_buffer.h"
+#include "race_run.h"
+#include "race_session.h"
 
+#include <Arduino.h>
 #include <ArduinoJson.h>
 #include <Preferences.h>
 #include <WiFi.h>
@@ -88,6 +91,86 @@ static void feedSentence(TinyGPSPlus& gps, const char* body)
     for (const char* p = tail; *p; p++) gps.encode(*p);
 }
 
+// Inverse civil date (Hinnant civil_from_days) for stamping wander fixes.
+static void epochToYMDHMS(long epoch, int& Y, int& M, int& D, int& h, int& mi, int& s)
+{
+    long z = epoch / 86400L + 719468;
+    const long era = (z >= 0 ? z : z - 146096) / 146097;
+    const unsigned doe = (unsigned)(z - era * 146097);
+    const unsigned yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    long y = (long)yoe + era * 400;
+    const unsigned doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    const unsigned mp = (5 * doy + 2) / 153;
+    D = (int)(doy - (153 * mp + 2) / 5 + 1);
+    M = (int)(mp < 10 ? mp + 3 : mp - 9);
+    Y = (int)(y + (M <= 2 ? 1 : 0));
+    const long sod = epoch % 86400L;
+    h = (int)(sod / 3600L);
+    mi = (int)((sod % 3600L) / 60L);
+    s = (int)(sod % 60L);
+}
+
+// Wander mode: no scripted run and no race in progress → random-walk the
+// boat around its anchor (last known fix, 150m leash, ~1.5kn, smooth
+// heading wander). Keeps the map/countdown alive indoors between runs.
+static double wLat = 0.0, wLon = 0.0, wHead = 0.0;
+static double aLat = 0.0, aLon = 0.0;
+static bool wInit = false;
+static long mockClock = 0; // UTC epoch for wander stamps ( else millis-based)
+
+static void feedWander(TinyGPSPlus& gps, double lat, double lon, double speedKn,
+                       double courseDeg, long epoch)
+{
+    int Y, M, D, h, mi, s;
+    epochToYMDHMS(epoch, Y, M, D, h, mi, s);
+    char latB[16], lonB[16], ns = 'N', ew = 'E';
+    fmtLat(lat, latB, sizeof(latB), ns);
+    fmtLon(lon, lonB, sizeof(lonB), ew);
+    char rmc[128], gga[128];
+    snprintf(rmc, sizeof(rmc), "GPRMC,%02d%02d%02d.00,A,%s,%c,%s,%c,%.1f,%.1f,%02d%02d%02d,,",
+             h, mi, s, latB, ns, lonB, ew, speedKn, courseDeg, D, M, Y % 100);
+    snprintf(gga, sizeof(gga), "GPGGA,%02d%02d%02d.00,%s,%c,%s,%c,1,09,0.8,5.0,M,,,,",
+             h, mi, s, latB, ns, lonB, ew);
+    feedSentence(gps, rmc);
+    feedSentence(gps, gga);
+}
+
+static void wanderTick(TinyGPSPlus& gps)
+{
+    if (!wInit) {
+        // Anchor on the last known fix; without one there is nowhere local
+        // (and plausibly wet) to wander from.
+        if (!gps.location.isValid()) return;
+        aLat = wLat = gps.location.lat();
+        aLon = wLon = gps.location.lng();
+        wHead = gps.course.isValid() ? gps.course.deg() : (double)(esp_random() % 360);
+        const long e = raceGpsEpoch(gps);
+        mockClock = e > 0 ? e : 946684800L + (long)(millis() / 1000); // else Y2K+uptime
+        wInit = true;
+        bufferedSerialPrintln("[MOCK] wander anchored");
+    } else {
+        mockClock += 3; // poll cadence
+    }
+    // Gentle heading wander; steer home past the 150m leash.
+    const double cosLat = cos(aLat * M_PI / 180.0);
+    const double dx = (wLon - aLon) * 111320.0 * cosLat;
+    const double dy = (wLat - aLat) * 111320.0;
+    if (dx * dx + dy * dy > 150.0 * 150.0) {
+        double home = TinyGPSPlus::courseTo(wLat, wLon, aLat, aLon);
+        if (home < 0) home += 360.0;
+        wHead = home;
+    } else {
+        wHead += (double)((int)(esp_random() % 51)) - 25.0;
+        if (wHead < 0) wHead += 360.0;
+        if (wHead >= 360.0) wHead -= 360.0;
+    }
+    const double stepM = 1.5 * 0.514444 * 3.0;
+    const double hr = wHead * M_PI / 180.0;
+    wLat += (stepM * cos(hr)) / 111320.0;
+    wLon += (stepM * sin(hr)) / (111320.0 * cosLat);
+    feedWander(gps, wLat, wLon, 1.5, wHead, mockClock);
+}
+
 void gpsMockPoll(TinyGPSPlus& gps)
 {
     if (!gpsMockActive()) return;
@@ -104,7 +187,10 @@ void gpsMockPoll(TinyGPSPlus& gps)
     if (!http.begin(client, url)) return;
     const int code = http.GET();
     if (code != HTTP_CODE_OK) {
+        // No scripted run: wander locally unless a race is actually on
+        // (a mid-race dropout holds the last fix instead of inventing one).
         http.end();
+        if (!raceRunStarted() || raceRunFinished()) wanderTick(gps);
         return;
     }
     String payload = http.getString();
@@ -115,7 +201,9 @@ void gpsMockPoll(TinyGPSPlus& gps)
     if (deserializeJson(doc, payload)) return;
     if (doc["done"] | false) {
         bufferedSerialPrintln("[MOCK] run finished");
-        return; // hold last fix (TinyGPS keeps it until age-out)
+        // Script exhausted: same wander rule as no-run (hold mid-race).
+        if (!raceRunStarted() || raceRunFinished()) wanderTick(gps);
+        return; // else hold last fix (TinyGPS keeps it until age-out)
     }
     const double lat = doc["lat"] | 0.0;
     const double lon = doc["lon"] | 0.0;
@@ -138,6 +226,9 @@ void gpsMockPoll(TinyGPSPlus& gps)
     feedSentence(gps, rmc);
     feedSentence(gps, gga);
     bufferedSerialPrintln("[MOCK] fix injected");
+    // Keep the wander clock truthful across script→wander handoffs.
+    const long scriptEpoch = raceGpsEpoch(gps);
+    if (scriptEpoch > 0) mockClock = scriptEpoch;
 
     // Echo every 5th fix back (~15s): pipeline proof without touching tracks.
     static int pollCount = 0;

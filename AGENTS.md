@@ -48,7 +48,7 @@ NVS `race` ns, ArduinoJson heap doc; unassigned keeps cache),
 ## UI navigation (hints: L/LL left, R/RR right)
 
 - L-cycle = MAIN → WAYPOINTS → TIMERS → RACE → MAIN (`PAGE_CYCLE=4`). DIAGNOSTICS + CONFIG excluded.
-- MAIN: `L` next, `LL`→CONFIG, `RR`→DIAGNOSTICS. RACE: `L` next, `LL` start/clear/reset (practice pre-start/finished) / declare 360-720 (practice racing) / resync (race), `R` durations (pre-start) or declare 360-720 (racing), `RR` cycles N-UP → BRG → FIT. DIAGNOSTICS/CONFIG: `L` back to MAIN.
+- MAIN: `L` next, `LL`→CONFIG, `RR`→DIAGNOSTICS. RACE: `L` next, `LL` menu (practice: Start→template browse / Repeat→re-anchor+gun / Abandon; race: Resync/Abandon; `L` cycles, `LL` confirms, `R` backs out), browse: `R` next template, `RR` pick (+10s gun, line 20m upwind), `L` back. `R` durations (practice pre-start), `RR` cycles N-UP → BRG → FIT. DIAGNOSTICS/CONFIG: `L` back to MAIN.
 - WAYPOINTS: `R` cycle, `LL` flag (also `POST /gps flagged:true`), `RR` delete.
 - TIMERS: `R` start/stop, `RR` lap/reset. CONFIG: `R` select row, `RR` apply, `LL` force OTA now.
 - Every page switch full-black clear; ghost-clear readouts in speed/timers.

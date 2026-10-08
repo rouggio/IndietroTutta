@@ -4,6 +4,7 @@
 #include "serial_buffer.h"
 #include "race_session.h"
 #include "race_run.h"
+#include "race_templates.h"
 #include "gps_mock.h"
 
 #include <WiFi.h>
@@ -64,6 +65,7 @@ static QueueHandle_t workQueue = nullptr;
 static QueueHandle_t deleteQueue = nullptr;
 static volatile bool online = false;
 static volatile bool healthNow = false;
+static volatile bool tplWant = false;
 static TinyGPSPlus* mainGps = nullptr;
 
 bool backendOnline()
@@ -74,6 +76,11 @@ bool backendOnline()
 void backendPollHealthNow()
 {
     healthNow = true;
+}
+
+void backendFetchTemplates()
+{
+    tplWant = true; // drained by the task loop (blocking fetch there)
 }
 
 // ---------------------------------------------------------
@@ -283,6 +290,12 @@ static void backendTask(void *param){
             if (online && raceUploadPending()) {
                 sendRunResult();
             }
+        }
+
+        // One-shot template library fetch for instant practice setup.
+        if (tplWant) {
+            tplWant = false;
+            tplFetch();
         }
 
         // Mock GPS source (indoor testing): scripted fixes in, nothing out.

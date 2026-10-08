@@ -2,6 +2,7 @@
 #include "screens.h"
 #include "race_session.h"
 #include "race_run.h"
+#include "race_templates.h"
 #include "backend.h"
 #include "gps_mock.h"
 
@@ -152,13 +153,91 @@ static void projToPx(const RaceProj& p, double lat, double lon, int& x, int& y)
     y = (int)(p.oy - (nr - p.rcy) * p.scale);
 }
 
-static uint16_t markColor(RaceMarkType t)
+// Little rounding-side arrow on P/S marks (any type, gates included):
+// half-arc on the side the arrow implies (P = west half CCW, S = east half
+// CW) with a barb at the tip. Repainted identically with the static layer.
+static void drawSideArrow(int cx, int cy, int rr, char side, uint16_t color)
 {
-    switch (t) {
-        case RaceMarkStart: return TFT_GREEN;
-        case RaceMarkGate: return 0xC0A0; // amber-ish purple stand-in (no alpha)
-        case RaceMarkFinish: return TFT_RED;
-        default: return TFT_ORANGE;
+    if (side != 'P' && side != 'S') return;
+    if (rr < 2) rr = 2;
+    const double dir = (side == 'S') ? 1.0 : -1.0;
+    int px = cx, py = cy - rr; // bearing 0 (north of buoy)
+    for (double d = 15.0; d <= 180.0; d += 15.0) {
+        const double a = dir * d * M_PI / 180.0;
+        const int nx = (int)(cx + rr * sin(a)), ny = (int)(cy - rr * cos(a));
+        tft.drawLine(px, py, nx, ny, color);
+        px = nx;
+        py = ny;
+    }
+    // Barb at the tip (south point), along travel: S-arc heads west,
+    // P-arc heads east.
+    const double hd = (side == 'S' ? 270.0 : 90.0) * M_PI / 180.0;
+    const int tx = cx, ty = cy + rr;
+    for (double s = 150.0; s <= 210.0; s += 60.0) {
+        const double w = hd + s * M_PI / 180.0;
+        tft.drawLine(tx, ty, (int)(tx + 4 * sin(w)), (int)(ty - 4 * cos(w)), color);
+    }
+}
+
+// Current target identity for map highlighting (mirrors nextDestination:
+// pre-start = start, racing = marks[progIdx], finished = finish).
+// Line targets: lineIdx 0 = start line, 1 = finish line (mark idx unused).
+// Gate target: gatePair set, both buoys of gateId light up.
+static void raceTarget(uint8_t& idx, bool& isLine, uint8_t& lineIdx,
+                       bool& gatePair, char* gateId, size_t gateLen)
+{
+    idx = 255; // 255 = no mark target (nothing lights up)
+    isLine = false;
+    lineIdx = 0;
+    gatePair = false;
+    if (gateId && gateLen) gateId[0] = '\0';
+    if (!raceSession.valid) return;
+    const long gun = raceGunEpoch();
+    const bool preStart = (gun <= 0 || !raceRunStarted());
+    if (preStart) {
+        if (raceSession.startLine.valid) {
+            isLine = true;
+            lineIdx = 0; // start line
+            return;
+        }
+        for (uint8_t i = 0; i < raceSession.markCount; i++) {
+            if (raceSession.marks[i].type == RaceMarkStart) {
+                idx = i;
+                return;
+            }
+        }
+        return;
+    }
+    if (raceRunFinished()) {
+        if (raceSession.finishSameAsStart) {
+            // Finish is the start line itself: light it up.
+            if (raceSession.startLine.valid) {
+                isLine = true;
+                lineIdx = 0;
+            }
+            return;
+        }
+        if (raceSession.finishLine.valid) {
+            isLine = true;
+            lineIdx = 1; // distinct finish line
+            return;
+        }
+        if (raceSession.markCount) idx = raceSession.markCount - 1;
+        return;
+    }
+    idx = raceProgIdx();
+    if (raceSession.markCount == 0) {
+        idx = 255;
+        return;
+    }
+    if (idx >= raceSession.markCount) idx = raceSession.markCount - 1;
+    const RaceMark& m = raceSession.marks[idx];
+    if (m.type == RaceMarkGate && m.gate[0]) {
+        gatePair = true;
+        if (gateId && gateLen) {
+            strncpy(gateId, m.gate, gateLen - 1);
+            gateId[gateLen - 1] = '\0';
+        }
     }
 }
 
@@ -312,17 +391,25 @@ static void drawStaticLayer(const RaceProj& p, double rotEff)
         projToPx(p, raceSession.marks[i + 1].lat, raceSession.marks[i + 1].lon, qx, qy);
         tft.drawLine(px, py, qx, qy, RDIM);
     }
+    uint8_t tIdx = 255;
+    bool tLine = false;
+    uint8_t tLineIdx = 0;
+    bool tGate = false;
+    char tGateId[8] = {0};
+    raceTarget(tIdx, tLine, tLineIdx, tGate, tGateId, sizeof(tGateId));
     if (raceSession.startLine.valid) {
         const RaceSeg& s = raceSession.startLine;
         projToPx(p, s.latA, s.lonA, px, py);
         projToPx(p, s.latB, s.lonB, qx, qy);
-        tft.drawWideLine(px, py, qx, qy, 3, TFT_GREEN);
+        const bool hl = tLine && tLineIdx == 0;
+        tft.drawWideLine(px, py, qx, qy, 3, hl ? RBOAT : TFT_GREEN);
     }
-    if (raceSession.finishLine.valid) {
-        const RaceSeg& s = raceSession.finishSameAsStart ? raceSession.startLine : raceSession.finishLine;
+    if (raceSession.finishLine.valid && !raceSession.finishSameAsStart) {
+        const RaceSeg& s = raceSession.finishLine;
         projToPx(p, s.latA, s.lonA, px, py);
         projToPx(p, s.latB, s.lonB, qx, qy);
-        tft.drawWideLine(px, py, qx, qy, 2, TFT_RED);
+        const bool hl = tLine && tLineIdx == 1;
+        tft.drawWideLine(px, py, qx, qy, 2, hl ? RBOAT : TFT_GREEN);
     }
     char num[12];
     for (uint8_t i = 0; i < raceSession.markCount; i++) {
@@ -331,7 +418,17 @@ static void drawStaticLayer(const RaceProj& p, double rotEff)
         int rPx = (int)(m.r / DEG_M * p.scale);
         if (rPx < 3) rPx = 3;
         if (rPx > 40) rPx = 40;
-        tft.drawCircle(px, py, rPx, markColor(m.type));
+        // Target object lights up yellow; everything else is white, lines
+        // carry the green. Gate pairs light up together.
+        bool isTgt = false;
+        if (tGate && m.type == RaceMarkGate && m.gate[0] && strcmp(m.gate, tGateId) == 0) {
+            isTgt = true;
+        } else if (!tGate && !tLine && i == tIdx) {
+            isTgt = true;
+        }
+        const uint16_t col = isTgt ? RBOAT : RFG;
+        tft.drawCircle(px, py, rPx, col);
+        drawSideArrow(px, py, (int)(rPx * 0.55), m.side, col);
         // Labels sit on the mark itself; coincident marks (piles) share one
         // concatenated label ("1-4"), drawn once by the first of the group.
         bool firstOfPile = true;
@@ -551,8 +648,6 @@ static void drawSmart(int x, int y, uint8_t font, int datum, uint16_t color,
 
 static char lastCd[12] = {0};
 static int16_t lastCdW = 0;
-static char lastTag[8] = {0};
-static int16_t lastTagW = 0;
 static char lastPrac[12] = {0};
 static int16_t lastPracW = 0;
 
@@ -568,6 +663,9 @@ static int16_t lastSpdW = 0;
 
 // Last GPS epoch seen on this page (buttons have no gps handle).
 static long lastGpsNow = 0;
+// Last fix for template placement (Repeat/Start need position + freshness).
+static double lastGpsLat = 0.0, lastGpsLon = 0.0;
+static unsigned long lastFixAt = 0;
 // Transient header message (duration cycling), 2s.
 static char transientMsg[12] = {0};
 static unsigned long transientUntil = 0;
@@ -616,12 +714,25 @@ static void raceSignalsApply(TinyGPSPlus& gps)
     }
 }
 
+// LL menu state (actions defined near drawScreenRace below).
+static bool menuOpen = false;
+static uint8_t menuSel = 0;
+static uint8_t menuN = 0;
+static bool menuDirty = false;
+static unsigned long menuUntil = 0;
+// Template browse state (instant practice setup; map frozen while open).
+static bool tplOpen = false;
+static uint8_t tplSel = 0;
+static bool tplDirty = false;
+static bool tplAsked = false;
+static bool tplWasReady = false;
+static unsigned long tplT0 = 0;
+
 static void resetRaceText()
 {
     // Called on full clears so change-detect redraws everything next pass.
     lastSpd[0] = 0; lastSpdW = 0;
     lastCd[0] = 0; lastCdW = 0;
-    lastTag[0] = 0; lastTagW = 0;
     lastPrac[0] = 0; lastPracW = 0;
     lastBbuf[0] = 0; lastBbufW = 0;
     lastDbuf[0] = 0; lastDbufW = 0;
@@ -647,6 +758,11 @@ static void drawRaceText(TinyGPSPlus& gps)
     long now = raceWallEpoch();
     if (now <= 0) now = raceGpsEpoch(gps);
     lastGpsNow = now;
+    if (gps.location.isValid()) {
+        lastGpsLat = gps.location.lat();
+        lastGpsLon = gps.location.lng();
+        lastFixAt = millis();
+    }
     const long gun = raceGunEpoch();
     if (millis() < sigUntil && sigMsg[0]) {
         snprintf(cd, sizeof(cd), "%-8.8s", sigMsg);
@@ -675,13 +791,12 @@ static void drawRaceText(TinyGPSPlus& gps)
     }
     drawSmart(160, 2, 4, TC_DATUM, RFG, cd, lastCd, sizeof(lastCd), lastCdW);
 
-    // Next-passage tag (ST pre-start, else number+side), bright white.
+    // Next destination feeds the strip + boat/dash (the header tag is gone —
+    // the target lights up yellow on the map instead).
     char tag[8];
     double dLat = 0.0, dLon = 0.0;
     const bool haveDest = nextDestination(gps, dLat, dLon, tag, sizeof(tag));
-    drawSmart(312, 2, 4, TR_DATUM, RFG,
-              !raceSession.valid ? "----" : (haveDest ? tag : "----"),
-              lastTag, sizeof(lastTag), lastTagW);
+    (void)tag;
 
     // Bottom zone: PRAC/RACE tag left, next data center, view mode right.
     // Layout flips between centered messages and the split bearing view —
@@ -732,22 +847,156 @@ static void drawRaceText(TinyGPSPlus& gps)
     tft.fillCircle(222, 195, 2, showBrg ? RFG : RBG);
 
     // Hint bar (mode-dependent, fixed widths so re-modes overwrite cleanly).
-    const bool racing = raceRunStarted() && !raceRunFinished();
+    // Browse and menu repurpose the hints as their controls.
     tft.setTextColor(RDIM, RBG);
     tft.setTextDatum(BL_DATUM);
-    if (isRace) {
-        tft.drawString("L Next LL Sync", 8, 235, 2);
-    } else if (racing) {
-        tft.drawString("L Next LL Turn", 8, 235, 2);
-    } else {
-        tft.drawString("L Next LL Go  ", 8, 235, 2);
-    }
+    if (tplOpen) tft.drawString("L Back        ", 8, 239, 2);
+    else tft.drawString(menuOpen ? "L Next LL OK  " : "L Next LL Menu", 8, 239, 2);
     tft.setTextDatum(BR_DATUM);
-    if (isRace || racing) {
-        tft.drawString("R TurnRR View ", tft.width() - 8, 235, 2);
+    if (tplOpen) tft.drawString("R Next RR Go  ", tft.width() - 8, 239, 2);
+    else tft.drawString(menuOpen ? "R BackRR Back" : (isRace ? "R --- RR View " : "R Dur RR View "), tft.width() - 8, 239, 2);
+}
+
+// LL menu: explicit race actions (map frozen while open, box repainted on
+// open/selection only; close does a full repaint). Practice: start /
+// repeat / abandon. Race: resync / abandon (the gun belongs to committee).
+static uint8_t menuCount(bool isPractice)
+{
+    return isPractice ? 3 : 2;
+}
+
+static void menuText(bool isPractice, uint8_t i, char* buf, size_t n)
+{
+    if (isPractice) {
+        if (i == 0) snprintf(buf, n, "Start PRAC");
+        else if (i == 1) snprintf(buf, n, "Repeat last");
+        else snprintf(buf, n, "Abandon");
     } else {
-        tft.drawString("R Dur RR View ", tft.width() - 8, 235, 2);
+        if (i == 0) snprintf(buf, n, "Resync now");
+        else snprintf(buf, n, "Abandon");
     }
+}
+
+static void drawRaceMenu()
+{
+    const bool isPractice = !(raceSession.valid && strcmp(raceSession.mode, "race") == 0);
+    const int bw = 170, bh = 24 + menuN * 22;
+    const int bx = (tft.width() - bw) / 2, by = 80;
+    tft.fillRect(bx, by, bw, bh, RBG);
+    tft.drawRect(bx, by, bw, bh, RFG);
+    tft.setTextDatum(TL_DATUM);
+    tft.setTextColor(RDIM, RBG);
+    tft.drawString(isPractice ? "PRAC MENU" : "RACE MENU", bx + 8, by + 5, 2);
+    char buf[16];
+    for (uint8_t i = 0; i < menuN; i++) {
+        menuText(isPractice, i, buf, sizeof(buf));
+        const int ry = by + 24 + i * 22;
+        if (i == menuSel) {
+            tft.fillRect(bx + 4, ry - 2, bw - 8, 20, RFG);
+            tft.setTextColor(RBG, RFG);
+        } else {
+            tft.setTextColor(RFG, RBG);
+        }
+        tft.drawString(buf, bx + 12, ry, 2);
+    }
+    tft.setTextColor(RDIM, RBG);
+}
+
+static void menuClose()
+{
+    menuOpen = false;
+    redrawCurrentPage();
+}
+
+static void tplClose()
+{
+    tplOpen = false;
+    redrawCurrentPage();
+}
+
+// Template browse list (below header; map frozen behind it). Repainted on
+// open/selection/fetch-ready only.
+static void drawTplList()
+{
+    const int bx = 8, bw = 304, by = 34, bh = 172;
+    tft.fillRect(bx, by, bw, bh, RBG);
+    tft.drawRect(bx, by, bw, bh, RFG);
+    tft.setTextDatum(TL_DATUM);
+    tft.setTextColor(RDIM, RBG);
+    if (!tplReady()) {
+        tft.drawString("TEMPLATES ...", bx + 8, by + 5, 2);
+        tft.setTextColor(RFG, RBG);
+        tft.drawString("asking backend", bx + 8, by + 27, 2);
+        return;
+    }
+    const uint8_t n = tplCount();
+    char head[20];
+    snprintf(head, sizeof(head), "TEMPLATES %d", n);
+    tft.drawString(head, bx + 8, by + 5, 2);
+    if (!n) {
+        tft.setTextColor(RFG, RBG);
+        tft.drawString("none saved", bx + 8, by + 27, 2);
+        return;
+    }
+    if (tplSel >= n) tplSel = 0;
+    uint8_t top = tplSel > 2 ? tplSel - 2 : 0;
+    if (top + 6 > n && n > 6) top = n - 6;
+    for (uint8_t r = 0; r < 6 && top + r < n; r++) {
+        const Tpl* t = tplGet(top + r);
+        if (!t) continue;
+        const int ry = by + 26 + r * 22;
+        if (top + r == tplSel) {
+            tft.fillRect(bx + 4, ry - 2, bw - 8, 20, RFG);
+            tft.setTextColor(RBG, RFG);
+        } else {
+            tft.setTextColor(RFG, RBG);
+        }
+        char nm[36];
+        snprintf(nm, sizeof(nm), "%d %s", top + r + 1, t->name);
+        tft.drawString(nm, bx + 12, ry, 2);
+    }
+    tft.setTextColor(RDIM, RBG);
+}
+
+static void menuConfirm()
+{
+    const bool isPractice = !(raceSession.valid && strcmp(raceSession.mode, "race") == 0);
+    if (isPractice) {
+        if (menuSel == 0) {
+            // Start practice → browse templates (pick fires the +10s gun).
+            menuOpen = false;
+            tplOpen = true;
+            tplSel = 0;
+            tplDirty = true;
+            tplAsked = false;
+            tplWasReady = false;
+            redrawCurrentPage();
+        } else if (menuSel == 1) {
+            // Repeat last → same course re-anchored at the boat, fresh gun.
+            long now = raceWallEpoch();
+            if (now <= 0) now = lastGpsNow;
+            if (!raceSession.valid || raceSession.markCount == 0) {
+                showTransient("NO COURSE ");
+            } else if (now <= 0 || millis() - lastFixAt > 15000) {
+                showTransient("NO FIX ");
+            } else if (tplRepeatSession(lastGpsLat, lastGpsLon, now)) {
+                menuClose();
+            } else {
+                showTransient("NO FIX ");
+            }
+        } else {
+            raceRunReset();
+            showSignal("ABANDON ");
+        }
+    } else {
+        if (menuSel == 0) {
+            backendPollHealthNow();
+        } else {
+            raceRunReset();
+            showSignal("ABANDON ");
+        }
+    }
+    menuClose();
 }
 
 void drawScreenRace(TinyGPSPlus &gps, bool requiresInit)
@@ -766,17 +1015,48 @@ void drawScreenRace(TinyGPSPlus &gps, bool requiresInit)
     }
     raceRunUpdate(gps);
     raceSignalsApply(gps);
-    // Turn verdicts + wrong-side calls surface as short header banners.
-    const int verdict = raceTurnPoll();
-    if (verdict == 720) {
-        showTransient("720 OK ");
-    } else if (verdict == 360) {
-        showTransient("360 OK ");
-    } else if (raceWrongPoll()) {
+    // Wrong-side calls surface as a short header banner.
+    if (raceWrongPoll()) {
         showTransient("WRONG!  ");
     }
-    drawRaceMap(gps, requiresInit || courseChanged);
+    if (menuOpen && (long)(millis() - menuUntil) >= 0) {
+        menuOpen = false; // timed out: full repaint drops the box
+        redrawCurrentPage();
+        return;
+    }
+    if (courseChanged && (menuOpen || tplOpen)) {
+        menuOpen = false;
+        tplOpen = false;
+    }
+    if (tplOpen) {
+        // Template browse: fetch once, fail loud after 8s, freeze the map.
+        if (!tplAsked) {
+            tplAsked = true;
+            tplT0 = millis();
+            backendFetchTemplates();
+        }
+        if (tplReady() != tplWasReady) {
+            tplWasReady = tplReady();
+            tplDirty = true;
+        }
+        if (!tplReady() && millis() - tplT0 > 8000) {
+            tplOpen = false;
+            showTransient("OFFLINE ");
+            redrawCurrentPage();
+        }
+    }
+    if (!menuOpen && !tplOpen) drawRaceMap(gps, requiresInit || courseChanged);
     drawRaceText(gps);
+    if (menuOpen) {
+        if (menuDirty || requiresInit || courseChanged) {
+            drawRaceMenu();
+            menuDirty = false;
+        }
+    }
+    if (tplOpen && (tplDirty || requiresInit || courseChanged)) {
+        drawTplList();
+        tplDirty = false;
+    }
 }
 
 // Transient duration banner for LL cycling ("SET 3:00", 2s).
@@ -784,42 +1064,66 @@ static unsigned long durMsgUntil = 0;
 
 void screenRaceButton(Button button, ButtonEvent event)
 {
+    // Template browse owns every button while open: R steps, RR picks and
+    // fires the +10s gun on the spot, L backs out.
+    if (tplOpen) {
+        if (button == Button::Left) {
+            tplClose();
+            return;
+        }
+        if (button == Button::Right && event == ButtonEvent::ShortPress) {
+            const uint8_t n = tplCount();
+            if (n) {
+                tplSel = (uint8_t)((tplSel + 1) % n);
+                tplDirty = true;
+            }
+            return;
+        }
+        if (button == Button::Right && event == ButtonEvent::LongPress) {
+            long now = raceWallEpoch();
+            if (now <= 0) now = lastGpsNow;
+            if (now > 0 && millis() - lastFixAt <= 15000 &&
+                tplStartSession(tplSel, lastGpsLat, lastGpsLon, now)) {
+                tplClose(); // courseVersion bump redraws the new course
+            } else {
+                showTransient("NO FIX ");
+            }
+            return;
+        }
+        return;
+    }
+    // Menu owns every button while open: L cycles, LL confirms, R backs out.
+    if (menuOpen) {
+        if (button == Button::Left && event == ButtonEvent::ShortPress) {
+            menuSel = (uint8_t)((menuSel + 1) % (menuN ? menuN : 1));
+            menuDirty = true;
+            menuUntil = millis() + 10000;
+            return;
+        }
+        if (button == Button::Left && event == ButtonEvent::LongPress) {
+            menuConfirm();
+            return;
+        }
+        menuClose();
+        return;
+    }
     if (button == Button::Left && event == ButtonEvent::ShortPress) {
         nextScreen();
         return;
     }
     const bool isPractice = !(raceSession.valid && strcmp(raceSession.mode, "race") == 0);
-    // Left long: the action button. Practice pre-start → start/clear the
-    // local run (mirrors LL-flag on Waypoints); practice racing → declare a
-    // 360/720 (verified by rotation); race → health resync now.
+    // Left long opens the menu (explicit actions beat hidden gestures).
     if (button == Button::Left && event == ButtonEvent::LongPress) {
-        if (isPractice) {
-            if (raceRunStarted() && !raceRunFinished()) {
-                raceTurnDeclare(lastGpsNow);
-                if (raceTurnPending()) showTransient("TURN?   ");
-            } else if (!raceRunStarted() && !raceRunFinished() && raceGunEpoch() > 0) {
-                raceRunReset(); // gun set, not started: LL clears it
-            } else if (!raceRunStarted() && !raceRunFinished()) {
-                if (lastGpsNow > 0) {
-                    racePracticeStart(lastGpsNow + racePracticeDur());
-                } else {
-                    showTransient("NO TIME ");
-                }
-            } else {
-                raceRunReset();
-            }
-        } else {
-            backendPollHealthNow();
-        }
+        menuOpen = true;
+        menuSel = 0;
+        menuN = menuCount(isPractice);
+        menuDirty = true;
+        menuUntil = millis() + 10000;
         return;
     }
-    // Right short: practice durations pre-start; turn declare while racing.
+    // Right short: practice durations 1 → 3 → 5 min (pre-start only).
     if (button == Button::Right && event == ButtonEvent::ShortPress) {
-        const bool racing = raceRunStarted() && !raceRunFinished();
-        if (racing) {
-            raceTurnDeclare(lastGpsNow);
-            if (raceTurnPending()) showTransient("TURN?   ");
-        } else if (isPractice) {
+        if (isPractice && !raceRunStarted()) {
             racePracticeCycleDur();
             const long d = racePracticeDur();
             char msg[12];
