@@ -65,6 +65,8 @@ bool raceSessionSave();
 
 // Parse a GET /health body. Updates raceSession always (startTime can move
 // without a version bump); writes NVS only when something changed.
+// Explicit `"session":null` while online clears a stale *backend* course
+// (unassigned ≠ unreachable); local practice (id -1) is never auto-cleared.
 // Returns true when the live session changed.
 bool raceSessionParse(const char* healthBody);
 

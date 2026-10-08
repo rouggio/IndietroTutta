@@ -873,27 +873,33 @@ static void menuText(bool isPractice, uint8_t i, char* buf, size_t n)
     }
 }
 
-static void drawRaceMenu()
+static void drawRaceMenu(bool full)
 {
-    // Standard menu chrome: centered title + rule, `>` rows, yellow select.
+    // Full-screen menu, same chrome as CONFIG: centered title + rule,
+    // `>` rows with yellow selection, hint bar below.
     const bool isPractice = !(raceSession.valid && strcmp(raceSession.mode, "race") == 0);
-    const int bw = 190, bh = 32 + menuN * 22;
-    const int bx = (tft.width() - bw) / 2, by = 74;
-    tft.fillRect(bx, by, bw, bh, RBG);
-    tft.drawRect(bx, by, bw, bh, RFG);
-    tft.setTextColor(RFG, RBG);
-    tft.setTextDatum(TC_DATUM);
-    tft.drawString(isPractice ? "PRAC MENU" : "RACE MENU", bx + bw / 2, by + 6, 2);
-    tft.drawFastHLine(bx + 8, by + 26, bw - 16, RDIM);
+    if (full) {
+        tft.fillScreen(RBG);
+        tft.setTextColor(RFG, RBG);
+        tft.setTextDatum(TC_DATUM);
+        tft.drawString(isPractice ? "PRAC MENU" : "RACE MENU", tft.width() / 2, 20, 4);
+        tft.drawFastHLine(0, 44, tft.width(), RDIM);
+    } else {
+        tft.fillRect(0, 60, tft.width(), 70, RBG);
+    }
     char buf[16], row[20];
     for (uint8_t i = 0; i < menuN; i++) {
         menuText(isPractice, i, buf, sizeof(buf));
         snprintf(row, sizeof(row), "%s %s", i == menuSel ? ">" : " ", buf);
         tft.setTextDatum(TL_DATUM);
         tft.setTextColor(i == menuSel ? TFT_YELLOW : RFG, RBG);
-        tft.drawString(row, bx + 12, by + 30 + i * 22, 2);
+        tft.drawString(row, 12, 68 + i * 30, 2);
     }
     tft.setTextColor(RDIM, RBG);
+    tft.setTextDatum(BL_DATUM);
+    tft.drawString("L Back", 8, 239, 2);
+    tft.setTextDatum(BR_DATUM);
+    tft.drawString("R Sel RR Pick", tft.width() - 8, 239, 2);
 }
 
 static void menuClose()
@@ -1022,6 +1028,14 @@ void drawScreenRace(TinyGPSPlus &gps, bool requiresInit)
         menuOpen = false;
         tplOpen = false;
     }
+    if (menuOpen) {
+        // Full-screen menu: engine already ran above; paint and stop.
+        if (menuDirty || requiresInit || courseChanged) {
+            drawRaceMenu(requiresInit || courseChanged);
+            menuDirty = false;
+        }
+        return;
+    }
     if (tplOpen) {
         // Template browse: fetch once, fail loud after 8s, freeze the map.
         if (!tplAsked) {
@@ -1039,14 +1053,8 @@ void drawScreenRace(TinyGPSPlus &gps, bool requiresInit)
             redrawCurrentPage();
         }
     }
-    if (!menuOpen && !tplOpen) drawRaceMap(gps, requiresInit || courseChanged);
+    if (!tplOpen) drawRaceMap(gps, requiresInit || courseChanged);
     drawRaceText(gps);
-    if (menuOpen) {
-        if (menuDirty || requiresInit || courseChanged) {
-            drawRaceMenu();
-            menuDirty = false;
-        }
-    }
     if (tplOpen && (tplDirty || requiresInit || courseChanged)) {
         drawTplList();
         tplDirty = false;

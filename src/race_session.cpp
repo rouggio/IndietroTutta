@@ -1,4 +1,5 @@
 #include "race_session.h"
+#include "race_run.h"
 #include "serial_buffer.h"
 
 #include <Arduino.h>
@@ -176,7 +177,20 @@ bool raceSessionParse(const char* healthBody)
     }
     JsonObject sess = doc["session"];
     if (sess.isNull()) {
-        // Nothing assigned: keep the cache (offline state survives).
+        // Explicitly unassigned (backend reachable, body parsed): drop a
+        // stale backend course so the display goes clean. Offline (no body
+        // at all) keeps the cache; local practice (id -1) is never cleared.
+        if (raceSession.valid && raceSession.sessionId > 0) {
+            raceSession.valid = false;
+            Preferences prefs;
+            if (prefs.begin("race", false)) {
+                prefs.remove("sess");
+                prefs.end();
+            }
+            raceRunReset();
+            bufferedSerialPrintln("[RACE] session unassigned, cache cleared");
+            return true;
+        }
         return false;
     }
     RaceSession next;
