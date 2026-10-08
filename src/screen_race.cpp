@@ -19,26 +19,33 @@ static const uint16_t RFG = TFT_WHITE;
 static const uint16_t RDIM = 0x8410; // neutral gray
 static const uint16_t RBOAT = TFT_YELLOW;
 
-// Frame: everything except the header (top) and the hint bar (bottom).
-// Wire area holds the course; the solid strip holds PRAC tag + next data.
+// Frame: full-bleed N/W/E border, south edge +4. Left viewport holds the
+// map (below the header); right viewport (1/5 width) holds the values.
 static const int HDR_H = 28;
-static const int MAP_X = 2;
+static const int MAP_X = 0;
 static const int MAP_Y = 30;
-static const int MAP_W = 316;
-static const int WIRE_TOP = 58;   // course wire area starts here (speed zone above)
-static const int WIRE_Y1 = 178;   // wire area: WIRE_TOP..WIRE_Y1
-static const int STRIP_Y0 = 180;  // data strip: STRIP_Y0..208
-static const int STRIP_Y1 = 208;
+static const int MAP_W = 256;   // left viewport (4/5 of 320)
+static const int WIRE_TOP = 30; // wire fills from below the header...
+static const int WIRE_Y1 = 208; // ...to the frame south (strip is gone)
+static const int FRAME_SOUTH = 213;
+// Right values pane: 1/5 width, five mini-labeled rows.
+static const int PANE_X = 256;
+static const int PANE_W = 64;
+static const int PANE_Y0 = 30;
+static const int PANE_ROWH = 35;
+
+static void drawFrameChrome()
+{
+    tft.drawRect(0, 0, 320, FRAME_SOUTH, RDIM);
+    tft.drawLine(255, 30, 255, FRAME_SOUTH - 1, RDIM); // viewport divider
+    tft.drawLine(255, 30, 319, 30, RDIM);              // pane top edge
+}
 
 static const double DEG_M = 111320.0;
 
 // View state (RAM only). RR cycles: 0 north-up, 1 bearing-up (next
 // destination up), 2 best-fit (0°/90° whichever fills the screen).
 static uint8_t viewMode = 0;
-// Effective rotation applied by the last map draw (deg clockwise that
-// points up) + effective mode, shared with the text row.
-static double gRotEff = 0.0;
-static int gEffMode = 0;
 
 static int lastRaceCourseKey = -2; // sessionId+version fingerprint, -2 = none
 static unsigned long lastMapDraw = 0;
@@ -480,7 +487,7 @@ static void drawRaceMap(TinyGPSPlus& gps, bool full)
     if (!raceSession.valid) {
         if (full) {
             tft.fillRect(MAP_X, WIRE_TOP, MAP_W, WIRE_Y1 - WIRE_TOP, RBG);
-            tft.drawRect(MAP_X, MAP_Y, MAP_W, STRIP_Y1 - MAP_Y, RDIM);
+            drawFrameChrome();
             tft.setTextDatum(MC_DATUM);
             tft.setTextColor(RDIM, RBG);
             tft.drawString("NO COURSE", MAP_X + MAP_W / 2, WIRE_TOP + (WIRE_Y1 - WIRE_TOP) / 2, 4);
@@ -493,7 +500,6 @@ static void drawRaceMap(TinyGPSPlus& gps, bool full)
     // screen fit (0°/90° whichever fills more). Falls back to north-up
     // whenever the fix/destination is missing.
     double rotEff = 0.0;
-    int effMode = 0;
     double destLat = 0.0, destLon = 0.0;
     char destTag[8] = {0};
     const bool haveDestHere = nextDestination(gps, destLat, destLon, destTag, sizeof(destTag));
@@ -503,10 +509,7 @@ static void drawRaceMap(TinyGPSPlus& gps, bool full)
         if (brg < 0) brg += 360.0;
         if (brg >= 360.0) brg -= 360.0;
         rotEff = brg;
-        effMode = 1;
     }
-    gRotEff = rotEff;
-    gEffMode = effMode;
 
     RaceProj p;
     if (viewMode == 2) {
@@ -520,8 +523,6 @@ static void drawRaceMap(TinyGPSPlus& gps, bool full)
             p = p0;
             rotEff = 0.0;
         }
-        gRotEff = rotEff;
-        gEffMode = 2;
     } else {
         buildProjection(p, rotEff);
     }
@@ -543,7 +544,7 @@ static void drawRaceMap(TinyGPSPlus& gps, bool full)
     }
     if (full) {
         tft.fillRect(MAP_X, WIRE_TOP, MAP_W, WIRE_Y1 - WIRE_TOP, RBG);
-        tft.drawRect(MAP_X, MAP_Y, MAP_W, STRIP_Y1 - MAP_Y, RDIM);
+        drawFrameChrome();
         drawStaticLayer(p, rotEff);
         oldRotEff = rotEff;
         lastMapDraw = millis();
@@ -601,7 +602,7 @@ static void drawRaceMap(TinyGPSPlus& gps, bool full)
             }
         }
         drawStaticLayer(p, rotEff);
-        tft.drawRect(MAP_X, MAP_Y, MAP_W, STRIP_Y1 - MAP_Y, RDIM);
+        drawFrameChrome();
     }
     if (haveDash) {
         drawDashed(bx, by, dx, dy, RBOAT);
@@ -646,20 +647,20 @@ static void drawSmart(int x, int y, uint8_t font, int datum, uint16_t color,
     last[lastLen - 1] = '\0';
 }
 
-static char lastCd[12] = {0};
-static int16_t lastCdW = 0;
-static char lastPrac[12] = {0};
-static int16_t lastPracW = 0;
-
-static char lastBbuf[8] = {0};
-static int16_t lastBbufW = 0;
-static char lastDbuf[14] = {0};
-static int16_t lastDbufW = 0;
-static char lastMsg[24] = {0};
-static int16_t lastMsgW = 0;
-
-static char lastSpd[10] = {0};
-static int16_t lastSpdW = 0;
+static char pBan[12] = {0};
+static int16_t pBanW = 0;
+// Right-pane cells (mini label + value each).
+static char pLabS[8] = {0}; static int16_t pLabSW = 0;
+static char pLabB[8] = {0}; static int16_t pLabBW = 0;
+static char pLabD[8] = {0}; static int16_t pLabDW = 0;
+static char pLabN[8] = {0}; static int16_t pLabNW = 0;
+static char pLabT[8] = {0}; static int16_t pLabTW = 0;
+static char pSpd[10] = {0}; static int16_t pSpdW = 0;
+static char pBrg[8] = {0}; static int16_t pBrgW = 0;
+static char pDst[10] = {0}; static int16_t pDstW = 0;
+static char pNxt[8] = {0}; static int16_t pNxtW = 0;
+static char pTim[10] = {0}; static int16_t pTimW = 0;
+static bool paneClean = false;
 
 // Last GPS epoch seen on this page (buttons have no gps handle).
 static long lastGpsNow = 0;
@@ -731,28 +732,22 @@ static unsigned long tplT0 = 0;
 static void resetRaceText()
 {
     // Called on full clears so change-detect redraws everything next pass.
-    lastSpd[0] = 0; lastSpdW = 0;
-    lastCd[0] = 0; lastCdW = 0;
-    lastPrac[0] = 0; lastPracW = 0;
-    lastBbuf[0] = 0; lastBbufW = 0;
-    lastDbuf[0] = 0; lastDbufW = 0;
-    lastMsg[0] = 0; lastMsgW = 0;
+    pBan[0] = 0; pBanW = 0;
+    pLabS[0] = 0; pLabSW = 0;
+    pLabB[0] = 0; pLabBW = 0;
+    pLabD[0] = 0; pLabDW = 0;
+    pLabN[0] = 0; pLabNW = 0;
+    pLabT[0] = 0; pLabTW = 0;
+    pSpd[0] = 0; pSpdW = 0;
+    pBrg[0] = 0; pBrgW = 0;
+    pDst[0] = 0; pDstW = 0;
+    pNxt[0] = 0; pNxtW = 0;
+    pTim[0] = 0; pTimW = 0;
+    paneClean = false;
 }
 
 static void drawRaceText(TinyGPSPlus& gps)
 {
-    // Instant speed, big white, top-left frame corner (dedicated solid zone).
-    char spd[10];
-    if (gps.speed.isValid()) {
-        snprintf(spd, sizeof(spd), "%4.1fkn", gps.speed.knots());
-    } else {
-        snprintf(spd, sizeof(spd), "  ---  ");
-    }
-    drawSmart(6, 33, 4, TL_DATUM, RFG, spd, lastSpd, sizeof(lastSpd), lastSpdW);
-
-    // Header: countdown center, next-passage tag right (bright white).
-    // Header: countdown pre-gun, GO/OCS while pending, elapsed once started.
-    char cd[12];
     // Wall clock (GPS-calibrated, ticks through fix gaps) so the countdown
     // never freezes when fixes pause; raw GPS epoch as the cold fallback.
     long now = raceWallEpoch();
@@ -764,87 +759,103 @@ static void drawRaceText(TinyGPSPlus& gps)
         lastFixAt = millis();
     }
     const long gun = raceGunEpoch();
-    if (millis() < sigUntil && sigMsg[0]) {
-        snprintf(cd, sizeof(cd), "%-8.8s", sigMsg);
-    } else if (millis() < transientUntil && transientMsg[0]) {
-        snprintf(cd, sizeof(cd), "%-8.8s", transientMsg);
-    } else if (raceSession.valid && gun > 0 && now > 0) {        if (now < gun) {
-            const long rem = gun - now;
-            snprintf(cd, sizeof(cd), " %2ld:%02ld  ", rem / 60, rem % 60);
-        } else if (!raceRunStarted()) {
-            snprintf(cd, sizeof(cd), raceRunOcs() ? "OCS     " : "   GO   ");
-        } else {
-            const long base = raceRunFinished() && raceRunEndEpoch() > 0 ? raceRunEndEpoch() : now;
-            const long el = base - raceRunStartEpoch();
-            snprintf(cd, sizeof(cd), "+%2ld:%02ld  ", el / 60, el % 60);
-        }
-    } else if (raceSession.valid && gun > 0) {
-        // Gun armed but no time source yet (waiting on the first fix).
-        snprintf(cd, sizeof(cd), "WAIT    ");
-    } else if (raceSession.valid && now > 0 &&
-               strcmp(raceSession.mode, "race") != 0) {
-        // Practice with no gun yet: show what R cycles (LL arms it).
-        const long d = racePracticeDur();
-        snprintf(cd, sizeof(cd), "DUR %1ld:%02ld", d / 60, d % 60);
-    } else {
-        snprintf(cd, sizeof(cd), " --:--   ");
-    }
-    drawSmart(160, 2, 4, TC_DATUM, RFG, cd, lastCd, sizeof(lastCd), lastCdW);
+    const bool isRace = strcmp(raceSession.mode, "race") == 0;
 
-    // Next destination feeds the strip + boat/dash (the header tag is gone —
-    // the target lights up yellow on the map instead).
+    // Header: committee banners only (the countdown lives in the pane now).
+    char ban[12];
+    if (millis() < sigUntil && sigMsg[0]) {
+        snprintf(ban, sizeof(ban), "%-8.8s", sigMsg);
+    } else if (millis() < transientUntil && transientMsg[0]) {
+        snprintf(ban, sizeof(ban), "%-8.8s", transientMsg);
+    } else {
+        ban[0] = '\0';
+    }
+    drawSmart(160, 2, 4, TC_DATUM, RFG, ban, pBan, sizeof(pBan), pBanW);
+
+    // Destination geometry (map boat/dash + pane cells).
     char tag[8];
     double dLat = 0.0, dLon = 0.0;
     const bool haveDest = nextDestination(gps, dLat, dLon, tag, sizeof(tag));
-    (void)tag;
-
-    // Bottom zone: PRAC/RACE tag left, next data center, view mode right.
-    // Layout flips between centered messages and the split bearing view —
-    // clear the band once on transition, then draw everything change-detect.
-    static int lastStripMode = -1;
-    static bool lastShowBrg = false;
-    const int stripMode = !raceSession.valid ? 0 : 1;
-    if (stripMode != lastStripMode) {
-        tft.fillRect(8, STRIP_Y0, MAP_W - 16, STRIP_Y1 - STRIP_Y0, RBG);
-        lastMsg[0] = 0; lastMsgW = 0;
-        lastBbuf[0] = 0; lastBbufW = 0;
-        lastDbuf[0] = 0; lastDbufW = 0;
-        lastStripMode = stripMode;
-    }
-    const bool isRace = strcmp(raceSession.mode, "race") == 0;
-    // Left cell: mode only (the N-UP/BRG/FIT view label is gone — the map
-    // rotation speaks for itself).
-    drawSmart(8, 184, 2, TL_DATUM, RDIM,
-              raceSession.valid ? (isRace ? "RACE" : "PRAC") : "----",
-              lastPrac, sizeof(lastPrac), lastPracW);
-
-    char bbuf[8], dbuf[14];
+    const bool haveFix = gps.location.isValid();
+    double brg = 0.0;
+    long distM = 0;
     bool showBrg = false;
-    if (!raceSession.valid) {
-        drawSmart(190, 182, 4, TC_DATUM, RFG, "NO COURSE", lastMsg, sizeof(lastMsg), lastMsgW);
-    } else if (haveDest && gps.location.isValid()) {
+    if (raceSession.valid && haveDest && haveFix) {
         const double dist = TinyGPSPlus::distanceBetween(
             gps.location.lat(), gps.location.lng(), dLat, dLon);
-        double brg = TinyGPSPlus::courseTo(
+        brg = TinyGPSPlus::courseTo(
             gps.location.lat(), gps.location.lng(), dLat, dLon);
         if (brg < 0) brg += 360.0;
         if (brg >= 360.0) brg -= 360.0;
-        const long d = (long)dist > 9999 ? 9999 : (long)dist;
-        snprintf(bbuf, sizeof(bbuf), "%3d", (int)brg);
-        snprintf(dbuf, sizeof(dbuf), "%4ldm", d);
-        drawSmart(216, 182, 4, TR_DATUM, RFG, bbuf, lastBbuf, sizeof(lastBbuf), lastBbufW);
-        drawSmart(312, 182, 4, TR_DATUM, RFG, dbuf, lastDbuf, sizeof(lastDbuf), lastDbufW);
+        distM = (long)dist > 9999 ? 9999 : (long)dist;
         showBrg = true;
+    }
+    // Compact time string for the pane (header countdown moved here).
+    char tim[10];
+    if (raceSession.valid && gun > 0 && now > 0) {
+        if (now < gun) {
+            const long rem = gun - now;
+            snprintf(tim, sizeof(tim), " %2ld:%02ld", rem / 60, rem % 60);
+        } else if (!raceRunStarted()) {
+            snprintf(tim, sizeof(tim), raceRunOcs() ? "OCS" : "GO");
+        } else {
+            const long base = raceRunFinished() && raceRunEndEpoch() > 0 ? raceRunEndEpoch() : now;
+            const long el = base - raceRunStartEpoch();
+            snprintf(tim, sizeof(tim), "+%2ld:%02ld", el / 60, el % 60);
+        }
+    } else if (raceSession.valid && gun > 0) {
+        snprintf(tim, sizeof(tim), "WAIT");
+    } else if (raceSession.valid && now > 0 &&
+               strcmp(raceSession.mode, "race") != 0) {
+        const long d = racePracticeDur();
+        snprintf(tim, sizeof(tim), "D%1ld:%02ld", d / 60, d % 60);
     } else {
-        drawSmart(190, 182, 4, TC_DATUM, RFG, " --- ", lastMsg, sizeof(lastMsg), lastMsgW);
+        snprintf(tim, sizeof(tim), "--:--");
     }
-    if (!showBrg && lastShowBrg) {
-        drawSmart(216, 182, 4, TR_DATUM, RFG, "", lastBbuf, sizeof(lastBbuf), lastBbufW);
-        drawSmart(312, 182, 4, TR_DATUM, RFG, "", lastDbuf, sizeof(lastDbuf), lastDbufW);
+
+    // Right values pane: background + grid once, cells change-detect.
+    if (!paneClean) {
+        tft.fillRect(PANE_X, PANE_Y0, PANE_W, 178, RBG);
+        for (int r = 1; r < 5; r++) {
+            const int ly = PANE_Y0 + 4 + r * PANE_ROWH - 5;
+            tft.drawLine(PANE_X + 2, ly, PANE_X + PANE_W - 3, ly, RDIM);
+        }
+        paneClean = true;
     }
-    lastShowBrg = showBrg;
-    // Degree ring glued to the bearing cell (idle pixels overdrawn, no smear).
-    tft.fillCircle(222, 195, 2, showBrg ? RFG : RBG);
+    char cell[14];
+    // Row 0: speed.
+    drawSmart(PANE_X + 3, PANE_Y0 + 4, 1, TL_DATUM, RDIM, "SPD KN",
+              pLabS, sizeof(pLabS), pLabSW);
+    if (gps.speed.isValid()) snprintf(cell, sizeof(cell), "%4.1f", gps.speed.knots());
+    else snprintf(cell, sizeof(cell), " --- ");
+    drawSmart(PANE_X + PANE_W - 6, PANE_Y0 + 14, 2, TR_DATUM, RFG, cell,
+              pSpd, sizeof(pSpd), pSpdW);
+    // Row 1: bearing to destination.
+    drawSmart(PANE_X + 3, PANE_Y0 + 4 + PANE_ROWH, 1, TL_DATUM, RDIM, "BRG",
+              pLabB, sizeof(pLabB), pLabBW);
+    if (showBrg) snprintf(cell, sizeof(cell), "%3d", (int)brg);
+    else snprintf(cell, sizeof(cell), "---");
+    drawSmart(PANE_X + PANE_W - 6, PANE_Y0 + 14 + PANE_ROWH, 2, TR_DATUM, RFG, cell,
+              pBrg, sizeof(pBrg), pBrgW);
+    // Row 2: distance.
+    drawSmart(PANE_X + 3, PANE_Y0 + 4 + 2 * PANE_ROWH, 1, TL_DATUM, RDIM, "DST M",
+              pLabD, sizeof(pLabD), pLabDW);
+    if (showBrg) snprintf(cell, sizeof(cell), "%4ld", distM);
+    else snprintf(cell, sizeof(cell), "----");
+    drawSmart(PANE_X + PANE_W - 6, PANE_Y0 + 14 + 2 * PANE_ROWH, 2, TR_DATUM, RFG, cell,
+              pDst, sizeof(pDst), pDstW);
+    // Row 3: next destination.
+    drawSmart(PANE_X + 3, PANE_Y0 + 4 + 3 * PANE_ROWH, 1, TL_DATUM, RDIM, "NEXT",
+              pLabN, sizeof(pLabN), pLabNW);
+    if (raceSession.valid && haveDest) snprintf(cell, sizeof(cell), "%-4.4s", tag);
+    else snprintf(cell, sizeof(cell), "----");
+    drawSmart(PANE_X + PANE_W - 6, PANE_Y0 + 14 + 3 * PANE_ROWH, 2, TR_DATUM, RFG, cell,
+              pNxt, sizeof(pNxt), pNxtW);
+    // Row 4: time.
+    drawSmart(PANE_X + 3, PANE_Y0 + 4 + 4 * PANE_ROWH, 1, TL_DATUM, RDIM, "TIME",
+              pLabT, sizeof(pLabT), pLabTW);
+    drawSmart(PANE_X + PANE_W - 6, PANE_Y0 + 14 + 4 * PANE_ROWH, 2, TR_DATUM, RFG, tim,
+              pTim, sizeof(pTim), pTimW);
 
     // Hint bar (mode-dependent, fixed widths so re-modes overwrite cleanly).
     // Browse and menu repurpose the hints as their controls.
@@ -1064,10 +1075,11 @@ static unsigned long durMsgUntil = 0;
 
 void screenRaceButton(Button button, ButtonEvent event)
 {
-    // Template browse owns every button while open: R steps, RR picks and
-    // fires the +10s gun on the spot, L backs out.
+    // Template browse owns Short/Long while open (raw Press/Release pass
+    // through, same release-after-open reason as the menu).
     if (tplOpen) {
-        if (button == Button::Left) {
+        if (button == Button::Left &&
+            (event == ButtonEvent::ShortPress || event == ButtonEvent::LongPress)) {
             tplClose();
             return;
         }
@@ -1092,7 +1104,8 @@ void screenRaceButton(Button button, ButtonEvent event)
         }
         return;
     }
-    // Menu owns every button while open: L cycles, LL confirms, R backs out.
+    // Menu owns Short/Long while open; raw Press/Release pass through
+    // untouched (the release of the opening long-press must not close it).
     if (menuOpen) {
         if (button == Button::Left && event == ButtonEvent::ShortPress) {
             menuSel = (uint8_t)((menuSel + 1) % (menuN ? menuN : 1));
@@ -1104,7 +1117,9 @@ void screenRaceButton(Button button, ButtonEvent event)
             menuConfirm();
             return;
         }
-        menuClose();
+        if (event == ButtonEvent::ShortPress || event == ButtonEvent::LongPress) {
+            menuClose();
+        }
         return;
     }
     if (button == Button::Left && event == ButtonEvent::ShortPress) {
