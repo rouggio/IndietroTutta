@@ -62,8 +62,13 @@ static bool hasGunSide = false;
 static int finLastSide = 0;
 // Pass tracking for the current target.
 static bool wasInside = false;
-// Circle-entry point (for the required-side chord check on exit).
+// Circle-entry point + COG at entry. Side is judged at arrival (mark vs
+// heading on the way in — the rounding's side is established there;
+// departure with the mark astern is free). This replaces the old
+// entry→exit chord, which inverted on lapping passes. Dead-ahead/astern
+// arrivals (within 20°) are unjudged.
 static double entryLat = 0.0, entryLon = 0.0;
+static double entryCog = -1.0;
 static bool entryValid = false;
 
 void raceRunInit()
@@ -107,6 +112,7 @@ void raceRunReset()
     finLastSide = 0;
     wasInside = false;
     entryValid = false;
+    entryCog = -1.0;
     practiceGun = 0;
     strncpy(runResult, "FINISHED", sizeof(runResult) - 1);
     scpSec = 0;
@@ -470,40 +476,45 @@ void raceRunUpdate(TinyGPSPlus& gps)
         // Still allow radius pass on the last mark as a fallback below.
         if (finished) return;
     }
-
     float r = 30.0f;
-    if (!wasInside && targetInside(lat, lon, progIdx, r)) {        wasInside = true;
+    if (!wasInside && targetInside(lat, lon, progIdx, r)) {
+        wasInside = true;
         entryLat = lat;
         entryLon = lon;
+        entryCog = gps.course.isValid() ? gps.course.deg() : -1.0;
         entryValid = true;
     } else if (wasInside && targetOutside(lat, lon, progIdx, r)) {
         wasInside = false;
         // Strict side check on single marks (gates stay lenient: either
-        // buoy, no side judgment). Sailed side from the in-circle chord:
-        // mark left of travel = port ('P'), right = starboard ('S').
+        // buoy, no side judgment). Judged at arrival: mark bearing vs
+        // heading at circle entry. Dead-ahead/astern (within 20°) and
+        // missing COG pass unjudged.
         const RaceMark& cur = raceSession.marks[progIdx];
         if (cur.type == RaceMarkSingle && (cur.side == 'P' || cur.side == 'S') && entryValid) {
-            const double cosLat = cos(entryLat * M_PI / 180.0);
-            const double vx = (lon - entryLon) * 111320.0 * cosLat;
-            const double vy = (lat - entryLat) * 111320.0;
-            const double wx = (cur.lon - entryLon) * 111320.0 * cosLat;
-            const double wy = (cur.lat - entryLat) * 111320.0;
-            const double chord2 = vx * vx + vy * vy;
-            if (chord2 >= 25.0) { // <5m chord: drift, can't judge
-                const double cross = vx * wy - vy * wx;
-                const char sailed = cross > 0.0 ? 'P' : 'S';
-                if (sailed != cur.side) {
-                    char v[16];
-                    snprintf(v, sizeof(v), "%c!%c", cur.side, sailed);
-                    logEvent("WRONG", now, v);
-                    wrongFlag = true;
-                    bufferedSerialPrintln("[RACE] wrong side, re-round");
-                    entryValid = false;
-                    return; // no advance: re-enter and round again
+            entryValid = false;
+            if (entryCog >= 0.0) {
+                double brg = TinyGPSPlus::courseTo(entryLat, entryLon, cur.lat, cur.lon);
+                if (brg < 0) brg += 360.0;
+                double rel = brg - entryCog;
+                while (rel < 0.0) rel += 360.0;
+                while (rel >= 360.0) rel -= 360.0;
+                const bool deadZone = rel < 20.0 || rel > 340.0 ||
+                                      (rel > 160.0 && rel < 200.0);
+                if (!deadZone) {
+                    const char sailed = rel > 180.0 ? 'P' : 'S';
+                    if (sailed != cur.side) {
+                        char v[16];
+                        snprintf(v, sizeof(v), "%c!%c", cur.side, sailed);
+                        logEvent("WRONG", now, v);
+                        wrongFlag = true;
+                        bufferedSerialPrintln("[RACE] wrong side, re-round");
+                        return; // no advance: re-enter and round again
+                    }
                 }
             }
+        } else {
+            entryValid = false;
         }
-        entryValid = false;
         splits[progIdx] = now - startEpoch;
         splitSet[progIdx] = true;
         if (isLast) {

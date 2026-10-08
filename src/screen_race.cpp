@@ -324,7 +324,7 @@ static void drawStaticLayer(const RaceProj& p, double rotEff)
         projToPx(p, s.latB, s.lonB, qx, qy);
         tft.drawWideLine(px, py, qx, qy, 2, TFT_RED);
     }
-    char num[4];
+    char num[12];
     for (uint8_t i = 0; i < raceSession.markCount; i++) {
         const RaceMark& m = raceSession.marks[i];
         projToPx(p, m.lat, m.lon, px, py);
@@ -332,10 +332,28 @@ static void drawStaticLayer(const RaceProj& p, double rotEff)
         if (rPx < 3) rPx = 3;
         if (rPx > 40) rPx = 40;
         tft.drawCircle(px, py, rPx, markColor(m.type));
-        snprintf(num, sizeof(num), "%d", i + 1);
+        // Labels sit on the mark itself; coincident marks (piles) share one
+        // concatenated label ("1-4"), drawn once by the first of the group.
+        bool firstOfPile = true;
+        for (uint8_t k = 0; k < i; k++) {
+            if (raceSession.marks[k].lat == m.lat && raceSession.marks[k].lon == m.lon) {
+                firstOfPile = false;
+                break;
+            }
+        }
+        if (!firstOfPile) continue;
+        num[0] = '\0';
+        bool first = true;
+        for (uint8_t j = i; j < raceSession.markCount; j++) {
+            if (raceSession.marks[j].lat != m.lat || raceSession.marks[j].lon != m.lon) continue;
+            char tmp[5];
+            snprintf(tmp, sizeof(tmp), "%s%d", first ? "" : "-", j + 1);
+            strncat(num, tmp, sizeof(num) - strlen(num) - 1);
+            first = false;
+        }
         tft.setTextDatum(MC_DATUM);
         tft.setTextColor(i == 0 ? RFG : RDIM, RBG);
-        tft.drawString(num, px, py - rPx - 8, 2);
+        tft.drawString(num, px, py, 2);
     }
     // Header wind (out of frame, top-left): arrow only. The arrow rotates
     // with the view, so the old one is erased first (header is never
@@ -619,7 +637,7 @@ static void drawRaceText(TinyGPSPlus& gps)
     } else {
         snprintf(spd, sizeof(spd), "  ---  ");
     }
-    drawSmart(8, 31, 4, TL_DATUM, RFG, spd, lastSpd, sizeof(lastSpd), lastSpdW);
+    drawSmart(6, 33, 4, TL_DATUM, RFG, spd, lastSpd, sizeof(lastSpd), lastSpdW);
 
     // Header: countdown center, next-passage tag right (bright white).
     // Header: countdown pre-gun, GO/OCS while pending, elapsed once started.
