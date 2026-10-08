@@ -688,6 +688,7 @@ static bool menuOpen = false;
 static uint8_t menuSel = 0;
 static uint8_t menuN = 0;
 static bool menuDirty = false;
+static bool menuFull = false; // set on open: full clear + title, like CONFIG
 static unsigned long menuUntil = 0;
 // Template browse state (instant practice setup; map frozen while open).
 static bool tplOpen = false;
@@ -896,6 +897,7 @@ static void drawRaceMenu(bool full)
         tft.drawString(row, 12, 68 + i * 30, 2);
     }
     tft.setTextColor(RDIM, RBG);
+    tft.drawFastHLine(0, 214, tft.width(), RDIM);
     tft.setTextDatum(BL_DATUM);
     tft.drawString("L Back", 8, 239, 2);
     tft.setTextDatum(BR_DATUM);
@@ -1030,7 +1032,13 @@ void drawScreenRace(TinyGPSPlus &gps, bool requiresInit)
     }
     if (menuOpen) {
         // Full-screen menu: engine already ran above; paint and stop.
-        if (menuDirty || requiresInit || courseChanged) {
+        // The open transition always takes the full path (clear + title)
+        // so no map ghosts survive behind the rows.
+        if (menuFull) {
+            drawRaceMenu(true);
+            menuFull = false;
+            menuDirty = false;
+        } else if (menuDirty || requiresInit || courseChanged) {
             drawRaceMenu(requiresInit || courseChanged);
             menuDirty = false;
         }
@@ -1125,6 +1133,7 @@ void screenRaceButton(Button button, ButtonEvent event)
         menuSel = 0;
         menuN = menuCount(isPractice);
         menuDirty = true;
+        menuFull = true;
         menuUntil = millis() + 10000;
         return;
     }
