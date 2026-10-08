@@ -191,18 +191,18 @@ static bool oldHaveDash = false;
 static bool dynOk = false;
 static double oldRotEff = 0.0;
 
-static void drawWindArrow(int cx, int cy, double screenDeg)
+static void drawWindArrow(int cx, int cy, double screenDeg, uint16_t color)
 {
-    // Points where the wind comes FROM, in screen frame. Bright white.
+    // Points where the wind comes FROM, in screen frame.
     const double a = screenDeg * M_PI / 180.0;
     const int len = 14;
     const int x2 = (int)(cx + sin(a) * len), y2 = (int)(cy - cos(a) * len);
-    tft.drawLine(cx, cy, x2, y2, RFG);
+    tft.drawLine(cx, cy, x2, y2, color);
     const double ha = 0.5;
     const int hx1 = (int)(x2 - sin(a - ha) * 5), hy1 = (int)(y2 + cos(a - ha) * 5);
     const int hx2 = (int)(x2 - sin(a + ha) * 5), hy2 = (int)(y2 + cos(a + ha) * 5);
-    tft.drawLine(x2, y2, hx1, hy1, RFG);
-    tft.drawLine(x2, y2, hx2, hy2, RFG);
+    tft.drawLine(x2, y2, hx1, hy1, color);
+    tft.drawLine(x2, y2, hx2, hy2, color);
 }
 
 static void drawDashed(int x0, int y0, int x1, int y1, uint16_t color)
@@ -337,9 +337,18 @@ static void drawStaticLayer(const RaceProj& p, double rotEff)
         tft.setTextColor(i == 0 ? RFG : RDIM, RBG);
         tft.drawString(num, px, py - rPx - 8, 2);
     }
-    // Header wind (out of frame, top-left): arrow + degrees, bright/white-gray.
+    // Header wind (out of frame, top-left): arrow only. The arrow rotates
+    // with the view, so the old one is erased first (header is never
+    // full-cleared). The numeric degrees were dropped — the arrow is the UI.
     // Mock banner sits left of it when scripted fixes drive the screen.
+    static double oldWindScreen = 0.0;
+    static bool oldWindHave = false;
     const double windScreen = raceSession.windDir - rotEff;
+    if (oldWindHave) drawWindArrow(64, 14, oldWindScreen, RBG);
+    tft.fillRect(74, 4, 48, 18, RBG); // retired degrees slot, kept clean
+    drawWindArrow(64, 14, windScreen, RFG);
+    oldWindScreen = windScreen;
+    oldWindHave = true;
     if (gpsMockActive()) {
         tft.setTextDatum(TL_DATUM);
         tft.setTextColor(TFT_YELLOW, RBG);
@@ -349,12 +358,6 @@ static void drawStaticLayer(const RaceProj& p, double rotEff)
         tft.setTextColor(RBG, RBG);
         tft.drawString("MOCK", 8, 6, 2);
     }
-    drawWindArrow(64, 14, windScreen);
-    char wdeg[8];
-    snprintf(wdeg, sizeof(wdeg), "%d", raceSession.windDir);
-    tft.setTextDatum(TL_DATUM);
-    tft.setTextColor(RDIM, RBG);
-    tft.drawString(wdeg, 78, 6, 2);
 }
 
 static void drawRaceMap(TinyGPSPlus& gps, bool full)
@@ -532,10 +535,8 @@ static char lastCd[12] = {0};
 static int16_t lastCdW = 0;
 static char lastTag[8] = {0};
 static int16_t lastTagW = 0;
-static char lastPrac[8] = {0};
+static char lastPrac[12] = {0};
 static int16_t lastPracW = 0;
-static char lastMode[8] = {0};
-static int16_t lastModeW = 0;
 
 static char lastBbuf[8] = {0};
 static int16_t lastBbufW = 0;
@@ -573,7 +574,8 @@ static void showSignal(const char* msg)
 static void raceSignalsApply(TinyGPSPlus& gps)
 {
     if (!raceSession.valid || raceSession.sigCount == 0) return;
-    long now = raceGpsEpoch(gps);
+    long now = raceWallEpoch();
+    if (now <= 0) now = raceGpsEpoch(gps);
     if (now <= 0) now = lastGpsNow;
     if (now <= 0) return;
     for (uint8_t i = 0; i < raceSession.sigCount; i++) {
@@ -606,7 +608,6 @@ static void resetRaceText()
     lastBbuf[0] = 0; lastBbufW = 0;
     lastDbuf[0] = 0; lastDbufW = 0;
     lastMsg[0] = 0; lastMsgW = 0;
-    lastMode[0] = 0; lastModeW = 0;
 }
 
 static void drawRaceText(TinyGPSPlus& gps)
@@ -623,7 +624,10 @@ static void drawRaceText(TinyGPSPlus& gps)
     // Header: countdown center, next-passage tag right (bright white).
     // Header: countdown pre-gun, GO/OCS while pending, elapsed once started.
     char cd[12];
-    const long now = raceGpsEpoch(gps);
+    // Wall clock (GPS-calibrated, ticks through fix gaps) so the countdown
+    // never freezes when fixes pause; raw GPS epoch as the cold fallback.
+    long now = raceWallEpoch();
+    if (now <= 0) now = raceGpsEpoch(gps);
     lastGpsNow = now;
     const long gun = raceGunEpoch();
     if (millis() < sigUntil && sigMsg[0]) {
@@ -641,6 +645,11 @@ static void drawRaceText(TinyGPSPlus& gps)
             const long el = base - raceRunStartEpoch();
             snprintf(cd, sizeof(cd), "+%2ld:%02ld  ", el / 60, el % 60);
         }
+    } else if (raceSession.valid && now > 0 &&
+               strcmp(raceSession.mode, "race") != 0) {
+        // Practice with no gun yet: show what R cycles (LL arms it).
+        const long d = racePracticeDur();
+        snprintf(cd, sizeof(cd), "DUR %1ld:%02ld", d / 60, d % 60);
     } else {
         snprintf(cd, sizeof(cd), " --:--   ");
     }
@@ -668,14 +677,19 @@ static void drawRaceText(TinyGPSPlus& gps)
         lastStripMode = stripMode;
     }
     const bool isRace = strcmp(raceSession.mode, "race") == 0;
-    drawSmart(8, 184, 2, TL_DATUM, RDIM,
-              raceSession.valid ? (isRace ? "RACE" : "PRAC") : "----",
+    // Left cell: mode + view. Right-anchored grid: bearing (+° ring) and
+    // distance cells. Cells erase exactly on hide (no padding hacks).
+    char pracMode[12];
+    snprintf(pracMode, sizeof(pracMode), "%s %s",
+             raceSession.valid ? (isRace ? "RACE" : "PRAC") : "----",
+             gEffMode == 1 ? "BRG" : (gEffMode == 2 ? "FIT" : "N-UP"));
+    drawSmart(8, 184, 2, TL_DATUM, RDIM, pracMode,
               lastPrac, sizeof(lastPrac), lastPracW);
 
     char bbuf[8], dbuf[14];
     bool showBrg = false;
     if (!raceSession.valid) {
-        drawSmart(170, 182, 4, TC_DATUM, RFG, "NO COURSE       ", lastMsg, sizeof(lastMsg), lastMsgW);
+        drawSmart(190, 182, 4, TC_DATUM, RFG, "NO COURSE", lastMsg, sizeof(lastMsg), lastMsgW);
     } else if (haveDest && gps.location.isValid()) {
         const double dist = TinyGPSPlus::distanceBetween(
             gps.location.lat(), gps.location.lng(), dLat, dLon);
@@ -684,23 +698,21 @@ static void drawRaceText(TinyGPSPlus& gps)
         if (brg < 0) brg += 360.0;
         if (brg >= 360.0) brg -= 360.0;
         const long d = (long)dist > 9999 ? 9999 : (long)dist;
-        // Bearing right-aligned ending at x=158, degree ring drawn at the
-        // fixed slot (the font has no ° glyph), distance from x=178.
         snprintf(bbuf, sizeof(bbuf), "%3d", (int)brg);
-        snprintf(dbuf, sizeof(dbuf), "%4ldm   ", d);
-        drawSmart(158, 182, 4, TR_DATUM, RFG, bbuf, lastBbuf, sizeof(lastBbuf), lastBbufW);
-        drawSmart(178, 182, 4, TL_DATUM, RFG, dbuf, lastDbuf, sizeof(lastDbuf), lastDbufW);
+        snprintf(dbuf, sizeof(dbuf), "%4ldm", d);
+        drawSmart(216, 182, 4, TR_DATUM, RFG, bbuf, lastBbuf, sizeof(lastBbuf), lastBbufW);
+        drawSmart(312, 182, 4, TR_DATUM, RFG, dbuf, lastDbuf, sizeof(lastDbuf), lastDbufW);
         showBrg = true;
     } else {
-        drawSmart(170, 182, 4, TC_DATUM, RFG, " ---           ", lastMsg, sizeof(lastMsg), lastMsgW);
+        drawSmart(190, 182, 4, TC_DATUM, RFG, " --- ", lastMsg, sizeof(lastMsg), lastMsgW);
     }
-    if (showBrg != lastShowBrg) {
-        tft.drawCircle(168, 188, 2, showBrg ? RFG : RBG);
-        lastShowBrg = showBrg;
+    if (!showBrg && lastShowBrg) {
+        drawSmart(216, 182, 4, TR_DATUM, RFG, "", lastBbuf, sizeof(lastBbuf), lastBbufW);
+        drawSmart(312, 182, 4, TR_DATUM, RFG, "", lastDbuf, sizeof(lastDbuf), lastDbufW);
     }
-
-    const char* viewTxt = gEffMode == 1 ? "BRG " : (gEffMode == 2 ? "FIT " : "N-UP");
-    drawSmart(312, 184, 2, TR_DATUM, RDIM, viewTxt, lastMode, sizeof(lastMode), lastModeW);
+    lastShowBrg = showBrg;
+    // Degree ring glued to the bearing cell (idle pixels overdrawn, no smear).
+    tft.fillCircle(222, 195, 2, showBrg ? RFG : RBG);
 
     // Hint bar (mode-dependent, fixed widths so re-modes overwrite cleanly).
     const bool racing = raceRunStarted() && !raceRunFinished();
@@ -794,7 +806,7 @@ void screenRaceButton(Button button, ButtonEvent event)
             racePracticeCycleDur();
             const long d = racePracticeDur();
             char msg[12];
-            snprintf(msg, sizeof(msg), "SET %1ld:%02ld", d / 60, d % 60);
+            snprintf(msg, sizeof(msg), "DUR %1ld:%02ld", d / 60, d % 60);
             showTransient(msg);
         }
         return;

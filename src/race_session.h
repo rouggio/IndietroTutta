@@ -70,7 +70,13 @@ bool raceSessionParse(const char* healthBody);
 
 // UTC epoch from GPS date/time. -1 when the fix has no usable date/time.
 // (TinyGPS++ getters are non-const, so this takes a mutable reference.)
+// Also calibrates the wall clock (see raceWallEpoch).
 long raceGpsEpoch(TinyGPSPlus& gps);
+
+// Wall-clock UTC epoch: GPS-calibrated once any fix with time was seen,
+// then ticks with millis() through fix gaps (mock end, tunnels, page sits
+// on stale data). -1 when never calibrated — countdowns show NO TIME.
+long raceWallEpoch();
 
 // UTC epoch from "YYYY-MM-DDTHH:MM:SS[.mmm]Z". -1 on parse failure.
 long raceIsoEpoch(const char* iso);

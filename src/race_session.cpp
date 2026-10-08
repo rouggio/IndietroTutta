@@ -1,12 +1,38 @@
 #include "race_session.h"
 #include "serial_buffer.h"
 
+#include <Arduino.h>
 #include <ArduinoJson.h>
 #include <Preferences.h>
 #include <string.h>
 #include <stdio.h>
 
 RaceSession raceSession;
+
+static long daysFromCivil(int y, int m, int d); // defined below
+
+// millis()-based offset, calibrated from GPS time whenever a fix carries
+// one. Lets countdowns tick through fix gaps instead of freezing.
+static long wallOffsetSec = 0;
+static bool wallHave = false;
+
+long raceGpsEpoch(TinyGPSPlus& gps)
+{
+    if (!gps.date.isValid() || !gps.time.isValid()) {
+        return -1;
+    }
+    const long days = daysFromCivil(gps.date.year(), gps.date.month(), gps.date.day());
+    const long epoch = days * 86400L + (long)gps.time.hour() * 3600L + (long)gps.time.minute() * 60L + (long)gps.time.second();
+    wallOffsetSec = epoch - (long)(millis() / 1000);
+    wallHave = true;
+    return epoch;
+}
+
+long raceWallEpoch()
+{
+    if (!wallHave) return -1;
+    return (long)(millis() / 1000) + wallOffsetSec;
+}
 
 // Howard Hinnant's days_from_civil: days since 1970-01-01, proleptic Gregorian.
 static long daysFromCivil(int y, int m, int d)
@@ -18,15 +44,6 @@ static long daysFromCivil(int y, int m, int d)
     const unsigned doy = (153 * mp + 2) / 5 + (unsigned)(d - 1);
     const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
     return era * 146097 + (long)doe - 719468;
-}
-
-long raceGpsEpoch(TinyGPSPlus& gps)
-{
-    if (!gps.date.isValid() || !gps.time.isValid()) {
-        return -1;
-    }
-    const long days = daysFromCivil(gps.date.year(), gps.date.month(), gps.date.day());
-    return days * 86400L + (long)gps.time.hour() * 3600L + (long)gps.time.minute() * 60L + (long)gps.time.second();
 }
 
 long raceIsoEpoch(const char* iso)
