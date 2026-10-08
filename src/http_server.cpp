@@ -11,6 +11,11 @@
 #include "wifi_manager.h"
 #include "gps_mock.h"
 #include "screens.h"
+#include "buttons.h"
+
+#include <TFT_eSPI.h>
+
+extern TFT_eSPI tft;
 
 static WebServer server(80);
 
@@ -521,6 +526,55 @@ static void handleHealth()
     server.send(200, "text/plain", "OK");
 }
 
+// Remote button driver (POST /btn?b=L|R&e=R|RR): injects straight into
+// screenButtonEvent, the same entry the physical buttons use. Lets scripts
+// walk the whole UI over LAN — no finger needed.
+static void handleBtn()
+{
+    const String b = server.hasArg("b") ? server.arg("b") : "";
+    const String e = server.hasArg("e") ? server.arg("e") : "R";
+    Button btn;
+    if (b == "L" || b == "l") btn = Button::Left;
+    else if (b == "R" || b == "r") btn = Button::Right;
+    else {
+        server.send(400, "text/plain", "b must be L|R");
+        return;
+    }
+    ButtonEvent ev;
+    if (e == "R" || e == "r") ev = ButtonEvent::ShortPress;
+    else if (e == "RR" || e == "rr") ev = ButtonEvent::LongPress;
+    else {
+        server.send(400, "text/plain", "e must be R|RR");
+        return;
+    }
+    screenButtonEvent(btn, ev);
+    bufferedSerialPrintln(String("[HTTP] btn ") + b + " " + e);
+    server.send(200, "application/json",
+                String("{\"b\":\"") + b + "\",\"e\":\"" + e + "\"}");
+}
+
+// Framebuffer grab (GET /screen): raw RGB565 big-endian, 320x240, no header.
+// scripts/grab_screen.py turns it into a PNG. Slow (SPI reads, seconds) —
+// a debugging tool, not a live feed.
+static void handleScreen()
+{
+    const int w = tft.width();
+    const int h = tft.height();
+    if (w <= 0 || h <= 0 || w > 480 || h > 480) {
+        server.send(500, "text/plain", "bad geometry");
+        return;
+    }
+    server.setContentLength((size_t)w * h * 2);
+    server.send(200, "application/octet-stream", "");
+    static uint16_t row[480];
+    for (int y = 0; y < h; y++) {
+        const int n = w > 480 ? 480 : w;
+        for (int x = 0; x < n; x++) row[x] = tft.readPixel(x, y);
+        server.sendContent((const char*)row, (size_t)n * 2);
+        if ((y & 15) == 15) delay(1); // feed the watchdog on slow panels
+    }
+}
+
 static void handleRedirect()
 {
     server.sendHeader("Location", "http://192.168.4.1/config", true);
@@ -586,6 +640,8 @@ void httpServerInit(TinyGPSPlus &gps)
     server.on("/reset", HTTP_POST, handleReset);
     server.on("/reboot", HTTP_POST, handleReboot);
     server.on("/mock", HTTP_POST, handleMock);
+    server.on("/btn", HTTP_POST, handleBtn);
+    server.on("/screen", HTTP_GET, handleScreen);
 
     // Expose serial buffer as plain text at /serial
     server.on("/serial", HTTP_GET, []() {
