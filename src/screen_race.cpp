@@ -652,8 +652,7 @@ static void drawRaceText(TinyGPSPlus& gps)
         snprintf(cd, sizeof(cd), "%-8.8s", sigMsg);
     } else if (millis() < transientUntil && transientMsg[0]) {
         snprintf(cd, sizeof(cd), "%-8.8s", transientMsg);
-    } else if (raceSession.valid && gun > 0 && now > 0) {
-        if (now < gun) {
+    } else if (raceSession.valid && gun > 0 && now > 0) {        if (now < gun) {
             const long rem = gun - now;
             snprintf(cd, sizeof(cd), " %2ld:%02ld  ", rem / 60, rem % 60);
         } else if (!raceRunStarted()) {
@@ -663,6 +662,9 @@ static void drawRaceText(TinyGPSPlus& gps)
             const long el = base - raceRunStartEpoch();
             snprintf(cd, sizeof(cd), "+%2ld:%02ld  ", el / 60, el % 60);
         }
+    } else if (raceSession.valid && gun > 0) {
+        // Gun armed but no time source yet (waiting on the first fix).
+        snprintf(cd, sizeof(cd), "WAIT    ");
     } else if (raceSession.valid && now > 0 &&
                strcmp(raceSession.mode, "race") != 0) {
         // Practice with no gun yet: show what R cycles (LL arms it).
@@ -695,13 +697,10 @@ static void drawRaceText(TinyGPSPlus& gps)
         lastStripMode = stripMode;
     }
     const bool isRace = strcmp(raceSession.mode, "race") == 0;
-    // Left cell: mode + view. Right-anchored grid: bearing (+° ring) and
-    // distance cells. Cells erase exactly on hide (no padding hacks).
-    char pracMode[12];
-    snprintf(pracMode, sizeof(pracMode), "%s %s",
-             raceSession.valid ? (isRace ? "RACE" : "PRAC") : "----",
-             gEffMode == 1 ? "BRG" : (gEffMode == 2 ? "FIT" : "N-UP"));
-    drawSmart(8, 184, 2, TL_DATUM, RDIM, pracMode,
+    // Left cell: mode only (the N-UP/BRG/FIT view label is gone — the map
+    // rotation speaks for itself).
+    drawSmart(8, 184, 2, TL_DATUM, RDIM,
+              raceSession.valid ? (isRace ? "RACE" : "PRAC") : "----",
               lastPrac, sizeof(lastPrac), lastPracW);
 
     char bbuf[8], dbuf[14];
