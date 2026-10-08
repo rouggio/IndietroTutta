@@ -3,6 +3,7 @@
 #include "config_store.h"
 #include "serial_buffer.h"
 #include "race_session.h"
+#include "race_run.h"
 #include "gps_mock.h"
 
 #include <WiFi.h>
@@ -29,6 +30,7 @@
 // ---------------------------------------------------------
 
 constexpr unsigned long HEALTH_CHECK_INTERVAL = 30000;
+constexpr unsigned long HEALTH_LIVE_INTERVAL = 5000; // session live: signals fast
 // GPS throttling: baseline 30s at 0 knots, 2s at >=5 knots, linear in between
 constexpr unsigned long GPS_BASE_INTERVAL_MS = 30000;
 constexpr unsigned long GPS_FAST_INTERVAL_MS = 2000;
@@ -189,8 +191,7 @@ static bool sendPosition(const BackendWork &w)
 }
 
 // true when done (sent, rejected, or already gone); false to retry later
-static bool sendDeleteWaypoint(const BackendDelete &d)
-{
+static bool sendDeleteWaypoint(const BackendDelete &d){
     if (WiFi.status() != WL_CONNECTED) {
         return false;
     }
@@ -220,8 +221,47 @@ static bool sendDeleteWaypoint(const BackendDelete &d)
     return true;
 }
 
-static void backendTask(void *param)
+// Step 5: upload the finished run (splits + event log). Ack on accept
+// (201) or reject (4xx: retrying a bad payload is pointless); network
+// failures (<=0/5xx) keep the pending flag for the next health cycle.
+static void sendRunResult()
 {
+    if (WiFi.status() != WL_CONNECTED) {
+        return;
+    }
+    if (!raceSession.valid || raceSession.sessionId <= 0) {
+        raceUploadAck();
+        return;
+    }
+
+    WiFiClientSecure client;
+    client.setInsecure();
+
+    HTTPClient http;
+
+    char url[128];
+    snprintf(url, sizeof(url), BASE_URL "/sessions/%ld/runs", raceSession.sessionId);
+    if (!http.begin(client, url)) {
+        return;
+    }
+
+    http.addHeader("Content-Type", "application/json");
+    http.addHeader("DeviceId", String(WiFi.macAddress()));
+
+    char body[2048];
+    raceUploadBody(WiFi.macAddress().c_str(), body, sizeof(body));
+
+    const int code = http.POST((uint8_t*)body, strlen(body));
+    http.end();
+
+    if (code == HTTP_CODE_OK || code == HTTP_CODE_CREATED ||
+        (code > 0 && code < 500)) {
+        raceUploadAck();
+        bufferedSerialPrintln("[BACKEND] run uploaded");
+    }
+}
+
+static void backendTask(void *param){
     (void)param;
 
     unsigned long lastHealthCheck = 0;
@@ -233,10 +273,16 @@ static void backendTask(void *param)
 
         unsigned long now = millis();
 
-        if (healthNow || now - lastHealthCheck >= HEALTH_CHECK_INTERVAL) {
+        // Committee signals ride the heartbeat: poll fast while live.
+        const unsigned long healthInterval =
+            raceSessionLive() ? HEALTH_LIVE_INTERVAL : HEALTH_CHECK_INTERVAL;
+        if (healthNow || now - lastHealthCheck >= healthInterval) {
             healthNow = false;
             lastHealthCheck = now;
             healthCheck();
+            if (online && raceUploadPending()) {
+                sendRunResult();
+            }
         }
 
         // Mock GPS source (indoor testing): scripted fixes in, nothing out.

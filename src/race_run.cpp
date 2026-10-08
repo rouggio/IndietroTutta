@@ -21,6 +21,38 @@ static long splits[10] = {0};
 static bool splitSet[10] = {false};
 static long practiceGun = 0;
 static long practiceDurSec = 300;
+static char runResult[9] = "FINISHED"; // FINISHED|DSQ|DNF|RET (committee)
+static long scpSec = 0;                // SCP time add (seconds)
+
+// Event log: ring of 32 {epoch, code, value}. Uploaded with the run.
+struct RaceEvent {
+    long t = 0;
+    char e[8] = {0};
+    char v[16] = {0};
+};
+static RaceEvent evRing[32];
+static uint8_t evCount = 0; // saturates at 32 (oldest dropped)
+
+// Wrong-side flag (consumed by the screen for the banner).
+static bool wrongFlag = false;
+
+// Turn verification: sailor declares, heading rotation confirms.
+static bool turnPending = false;
+static long turnT0 = 0;
+static double turnNet = 0.0;
+static double turnLastCog = 0.0;
+static bool turnHaveCog = false;
+static int turnVerdict = 0; // 0 none, 360/720 ready for poll
+static const long TURN_WINDOW_S = 180;
+static const double TURN_360_DEG = 300.0;
+static const double TURN_720_DEG = 660.0;
+
+// Run upload handshake with the backend task.
+static bool uploadPending = false;
+
+// Committee-signal idempotency cursor (per session, NVS-backed).
+static long sigLastId = 0;
+static long sigLastSes = 0;
 
 // Start-line side tracking.
 static int lastSide = 0;
@@ -30,12 +62,17 @@ static bool hasGunSide = false;
 static int finLastSide = 0;
 // Pass tracking for the current target.
 static bool wasInside = false;
+// Circle-entry point (for the required-side chord check on exit).
+static double entryLat = 0.0, entryLon = 0.0;
+static bool entryValid = false;
 
 void raceRunInit()
 {
     Preferences prefs;
     if (prefs.begin("race", true)) {
         const long d = (long)prefs.getInt("pdur", 300);
+        sigLastId = prefs.getInt("siglast", 0);
+        sigLastSes = prefs.getInt("sigses", 0);
         prefs.end();
         for (unsigned i = 0; i < sizeof(PRACTICE_DURS) / sizeof(PRACTICE_DURS[0]); i++) {
             if (d == PRACTICE_DURS[i]) {
@@ -43,6 +80,16 @@ void raceRunInit()
                 break;
             }
         }
+    }
+}
+
+static void saveSigCursor()
+{
+    Preferences prefs;
+    if (prefs.begin("race", false)) {
+        prefs.putInt("siglast", (int)sigLastId);
+        prefs.putInt("sigses", (int)sigLastSes);
+        prefs.end();
     }
 }
 
@@ -59,7 +106,15 @@ void raceRunReset()
     hasGunSide = false;
     finLastSide = 0;
     wasInside = false;
+    entryValid = false;
     practiceGun = 0;
+    strncpy(runResult, "FINISHED", sizeof(runResult) - 1);
+    scpSec = 0;
+    evCount = 0;
+    wrongFlag = false;
+    turnPending = false;
+    turnVerdict = 0;
+    uploadPending = false;
     for (uint8_t i = 0; i < 10; i++) {
         splits[i] = 0;
         splitSet[i] = false;
@@ -241,10 +296,52 @@ static bool targetOutside(double lat, double lon, uint8_t idx, float r)
     return TinyGPSPlus::distanceBetween(lat, lon, m.lat, m.lon) >= m.r + PASS_HYST_M;
 }
 
+static void logEvent(const char* code, long now, const char* v)
+{
+    if (evCount >= 32) {
+        // Full: shift left, append at the end (32 entries, rare path).
+        for (uint8_t i = 0; i < 31; i++) evRing[i] = evRing[i + 1];
+    } else {
+        evCount++;
+    }
+    RaceEvent& dst = evRing[evCount - 1];
+    dst.t = now;
+    strncpy(dst.e, code ? code : "?", sizeof(dst.e) - 1);
+    dst.e[sizeof(dst.e) - 1] = '\0';
+    if (v) {
+        strncpy(dst.v, v, sizeof(dst.v) - 1);
+        dst.v[sizeof(dst.v) - 1] = '\0';
+    } else {
+        dst.v[0] = '\0';
+    }
+}
+
 static void logPass(const char* what, long now)
 {
     bufferedSerialPrintln(what);
     (void)now;
+}
+
+void raceLogEvent(const char* code, long t, const char* v)
+{
+    logEvent(code, t, v);
+}
+
+uint8_t raceEventCount() { return evCount; }
+
+bool raceEventGet(uint8_t i, long* t, char* e, size_t esz, char* v, size_t vsz)
+{
+    if (i >= evCount) return false;
+    if (t) *t = evRing[i].t;
+    if (e && esz) {
+        strncpy(e, evRing[i].e, esz - 1);
+        e[esz - 1] = '\0';
+    }
+    if (v && vsz) {
+        strncpy(v, evRing[i].v, vsz - 1);
+        v[vsz - 1] = '\0';
+    }
+    return true;
 }
 
 void raceRunUpdate(TinyGPSPlus& gps)
@@ -263,6 +360,7 @@ void raceRunUpdate(TinyGPSPlus& gps)
             if (now >= gun) {
                 started = true;
                 startEpoch = gun;
+                logEvent("START", gun, "point");
                 logPass("[RACE] started (point gun)", now);
             }
             return;
@@ -274,25 +372,35 @@ void raceRunUpdate(TinyGPSPlus& gps)
             gunSide = side;
             hasGunSide = (side != 0);
             if (near && lastSide != 0 && side != 0 && side != lastSide) {
-                ocs = true;
+                if (!ocs) {
+                    ocs = true;
+                    logEvent("OCS", now, nullptr);
+                }
             }
         } else {
             if (near && hasGunSide && lastSide != 0 && side != 0 &&
                 side != lastSide && side != gunSide) {
                 started = true; // proper re-cross after the gun
                 startEpoch = now;
-                ocs = false;
+                if (ocs) {
+                    ocs = false;
+                    logEvent("RECROSS", now, "line");
+                } else {
+                    logEvent("START", now, "line");
+                }
                 logPass("[RACE] started (line cross)", now);
             } else if (now - gun > 60 && !hasGunSide) {
                 // Joined late, start unseen: assume a proper gun start.
                 started = true;
                 startEpoch = gun;
+                logEvent("START", gun, "late");
                 logPass("[RACE] started (late join)", now);
             } else if (now - gun > 60 && hasGunSide && side != 0 && side != gunSide) {
                 // Crossed without a clean flip record (GPS gap at the line).
                 started = true;
                 startEpoch = gun;
                 ocs = false;
+                logEvent("START", gun, "late");
                 logPass("[RACE] started (late cross)", now);
             }
         }
@@ -301,6 +409,34 @@ void raceRunUpdate(TinyGPSPlus& gps)
     }
 
     if (finished) return;
+
+    // Turn verification runs in the background once declared.
+    if (turnPending && gps.course.isValid()) {
+        const double cog = gps.course.deg();
+        if (turnHaveCog) {
+            double d = cog - turnLastCog;
+            while (d > 180.0) d -= 360.0;
+            while (d < -180.0) d += 360.0;
+            turnNet += d;
+        }
+        turnLastCog = cog;
+        turnHaveCog = true;
+        if (turnNet >= TURN_720_DEG || turnNet <= -TURN_720_DEG) {
+            turnPending = false;
+            turnVerdict = 720;
+            logEvent("TURN720", now, nullptr);
+            bufferedSerialPrintln("[RACE] 720 verified");
+        } else if (now - turnT0 > TURN_WINDOW_S) {
+            turnPending = false;
+            if (turnNet >= TURN_360_DEG || turnNet <= -TURN_360_DEG) {
+                turnVerdict = 360;
+                logEvent("TURN360", now, nullptr);
+                bufferedSerialPrintln("[RACE] 360 verified");
+            } else {
+                bufferedSerialPrintln("[RACE] turn unverified");
+            }
+        }
+    }
 
     // Racing: advance through marks by radius pass; finish at the line.
     const uint8_t lastIdx = raceSession.markCount > 0 ? raceSession.markCount - 1 : 0;
@@ -326,6 +462,8 @@ void raceRunUpdate(TinyGPSPlus& gps)
             endEpoch = now;
             splits[progIdx] = now - startEpoch;
             splitSet[progIdx] = true;
+            uploadPending = true;
+            logEvent("FINISH", now, "line");
             logPass("[RACE] finished (line cross)", now);
         }
         if (side != 0) finLastSide = side;
@@ -334,22 +472,57 @@ void raceRunUpdate(TinyGPSPlus& gps)
     }
 
     float r = 30.0f;
-    if (!wasInside && targetInside(lat, lon, progIdx, r)) {
-        wasInside = true;
+    if (!wasInside && targetInside(lat, lon, progIdx, r)) {        wasInside = true;
+        entryLat = lat;
+        entryLon = lon;
+        entryValid = true;
     } else if (wasInside && targetOutside(lat, lon, progIdx, r)) {
         wasInside = false;
+        // Strict side check on single marks (gates stay lenient: either
+        // buoy, no side judgment). Sailed side from the in-circle chord:
+        // mark left of travel = port ('P'), right = starboard ('S').
+        const RaceMark& cur = raceSession.marks[progIdx];
+        if (cur.type == RaceMarkSingle && (cur.side == 'P' || cur.side == 'S') && entryValid) {
+            const double cosLat = cos(entryLat * M_PI / 180.0);
+            const double vx = (lon - entryLon) * 111320.0 * cosLat;
+            const double vy = (lat - entryLat) * 111320.0;
+            const double wx = (cur.lon - entryLon) * 111320.0 * cosLat;
+            const double wy = (cur.lat - entryLat) * 111320.0;
+            const double chord2 = vx * vx + vy * vy;
+            if (chord2 >= 25.0) { // <5m chord: drift, can't judge
+                const double cross = vx * wy - vy * wx;
+                const char sailed = cross > 0.0 ? 'P' : 'S';
+                if (sailed != cur.side) {
+                    char v[16];
+                    snprintf(v, sizeof(v), "%c!%c", cur.side, sailed);
+                    logEvent("WRONG", now, v);
+                    wrongFlag = true;
+                    bufferedSerialPrintln("[RACE] wrong side, re-round");
+                    entryValid = false;
+                    return; // no advance: re-enter and round again
+                }
+            }
+        }
+        entryValid = false;
         splits[progIdx] = now - startEpoch;
         splitSet[progIdx] = true;
         if (isLast) {
             finished = true;
             endEpoch = now;
+            uploadPending = true;
+            logEvent("FINISH", now, "mark");
             logPass("[RACE] finished (mark)", now);
         } else {
             const uint8_t doneIdx = progIdx;
+            char v[16];
+            snprintf(v, sizeof(v), "%d", doneIdx + 1);
+            logEvent("PASS", now, v);
             progIdx = gatePairEnd(progIdx) + 1;
             if (progIdx >= raceSession.markCount) {
                 finished = true;
                 endEpoch = now;
+                uploadPending = true;
+                logEvent("FINISH", now, "mark");
                 logPass("[RACE] finished (last mark)", now);
             } else {
                 char msg[48];
@@ -357,5 +530,124 @@ void raceRunUpdate(TinyGPSPlus& gps)
                 bufferedSerialPrintln(msg);
             }
         }
+    }
+}
+
+// --- Step 5: turns ------------------------------------------------------
+
+void raceTurnDeclare(long now)
+{
+    if (!started || finished || turnPending) return;
+    turnPending = true;
+    turnT0 = now;
+    turnNet = 0.0;
+    turnHaveCog = false;
+    turnVerdict = 0;
+    logEvent("TURN", now, "decl");
+    bufferedSerialPrintln("[RACE] turn declared");
+}
+
+int raceTurnPoll()
+{
+    const int v = turnVerdict;
+    turnVerdict = 0;
+    return v;
+}
+
+bool raceTurnPending() { return turnPending; }
+
+bool raceWrongPoll()
+{
+    const bool w = wrongFlag;
+    wrongFlag = false;
+    return w;
+}
+
+// --- Step 5: run upload ---------------------------------------------------
+
+bool raceUploadPending() { return uploadPending && startEpoch > 0; }
+
+void raceUploadAck() { uploadPending = false; }
+
+void raceUploadBody(const char* deviceId, char* buf, size_t n)
+{
+    if (!buf || !n) return;
+    const long finish = (finished && endEpoch > 0) ? endEpoch + scpSec : 0;
+    size_t o = snprintf(buf, n,
+        "{\"deviceId\":\"%s\",\"startEpoch\":%ld,\"finishEpoch\":%ld,"
+        "\"splits\":[",
+        deviceId ? deviceId : "", startEpoch, finish);
+    for (uint8_t i = 0; i < 10 && o < n; i++) {
+        if (!splitSet[i]) continue;
+        o += snprintf(buf + o, n - o, "%s%ld", o > 0 && buf[o - 1] != '[' ? "," : "", splits[i]);
+    }
+    o += snprintf(buf + o, n - o, "],\"events\":[");
+    for (uint8_t i = 0; i < evCount && o < n; i++) {
+        o += snprintf(buf + o, n - o, "%s{\"t\":%ld,\"e\":\"%s\"%s%s%s}",
+            i ? "," : "", evRing[i].t, evRing[i].e,
+            evRing[i].v[0] ? ",\"v\":\"" : "", evRing[i].v[0] ? evRing[i].v : "",
+            evRing[i].v[0] ? "\"" : "");
+    }
+    snprintf(buf + o, n - o, "],\"result\":\"%s\"}", runResult);
+}
+
+// --- Step 7: committee signals ----------------------------------------------
+
+bool raceSignalIsNew(long id)
+{
+    if (id <= 0) return false;
+    if (!raceSession.valid) return false;
+    if (raceSession.sessionId != sigLastSes) {
+        // New session: cursor restarts (old signals arrive fresh, applied once).
+        sigLastSes = raceSession.sessionId;
+        sigLastId = 0;
+        saveSigCursor();
+    }
+    return id > sigLastId;
+}
+
+void raceSignalMark(long id)
+{
+    if (id <= 0) return;
+    sigLastId = id;
+    if (raceSession.valid) sigLastSes = raceSession.sessionId;
+    saveSigCursor();
+}
+
+void raceApplySignal(const char* kind, const char* detail, long now)
+{
+    if (!kind) return;
+    if (strcmp(kind, "OCS") == 0) {
+        ocs = true;
+        logEvent("SIG", now, "OCS");
+        bufferedSerialPrintln("[RACE] signal: OCS confirmed");
+    } else if (strcmp(kind, "DSQ") == 0 || strcmp(kind, "DNF") == 0 ||
+               strcmp(kind, "RET") == 0) {
+        strncpy(runResult, kind, sizeof(runResult) - 1);
+        if (started && !finished) {
+            finished = true;
+            endEpoch = now > 0 ? now : startEpoch;
+            uploadPending = true;
+        }
+        logEvent("SIG", now, kind);
+        bufferedSerialPrintln("[RACE] signal: run invalid");
+    } else if (strcmp(kind, "SCP") == 0) {
+        const long add = detail ? atol(detail) : 0;
+        if (add > 0) {
+            scpSec += add;
+            if (finished) uploadPending = true; // re-upload with new total
+            char v[16];
+            snprintf(v, sizeof(v), "+%ld", add);
+            logEvent("SIG", now, v);
+        }
+        bufferedSerialPrintln("[RACE] signal: SCP time added");
+    } else if (strcmp(kind, "RECALL") == 0) {
+        logEvent("SIG", now, "RECALL");
+        raceRunReset(); // back to pre-start; committee re-sets the gun
+        bufferedSerialPrintln("[RACE] signal: general recall");
+    } else if (strcmp(kind, "ABANDON") == 0) {
+        logEvent("SIG", now, "ABANDON");
+        raceRunReset(); // run void; session cache stays for re-sail
+        bufferedSerialPrintln("[RACE] signal: abandoned");
     }
 }

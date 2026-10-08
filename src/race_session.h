@@ -32,10 +32,17 @@ struct RaceSeg {
     bool valid = false;
 };
 
+struct RaceSignal {
+    long id = 0;
+    char kind[8] = {0};   // OCS|DSQ|DNF|RET|SCP|RECALL|ABANDON
+    char detail[32] = {0}; // e.g. SCP seconds
+};
+
 struct RaceSession {
     bool valid = false;
     long sessionId = 0;
     char mode[9] = {0}; // "practice" | "race"
+    char status[10] = {0}; // "scheduled" | "live"
     long startTime = 0;  // UTC epoch of gun (without pursuit offset), 0 = none
     long startOffsetSec = 0;
     int windDir = 0;
@@ -45,6 +52,8 @@ struct RaceSession {
     RaceSeg startLine;
     RaceSeg finishLine; // mirror of startLine when finishSameAsStart
     bool finishSameAsStart = false;
+    uint8_t sigCount = 0; // committee signals, oldest first (RAM only)
+    RaceSignal signals[8];
 };
 
 // Live copy. Written by the backend task, read by the UI thread.
@@ -65,3 +74,6 @@ long raceGpsEpoch(TinyGPSPlus& gps);
 
 // UTC epoch from "YYYY-MM-DDTHH:MM:SS[.mmm]Z". -1 on parse failure.
 long raceIsoEpoch(const char* iso);
+
+// True when the committee has this session live (fast health poll).
+bool raceSessionLive();

@@ -82,6 +82,8 @@ static bool sessionFromJson(JsonObject sess, RaceSession& out)
     }
     const char* mode = sess["mode"] | "";
     strncpy(tmp.mode, mode, sizeof(tmp.mode) - 1);
+    const char* status = sess["status"] | "";
+    strncpy(tmp.status, status, sizeof(tmp.status) - 1);
     const char* st = sess["startTime"] | (const char*)nullptr;
     tmp.startTime = st ? raceIsoEpoch(st) : 0;
     tmp.startOffsetSec = sess["startOffsetSec"] | 0L;
@@ -116,6 +118,22 @@ static bool sessionFromJson(JsonObject sess, RaceSession& out)
         fillSeg(tmp.finishLine, fin);
     }
 
+    // Committee signals (already filtered to this device + fleet by the
+    // backend). RAM only — re-pulled every health poll.
+    tmp.sigCount = 0;
+    JsonArray sigs = sess["signals"].as<JsonArray>();
+    for (JsonObject s : sigs) {
+        if (tmp.sigCount >= 8) break;
+        RaceSignal& dst = tmp.signals[tmp.sigCount];
+        dst.id = s["id"] | 0L;
+        if (dst.id <= 0) continue;
+        const char* kind = s["kind"] | "";
+        strncpy(dst.kind, kind, sizeof(dst.kind) - 1);
+        const char* detail = s["detail"] | "";
+        strncpy(dst.detail, detail, sizeof(dst.detail) - 1);
+        tmp.sigCount++;
+    }
+
     tmp.valid = true;
     out = tmp;
     return true;
@@ -134,7 +152,8 @@ bool raceSessionParse(const char* healthBody)
         return false;
     }
     // Heap-backed: keeps the 12k backend-task stack untouched.
-    DynamicJsonDocument doc(4096);
+    // 6K: session geometry + up to 20 piggybacked committee signals.
+    DynamicJsonDocument doc(6144);
     if (deserializeJson(doc, healthBody)) {
         return false;
     }
@@ -151,7 +170,8 @@ bool raceSessionParse(const char* healthBody)
     const bool volatileChanged = raceSession.valid &&
                                  (raceSession.startTime != next.startTime ||
                                   raceSession.startOffsetSec != next.startOffsetSec ||
-                                  strcmp(raceSession.mode, next.mode) != 0);
+                                  strcmp(raceSession.mode, next.mode) != 0 ||
+                                  strcmp(raceSession.status, next.status) != 0);
     raceSession = next;
     if (geometryChanged || volatileChanged || !raceSession.valid) {
         raceSessionSave();
@@ -169,6 +189,7 @@ bool raceSessionSave()
     // Re-serialize minimally (mirror of the backend shape).
     String j = String("{\"id\":") + raceSession.sessionId +
                String(",\"mode\":\"") + raceSession.mode + "\"" +
+               String(",\"status\":\"") + raceSession.status + "\"" +
                String(",\"startTime\":") + raceSession.startTime +
                String(",\"startOffsetSec\":") + raceSession.startOffsetSec +
                String(",\"windDir\":") + raceSession.windDir +
@@ -242,6 +263,8 @@ bool raceSessionLoad()
     }
     const char* mode = root["mode"] | "";
     strncpy(tmp.mode, mode, sizeof(tmp.mode) - 1);
+    const char* status = root["status"] | "";
+    strncpy(tmp.status, status, sizeof(tmp.status) - 1);
     tmp.startTime = root["startTime"] | 0L;
     tmp.startOffsetSec = root["startOffsetSec"] | 0L;
     tmp.windDir = root["windDir"] | 0;
@@ -276,4 +299,9 @@ bool raceSessionLoad()
     raceSession = tmp;
     bufferedSerialPrintln("[RACE] session restored from NVS");
     return true;
+}
+
+bool raceSessionLive()
+{
+    return raceSession.valid && strcmp(raceSession.status, "live") == 0;
 }

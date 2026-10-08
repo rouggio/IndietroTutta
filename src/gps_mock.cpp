@@ -122,6 +122,7 @@ void gpsMockPoll(TinyGPSPlus& gps)
     const double speed = doc["speed"] | 0.0;   // knots
     const double course = doc["course"] | 0.0; // degrees
     const char* st = doc["serverTime"] | "";
+    const char* runId = doc["runId"] | "";
     int Y = 0, M = 0, D = 0, h = 0, mi = 0, s = 0;
     if (sscanf(st, "%4d-%2d-%2dT%2d:%2d:%2d", &Y, &M, &D, &h, &mi, &s) < 6) return;
 
@@ -137,4 +138,21 @@ void gpsMockPoll(TinyGPSPlus& gps)
     feedSentence(gps, rmc);
     feedSentence(gps, gga);
     bufferedSerialPrintln("[MOCK] fix injected");
+
+    // Echo every 5th fix back (~15s): pipeline proof without touching tracks.
+    static int pollCount = 0;
+    if (runId[0] && (++pollCount % 5) == 0) {
+        HTTPClient echo;
+        if (echo.begin(client, String(BASE_URL "/sim/echo"))) {
+            echo.addHeader("Content-Type", "application/json");
+            String body = String("{\"runId\":\"") + runId +
+                          String("\",\"t\":") + (long)(doc["t"] | 0) +
+                          String(",\"lat\":") + String(lat, 7) +
+                          String(",\"lon\":") + String(lon, 7) +
+                          String(",\"speed\":") + String(speed, 1) +
+                          String(",\"course\":") + String(course, 1) + "}";
+            echo.POST(body);
+            echo.end();
+        }
+    }
 }

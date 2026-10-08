@@ -558,6 +558,43 @@ static void showTransient(const char* msg)
     transientMsg[sizeof(transientMsg) - 1] = '\0';
     transientUntil = millis() + 2000;
 }
+// Committee-signal banner, 8s (outranks the transient in the header).
+static char sigMsg[12] = {0};
+static unsigned long sigUntil = 0;
+static void showSignal(const char* msg)
+{
+    strncpy(sigMsg, msg, sizeof(sigMsg) - 1);
+    sigMsg[sizeof(sigMsg) - 1] = '\0';
+    sigUntil = millis() + 8000;
+}
+
+// Step 7: apply newly arrived committee signals (UI thread). Idempotent by
+// signal id (cursor in race_run, NVS-backed per session).
+static void raceSignalsApply(TinyGPSPlus& gps)
+{
+    if (!raceSession.valid || raceSession.sigCount == 0) return;
+    long now = raceGpsEpoch(gps);
+    if (now <= 0) now = lastGpsNow;
+    if (now <= 0) return;
+    for (uint8_t i = 0; i < raceSession.sigCount; i++) {
+        const RaceSignal& s = raceSession.signals[i];
+        if (!raceSignalIsNew(s.id)) continue;
+        raceApplySignal(s.kind, s.detail, now);
+        raceLogEvent("SIG", now, s.kind);
+        raceSignalMark(s.id);
+        char msg[12];
+        if (strcmp(s.kind, "SCP") == 0) {
+            snprintf(msg, sizeof(msg), "SCP +%.5s", s.detail);
+        } else if (strcmp(s.kind, "RECALL") == 0) {
+            snprintf(msg, sizeof(msg), "RECALL ");
+        } else if (strcmp(s.kind, "ABANDON") == 0) {
+            snprintf(msg, sizeof(msg), "ABANDON ");
+        } else {
+            snprintf(msg, sizeof(msg), "%-7.7s! ", s.kind);
+        }
+        showSignal(msg);
+    }
+}
 
 static void resetRaceText()
 {
@@ -589,7 +626,9 @@ static void drawRaceText(TinyGPSPlus& gps)
     const long now = raceGpsEpoch(gps);
     lastGpsNow = now;
     const long gun = raceGunEpoch();
-    if (millis() < transientUntil && transientMsg[0]) {
+    if (millis() < sigUntil && sigMsg[0]) {
+        snprintf(cd, sizeof(cd), "%-8.8s", sigMsg);
+    } else if (millis() < transientUntil && transientMsg[0]) {
         snprintf(cd, sizeof(cd), "%-8.8s", transientMsg);
     } else if (raceSession.valid && gun > 0 && now > 0) {
         if (now < gun) {
@@ -664,11 +703,22 @@ static void drawRaceText(TinyGPSPlus& gps)
     drawSmart(312, 184, 2, TR_DATUM, RDIM, viewTxt, lastMode, sizeof(lastMode), lastModeW);
 
     // Hint bar (mode-dependent, fixed widths so re-modes overwrite cleanly).
+    const bool racing = raceRunStarted() && !raceRunFinished();
     tft.setTextColor(RDIM, RBG);
     tft.setTextDatum(BL_DATUM);
-    tft.drawString(isRace ? "L Next LL Sync" : "L Next LL Go  ", 8, 235, 2);
+    if (isRace) {
+        tft.drawString("L Next LL Sync", 8, 235, 2);
+    } else if (racing) {
+        tft.drawString("L Next LL Turn", 8, 235, 2);
+    } else {
+        tft.drawString("L Next LL Go  ", 8, 235, 2);
+    }
     tft.setTextDatum(BR_DATUM);
-    tft.drawString(isRace ? "R --- RR View " : "R Dur RR View ", tft.width() - 8, 235, 2);
+    if (isRace || racing) {
+        tft.drawString("R TurnRR View ", tft.width() - 8, 235, 2);
+    } else {
+        tft.drawString("R Dur RR View ", tft.width() - 8, 235, 2);
+    }
 }
 
 void drawScreenRace(TinyGPSPlus &gps, bool requiresInit)
@@ -686,6 +736,16 @@ void drawScreenRace(TinyGPSPlus &gps, bool requiresInit)
         raceRunReset();
     }
     raceRunUpdate(gps);
+    raceSignalsApply(gps);
+    // Turn verdicts + wrong-side calls surface as short header banners.
+    const int verdict = raceTurnPoll();
+    if (verdict == 720) {
+        showTransient("720 OK ");
+    } else if (verdict == 360) {
+        showTransient("360 OK ");
+    } else if (raceWrongPoll()) {
+        showTransient("WRONG!  ");
+    }
     drawRaceMap(gps, requiresInit || courseChanged);
     drawRaceText(gps);
 }
@@ -700,11 +760,15 @@ void screenRaceButton(Button button, ButtonEvent event)
         return;
     }
     const bool isPractice = !(raceSession.valid && strcmp(raceSession.mode, "race") == 0);
-    // Left long: the action button. Practice → start/reset the local run
-    // (mirrors LL-flag on Waypoints); race → health resync now.
+    // Left long: the action button. Practice pre-start → start/clear the
+    // local run (mirrors LL-flag on Waypoints); practice racing → declare a
+    // 360/720 (verified by rotation); race → health resync now.
     if (button == Button::Left && event == ButtonEvent::LongPress) {
         if (isPractice) {
-            if (!raceRunStarted() && !raceRunFinished() && raceGunEpoch() > 0) {
+            if (raceRunStarted() && !raceRunFinished()) {
+                raceTurnDeclare(lastGpsNow);
+                if (raceTurnPending()) showTransient("TURN?   ");
+            } else if (!raceRunStarted() && !raceRunFinished() && raceGunEpoch() > 0) {
                 raceRunReset(); // gun set, not started: LL clears it
             } else if (!raceRunStarted() && !raceRunFinished()) {
                 if (lastGpsNow > 0) {
@@ -720,9 +784,13 @@ void screenRaceButton(Button button, ButtonEvent event)
         }
         return;
     }
-    // Right short: practice durations 1 → 3 → 5 min.
+    // Right short: practice durations pre-start; turn declare while racing.
     if (button == Button::Right && event == ButtonEvent::ShortPress) {
-        if (isPractice) {
+        const bool racing = raceRunStarted() && !raceRunFinished();
+        if (racing) {
+            raceTurnDeclare(lastGpsNow);
+            if (raceTurnPending()) showTransient("TURN?   ");
+        } else if (isPractice) {
             racePracticeCycleDur();
             const long d = racePracticeDur();
             char msg[12];
