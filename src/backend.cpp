@@ -11,6 +11,7 @@
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 #include <TinyGPSPlus.h>
+#include <Preferences.h>
 
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
@@ -439,6 +440,19 @@ void backendLoop(TinyGPSPlus &gps)
 
     if (!gps.location.isValid()) {
         return;
+    }
+
+    // Last-fix seed for mock wander (NVS, throttled: ~144 writes/day max).
+    // Lets wander anchor after a cold boot with no session and no history.
+    static unsigned long lastSeedSave = 0;
+    if (millis() - lastSeedSave > 600000UL) {
+        lastSeedSave = millis();
+        Preferences prefs;
+        if (prefs.begin("mock", false)) {
+            prefs.putDouble("seedLat", gps.location.lat());
+            prefs.putDouble("seedLon", gps.location.lng());
+            prefs.end();
+        }
     }
 
     BackendWork w = {

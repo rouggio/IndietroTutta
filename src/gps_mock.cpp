@@ -165,6 +165,17 @@ static void wanderTick(TinyGPSPlus& gps)
                 }
             }
         }
+        if (!haveSeed) {
+            // Cross-boot fallback: last real fix, throttled-saved by the
+            // backend loop (~10min cadence, negligible flash wear).
+            Preferences prefs;
+            if (prefs.begin("mock", true)) {
+                slat = prefs.getDouble("seedLat", 0.0);
+                slon = prefs.getDouble("seedLon", 0.0);
+                prefs.end();
+                haveSeed = (slat != 0.0 || slon != 0.0);
+            }
+        }
         if (!haveSeed) return;
         aLat = wLat = slat;
         aLon = wLon = slon;
