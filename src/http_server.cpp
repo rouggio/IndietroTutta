@@ -13,6 +13,7 @@
 #include "screens.h"
 #include "buttons.h"
 #include "server_link.h"
+#include "ota.h"
 
 #include <TFT_eSPI.h>
 
@@ -504,6 +505,18 @@ static void handleServer()
     server.send(200, "application/json", body);
 }
 
+// Immediate OTA check (POST /ota): same as CONFIG LL — compares
+// latest.txt on the CURRENT server (dev :3000 or prod) and pulls
+// firmware.bin when newer. Takes over the screen; board reboots on OK.
+static void handleOta()
+{
+    server.send(202, "application/json",
+                String("{\"ota\":\"started\",\"server\":\"") + serverBaseUrl() + "\"}");
+    delay(100); // let the response flush before the blocking download
+    bufferedSerialPrintln(String("[HTTP] OTA check vs ") + serverBaseUrl());
+    checkForUpdate();
+}
+
 static void handleReboot()
 {
     bufferedSerialPrintln("[HTTP] Reboot requested via /reboot");
@@ -670,6 +683,7 @@ void httpServerInit(TinyGPSPlus &gps)
     server.on("/reset", HTTP_POST, handleReset);
     server.on("/reboot", HTTP_POST, handleReboot);
     server.on("/mock", HTTP_POST, handleMock);
+    server.on("/ota", HTTP_POST, handleOta);
     server.on("/server", HTTP_GET, handleServer);
     server.on("/server", HTTP_POST, handleServer);
     server.on("/btn", HTTP_POST, handleBtn);

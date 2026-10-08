@@ -36,7 +36,7 @@ ifneq ($(strip $(PORT)),)
 	MONITOR_ARGS := --port $(PORT)
 endif
 
-.PHONY: venv install compile build bump-version dist upload monitor clean watch git-push deploy all
+.PHONY: venv install compile build bump-version dist ota-local upload monitor clean watch git-push deploy all
 
 venv:
 	$(BASE_PYTHON) -m venv $(VENV)
@@ -64,6 +64,26 @@ compile:
 build: compile
 
 dist: bump-version compile git-push
+
+# Local-only OTA for long dev sessions: bump + compile + stage the firmware
+# into the LAN backend's public/ota/ with NO git commit, NO push and NO
+# Render hook — the cloud stays untouched. Device must be in DEV mode
+# (CONFIG `Server : DEV` or `POST /server?mode=dev&host=<pc-ip>:3000`),
+# then `POST /ota` (or plain reboot) pulls from the local server.
+# NOTE: src/config.h + public/ota/* stay dirty locally BY DESIGN — do not
+# commit them mid-session. The next real `make dist` bumps again (the
+# dev-only number is skipped, harmless). Never `git add public/ota/` here.
+ota-local: bump-version compile
+	@set -e; \
+	VERSION=$$(grep -E '^[[:space:]]*#[[:space:]]*define[[:space:]]+BUILD_VERSION[[:space:]]+"' $(CONFIG) | sed -E 's/.*BUILD_VERSION[[:space:]]+"([^"]+)".*/\1/'); \
+	if [ ! -f "$(FIRMWARE)" ]; then \
+		echo "ERROR: firmware.bin not found. Run 'make build' first."; \
+		exit 1; \
+	fi; \
+	cp "$(FIRMWARE)" "$(OTA_DIR)/firmware.bin"; \
+	echo "$$VERSION" > "$(OTA_DIR)/latest.txt"; \
+	echo "Local OTA staged: $$VERSION (NOT committed, cloud untouched)"; \
+	echo "Device: switch to DEV, then POST /ota to pull it."
 
 upload:
 	$(PY) -m platformio run -t upload $(UPLOAD_ARGS)
