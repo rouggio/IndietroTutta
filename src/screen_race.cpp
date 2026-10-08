@@ -28,11 +28,11 @@ static const int MAP_W = 256;   // left viewport (4/5 of 320)
 static const int WIRE_TOP = 30; // wire fills from below the header...
 static const int WIRE_Y1 = 208; // ...to the frame south (strip is gone)
 static const int FRAME_SOUTH = 213;
-// Right values pane: 1/5 width, five mini-labeled rows.
+// Right values pane: 1/5 width, six mini-labeled rows filling the height.
 static const int PANE_X = 256;
 static const int PANE_W = 64;
 static const int PANE_Y0 = 30;
-static const int PANE_ROWH = 35;
+static const int PANE_ROWH = 29;
 
 static void drawFrameChrome()
 {
@@ -277,20 +277,6 @@ static bool oldHaveDash = false;
 static bool dynOk = false;
 static double oldRotEff = 0.0;
 
-static void drawWindArrow(int cx, int cy, double screenDeg, uint16_t color)
-{
-    // Points where the wind comes FROM, in screen frame.
-    const double a = screenDeg * M_PI / 180.0;
-    const int len = 14;
-    const int x2 = (int)(cx + sin(a) * len), y2 = (int)(cy - cos(a) * len);
-    tft.drawLine(cx, cy, x2, y2, color);
-    const double ha = 0.5;
-    const int hx1 = (int)(x2 - sin(a - ha) * 5), hy1 = (int)(y2 + cos(a - ha) * 5);
-    const int hx2 = (int)(x2 - sin(a + ha) * 5), hy2 = (int)(y2 + cos(a + ha) * 5);
-    tft.drawLine(x2, y2, hx1, hy1, color);
-    tft.drawLine(x2, y2, hx2, hy2, color);
-}
-
 static void drawDashed(int x0, int y0, int x1, int y1, uint16_t color)
 {
     const double len = hypot((double)(x1 - x0), (double)(y1 - y0));
@@ -459,27 +445,11 @@ static void drawStaticLayer(const RaceProj& p, double rotEff)
         tft.setTextColor(i == 0 ? RFG : RDIM, RBG);
         tft.drawString(num, px, py, 2);
     }
-    // Header wind (out of frame, top-left): arrow only. The arrow rotates
-    // with the view, so the old one is erased first (header is never
-    // full-cleared). The numeric degrees were dropped — the arrow is the UI.
-    // Mock banner sits left of it when scripted fixes drive the screen.
-    static double oldWindScreen = 0.0;
-    static bool oldWindHave = false;
-    const double windScreen = raceSession.windDir - rotEff;
-    if (oldWindHave) drawWindArrow(64, 14, oldWindScreen, RBG);
-    tft.fillRect(74, 4, 48, 18, RBG); // retired degrees slot, kept clean
-    drawWindArrow(64, 14, windScreen, RFG);
-    oldWindScreen = windScreen;
-    oldWindHave = true;
-    if (gpsMockActive()) {
-        tft.setTextDatum(TL_DATUM);
-        tft.setTextColor(TFT_YELLOW, RBG);
-        tft.drawString("MOCK", 8, 6, 2);
-    } else {
-        tft.setTextDatum(TL_DATUM);
-        tft.setTextColor(RBG, RBG);
-        tft.drawString("MOCK", 8, 6, 2);
-    }
+    // Header wind readout moved to the right pane (WND row) — the arrow
+    // lives there as degrees now. Mock banner stays top-left.
+    // Mock state moved to the main screen (yellow FX tile there); keep this
+    // header slot painted clean (header is never full-cleared otherwise).
+    tft.fillRect(8, 4, 44, 18, RBG);
 }
 
 static void drawRaceMap(TinyGPSPlus& gps, bool full)
@@ -549,13 +519,6 @@ static void drawRaceMap(TinyGPSPlus& gps, bool full)
         oldRotEff = rotEff;
         lastMapDraw = millis();
         dynOk = false;
-        // NO FIX overlay, top-right inside the frame (full path only, so it
-        // never smears the wireframe underneath).
-        if (!fixOk) {
-            tft.setTextDatum(TR_DATUM);
-            tft.setTextColor(TFT_YELLOW, RBG);
-            tft.drawString("NO FIX", MAP_X + MAP_W - 8, MAP_Y + 6, 2);
-        }
     }
 
     // Boat: triangle on the chart, or a projected dot on the frame edge.
@@ -660,7 +623,12 @@ static char pBrg[8] = {0}; static int16_t pBrgW = 0;
 static char pDst[10] = {0}; static int16_t pDstW = 0;
 static char pNxt[8] = {0}; static int16_t pNxtW = 0;
 static char pTim[10] = {0}; static int16_t pTimW = 0;
+static char pLabW[8] = {0}; static int16_t pLabWW = 0;
+static char pWnd[8] = {0}; static int16_t pWndW = 0;
 static bool paneClean = false;
+// Hint bar texts (lengths vary by mode: repaint band on change).
+static char lastHintL[16] = {0};
+static char lastHintR[16] = {0};
 
 // Last GPS epoch seen on this page (buttons have no gps handle).
 static long lastGpsNow = 0;
@@ -743,6 +711,9 @@ static void resetRaceText()
     pDst[0] = 0; pDstW = 0;
     pNxt[0] = 0; pNxtW = 0;
     pTim[0] = 0; pTimW = 0;
+    pLabW[0] = 0; pLabWW = 0;
+    pWnd[0] = 0; pWndW = 0;
+    lastHintL[0] = 0; lastHintR[0] = 0;
     paneClean = false;
 }
 
@@ -759,7 +730,6 @@ static void drawRaceText(TinyGPSPlus& gps)
         lastFixAt = millis();
     }
     const long gun = raceGunEpoch();
-    const bool isRace = strcmp(raceSession.mode, "race") == 0;
 
     // Header: committee banners only (the countdown lives in the pane now).
     char ban[12];
@@ -814,58 +784,73 @@ static void drawRaceText(TinyGPSPlus& gps)
     }
 
     // Right values pane: background + grid once, cells change-detect.
+    // Rows fill the pane top-down with no head gap.
     if (!paneClean) {
         tft.fillRect(PANE_X, PANE_Y0, PANE_W, 178, RBG);
-        for (int r = 1; r < 5; r++) {
-            const int ly = PANE_Y0 + 4 + r * PANE_ROWH - 5;
+        for (int r = 1; r < 6; r++) {
+            const int ly = PANE_Y0 + 1 + r * PANE_ROWH - 4;
             tft.drawLine(PANE_X + 2, ly, PANE_X + PANE_W - 3, ly, RDIM);
         }
         paneClean = true;
     }
     char cell[14];
+    const int vy = PANE_Y0 + 1, vv = PANE_Y0 + 11;
     // Row 0: speed.
-    drawSmart(PANE_X + 3, PANE_Y0 + 4, 1, TL_DATUM, RDIM, "SPD KN",
+    drawSmart(PANE_X + 3, vy, 1, TL_DATUM, RDIM, "SPD KN",
               pLabS, sizeof(pLabS), pLabSW);
     if (gps.speed.isValid()) snprintf(cell, sizeof(cell), "%4.1f", gps.speed.knots());
     else snprintf(cell, sizeof(cell), " --- ");
-    drawSmart(PANE_X + PANE_W - 6, PANE_Y0 + 14, 2, TR_DATUM, RFG, cell,
+    drawSmart(PANE_X + PANE_W - 6, vv, 2, TR_DATUM, RFG, cell,
               pSpd, sizeof(pSpd), pSpdW);
     // Row 1: bearing to destination.
-    drawSmart(PANE_X + 3, PANE_Y0 + 4 + PANE_ROWH, 1, TL_DATUM, RDIM, "BRG",
+    drawSmart(PANE_X + 3, vy + PANE_ROWH, 1, TL_DATUM, RDIM, "BRG",
               pLabB, sizeof(pLabB), pLabBW);
     if (showBrg) snprintf(cell, sizeof(cell), "%3d", (int)brg);
     else snprintf(cell, sizeof(cell), "---");
-    drawSmart(PANE_X + PANE_W - 6, PANE_Y0 + 14 + PANE_ROWH, 2, TR_DATUM, RFG, cell,
+    drawSmart(PANE_X + PANE_W - 6, vv + PANE_ROWH, 2, TR_DATUM, RFG, cell,
               pBrg, sizeof(pBrg), pBrgW);
     // Row 2: distance.
-    drawSmart(PANE_X + 3, PANE_Y0 + 4 + 2 * PANE_ROWH, 1, TL_DATUM, RDIM, "DST M",
+    drawSmart(PANE_X + 3, vy + 2 * PANE_ROWH, 1, TL_DATUM, RDIM, "DST M",
               pLabD, sizeof(pLabD), pLabDW);
     if (showBrg) snprintf(cell, sizeof(cell), "%4ld", distM);
     else snprintf(cell, sizeof(cell), "----");
-    drawSmart(PANE_X + PANE_W - 6, PANE_Y0 + 14 + 2 * PANE_ROWH, 2, TR_DATUM, RFG, cell,
+    drawSmart(PANE_X + PANE_W - 6, vv + 2 * PANE_ROWH, 2, TR_DATUM, RFG, cell,
               pDst, sizeof(pDst), pDstW);
     // Row 3: next destination.
-    drawSmart(PANE_X + 3, PANE_Y0 + 4 + 3 * PANE_ROWH, 1, TL_DATUM, RDIM, "NEXT",
+    drawSmart(PANE_X + 3, vy + 3 * PANE_ROWH, 1, TL_DATUM, RDIM, "NEXT",
               pLabN, sizeof(pLabN), pLabNW);
     if (raceSession.valid && haveDest) snprintf(cell, sizeof(cell), "%-4.4s", tag);
     else snprintf(cell, sizeof(cell), "----");
-    drawSmart(PANE_X + PANE_W - 6, PANE_Y0 + 14 + 3 * PANE_ROWH, 2, TR_DATUM, RFG, cell,
+    drawSmart(PANE_X + PANE_W - 6, vv + 3 * PANE_ROWH, 2, TR_DATUM, RFG, cell,
               pNxt, sizeof(pNxt), pNxtW);
     // Row 4: time.
-    drawSmart(PANE_X + 3, PANE_Y0 + 4 + 4 * PANE_ROWH, 1, TL_DATUM, RDIM, "TIME",
+    drawSmart(PANE_X + 3, vy + 4 * PANE_ROWH, 1, TL_DATUM, RDIM, "TIME",
               pLabT, sizeof(pLabT), pLabTW);
-    drawSmart(PANE_X + PANE_W - 6, PANE_Y0 + 14 + 4 * PANE_ROWH, 2, TR_DATUM, RFG, tim,
+    drawSmart(PANE_X + PANE_W - 6, vv + 4 * PANE_ROWH, 2, TR_DATUM, RFG, tim,
               pTim, sizeof(pTim), pTimW);
+    // Row 5: wind direction (from the session; header arrow retired here).
+    drawSmart(PANE_X + 3, vy + 5 * PANE_ROWH, 1, TL_DATUM, RDIM, "WND",
+              pLabW, sizeof(pLabW), pLabWW);
+    if (raceSession.valid) snprintf(cell, sizeof(cell), "%3d", raceSession.windDir);
+    else snprintf(cell, sizeof(cell), "---");
+    drawSmart(PANE_X + PANE_W - 6, vv + 5 * PANE_ROWH, 2, TR_DATUM, RFG, cell,
+              pWnd, sizeof(pWnd), pWndW);
 
-    // Hint bar (mode-dependent, fixed widths so re-modes overwrite cleanly).
-    // Browse and menu repurpose the hints as their controls.
+    // Hint bar: texts change length across modes now, so repaint on change
+    // (band clear once, then both sides).
+    char hintL[16], hintR[16];
+    snprintf(hintL, sizeof(hintL), "%s", (tplOpen || menuOpen) ? "L Back" : "L Next  LL Menu");
+    snprintf(hintR, sizeof(hintR), "%s", (tplOpen || menuOpen) ? "R Sel RR Pick" : "RR View");
+    if (strcmp(hintL, lastHintL) != 0 || strcmp(hintR, lastHintR) != 0) {
+        tft.fillRect(0, 219, 320, 21, RBG);
+        strncpy(lastHintL, hintL, sizeof(lastHintL) - 1);
+        strncpy(lastHintR, hintR, sizeof(lastHintR) - 1);
+    }
     tft.setTextColor(RDIM, RBG);
     tft.setTextDatum(BL_DATUM);
-    if (tplOpen) tft.drawString("L Back        ", 8, 239, 2);
-    else tft.drawString(menuOpen ? "L Next LL OK  " : "L Next LL Menu", 8, 239, 2);
+    tft.drawString(hintL, 8, 239, 2);
     tft.setTextDatum(BR_DATUM);
-    if (tplOpen) tft.drawString("R Next RR Go  ", tft.width() - 8, 239, 2);
-    else tft.drawString(menuOpen ? "R BackRR Back" : (isRace ? "R --- RR View " : "R Dur RR View "), tft.width() - 8, 239, 2);
+    tft.drawString(hintR, tft.width() - 8, 239, 2);
 }
 
 // LL menu: explicit race actions (map frozen while open, box repainted on
@@ -890,25 +875,23 @@ static void menuText(bool isPractice, uint8_t i, char* buf, size_t n)
 
 static void drawRaceMenu()
 {
+    // Standard menu chrome: centered title + rule, `>` rows, yellow select.
     const bool isPractice = !(raceSession.valid && strcmp(raceSession.mode, "race") == 0);
-    const int bw = 170, bh = 24 + menuN * 22;
-    const int bx = (tft.width() - bw) / 2, by = 80;
+    const int bw = 190, bh = 32 + menuN * 22;
+    const int bx = (tft.width() - bw) / 2, by = 74;
     tft.fillRect(bx, by, bw, bh, RBG);
     tft.drawRect(bx, by, bw, bh, RFG);
-    tft.setTextDatum(TL_DATUM);
-    tft.setTextColor(RDIM, RBG);
-    tft.drawString(isPractice ? "PRAC MENU" : "RACE MENU", bx + 8, by + 5, 2);
-    char buf[16];
+    tft.setTextColor(RFG, RBG);
+    tft.setTextDatum(TC_DATUM);
+    tft.drawString(isPractice ? "PRAC MENU" : "RACE MENU", bx + bw / 2, by + 6, 2);
+    tft.drawFastHLine(bx + 8, by + 26, bw - 16, RDIM);
+    char buf[16], row[20];
     for (uint8_t i = 0; i < menuN; i++) {
         menuText(isPractice, i, buf, sizeof(buf));
-        const int ry = by + 24 + i * 22;
-        if (i == menuSel) {
-            tft.fillRect(bx + 4, ry - 2, bw - 8, 20, RFG);
-            tft.setTextColor(RBG, RFG);
-        } else {
-            tft.setTextColor(RFG, RBG);
-        }
-        tft.drawString(buf, bx + 12, ry, 2);
+        snprintf(row, sizeof(row), "%s %s", i == menuSel ? ">" : " ", buf);
+        tft.setTextDatum(TL_DATUM);
+        tft.setTextColor(i == menuSel ? TFT_YELLOW : RFG, RBG);
+        tft.drawString(row, bx + 12, by + 30 + i * 22, 2);
     }
     tft.setTextColor(RDIM, RBG);
 }
@@ -943,10 +926,13 @@ static void drawTplList()
     const uint8_t n = tplCount();
     char head[20];
     snprintf(head, sizeof(head), "TEMPLATES %d", n);
-    tft.drawString(head, bx + 8, by + 5, 2);
+    tft.setTextDatum(TC_DATUM);
+    tft.drawString(head, bx + bw / 2, by + 5, 2);
+    tft.drawFastHLine(bx + 8, by + 26, bw - 16, RDIM);
     if (!n) {
         tft.setTextColor(RFG, RBG);
-        tft.drawString("none saved", bx + 8, by + 27, 2);
+        tft.setTextDatum(TL_DATUM);
+        tft.drawString("none saved", bx + 8, by + 30, 2);
         return;
     }
     if (tplSel >= n) tplSel = 0;
@@ -955,15 +941,12 @@ static void drawTplList()
     for (uint8_t r = 0; r < 6 && top + r < n; r++) {
         const Tpl* t = tplGet(top + r);
         if (!t) continue;
-        const int ry = by + 26 + r * 22;
-        if (top + r == tplSel) {
-            tft.fillRect(bx + 4, ry - 2, bw - 8, 20, RFG);
-            tft.setTextColor(RBG, RFG);
-        } else {
-            tft.setTextColor(RFG, RBG);
-        }
+        const int ry = by + 30 + r * 22;
+        const bool sel = (top + r) == tplSel;
         char nm[36];
-        snprintf(nm, sizeof(nm), "%d %s", top + r + 1, t->name);
+        snprintf(nm, sizeof(nm), "%s %d %s", sel ? ">" : " ", top + r + 1, t->name);
+        tft.setTextDatum(TL_DATUM);
+        tft.setTextColor(sel ? TFT_YELLOW : RFG, RBG);
         tft.drawString(nm, bx + 12, ry, 2);
     }
     tft.setTextColor(RDIM, RBG);
@@ -1104,16 +1087,17 @@ void screenRaceButton(Button button, ButtonEvent event)
         }
         return;
     }
-    // Menu owns Short/Long while open; raw Press/Release pass through
-    // untouched (the release of the opening long-press must not close it).
+    // Menu owns Short/Long while open (standard mapping: R cycles, RR
+    // picks, L backs out). Raw Press/Release pass through untouched (the
+    // release of the opening long-press must not close it).
     if (menuOpen) {
-        if (button == Button::Left && event == ButtonEvent::ShortPress) {
+        if (button == Button::Right && event == ButtonEvent::ShortPress) {
             menuSel = (uint8_t)((menuSel + 1) % (menuN ? menuN : 1));
             menuDirty = true;
             menuUntil = millis() + 10000;
             return;
         }
-        if (button == Button::Left && event == ButtonEvent::LongPress) {
+        if (button == Button::Right && event == ButtonEvent::LongPress) {
             menuConfirm();
             return;
         }
@@ -1136,17 +1120,7 @@ void screenRaceButton(Button button, ButtonEvent event)
         menuUntil = millis() + 10000;
         return;
     }
-    // Right short: practice durations 1 → 3 → 5 min (pre-start only).
-    if (button == Button::Right && event == ButtonEvent::ShortPress) {
-        if (isPractice && !raceRunStarted()) {
-            racePracticeCycleDur();
-            const long d = racePracticeDur();
-            char msg[12];
-            snprintf(msg, sizeof(msg), "DUR %1ld:%02ld", d / 60, d % 60);
-            showTransient(msg);
-        }
-        return;
-    }
+    // Right short does nothing on this screen (durations dropped).
     // Right long: cycle views — north-up → bearing-up → best-fit.
     if (button == Button::Right && event == ButtonEvent::LongPress) {
         viewMode = (viewMode + 1) % 3;

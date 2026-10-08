@@ -8,6 +8,7 @@
 #include "buttons.h"
 #include "screens.h"
 #include "screen_timers.h"
+#include "gps_mock.h"
 
 #include "screen_speed.h"
 
@@ -172,25 +173,37 @@ void drawTopBar(TinyGPSPlus &gps)
     prevDataConnected = TriState::False;
   }
 
-  // Fix Icon
+  // Fix Icon (yellow FX tile while the mock drives the fix instead of GPS)
   icon_x += tile_width + tile_spacing;
-  if (gps.location.isValid() && prevFix != TriState::True)
+  const int fixTile = gpsMockActive() ? 2 : (gps.location.isValid() ? 1 : 0);
+  static int prevFixTile = -1;
+  if (fixTile != prevFixTile)
   {
-    tft.fillRoundRect(icon_x, 2, tile_width, tile_height, 4, TFT_DARKGREEN);
-    tft.drawRoundRect(icon_x, 2, tile_width, tile_height, 4, GREEN);
-    tft.setTextColor(WHITE, TFT_DARKGREEN);
-    tft.setTextDatum(TL_DATUM);
-    tft.drawString("FX", icon_x + icont_offset_x, 7, 2);
-    prevFix = TriState::True;
-  }
-  else if (!gps.location.isValid() && prevFix != TriState::False)
-  {
-    tft.fillRoundRect(icon_x, 2, tile_width, tile_height, 4, DARK_RED);
-    tft.drawRoundRect(icon_x, 2, tile_width, tile_height, 4, TFT_RED);
-    tft.setTextColor(WHITE, DARK_RED);
-    tft.setTextDatum(TL_DATUM);
-    tft.drawString("FX", icon_x + icont_offset_x, 6, 2);
-    prevFix = TriState::False;
+    prevFixTile = fixTile;
+    if (fixTile == 2)
+    {
+      tft.fillRoundRect(icon_x, 2, tile_width, tile_height, 4, TFT_OLIVE);
+      tft.drawRoundRect(icon_x, 2, tile_width, tile_height, 4, TFT_YELLOW);
+      tft.setTextColor(WHITE, TFT_OLIVE);
+      tft.setTextDatum(TL_DATUM);
+      tft.drawString("FX", icon_x + icont_offset_x, 7, 2);
+    }
+    else if (fixTile == 1)
+    {
+      tft.fillRoundRect(icon_x, 2, tile_width, tile_height, 4, TFT_DARKGREEN);
+      tft.drawRoundRect(icon_x, 2, tile_width, tile_height, 4, GREEN);
+      tft.setTextColor(WHITE, TFT_DARKGREEN);
+      tft.setTextDatum(TL_DATUM);
+      tft.drawString("FX", icon_x + icont_offset_x, 7, 2);
+    }
+    else
+    {
+      tft.fillRoundRect(icon_x, 2, tile_width, tile_height, 4, DARK_RED);
+      tft.drawRoundRect(icon_x, 2, tile_width, tile_height, 4, TFT_RED);
+      tft.setTextColor(WHITE, DARK_RED);
+      tft.setTextDatum(TL_DATUM);
+      tft.drawString("FX", icon_x + icont_offset_x, 6, 2);
+    }
   }
 
 
