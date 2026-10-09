@@ -370,11 +370,11 @@ void drawSpeed(TinyGPSPlus &gps)
   const int cx = SPEED_W / 2;
   tft.setTextColor(GRAY, BG);
   tft.setTextDatum(TC_DATUM);
-  String label = "SPEED (" + String(unitLabels[config.speedUnit]) + ")";
+  String label = "Speed (" + String(unitLabels[config.speedUnit]) + ")";
 // Font 2 is 16px tall: the label sits just under the top-bar separator
   // (y=30) and must stay ABOVE the width-change wipe below (y>=59), or
   // the wipe clips its bottom rows.
-  tft.drawString(label, cx, 42, 2);
+  tft.drawString(label, cx, 40, 2);
 
   String spd = gps.speed.isValid() ? String(value, 1) : String("---");
   const uint8_t spdFont = spd.length() >= 5 ? 7 : 8;
@@ -387,7 +387,7 @@ void drawSpeed(TinyGPSPlus &gps)
     }
     tft.setTextColor(TFT_YELLOW, BG);
     tft.setTextDatum(MC_DATUM);
-    tft.drawString(spd, cx, 108, spdFont);
+    tft.drawString(spd, cx, 105, spdFont);
     lastSpdStr = spd;
     lastSpdFont = spdFont;
   }
@@ -401,17 +401,17 @@ void drawSpeed(TinyGPSPlus &gps)
   } else {
     maxPadded = " --- ";
   }
-  drawCellLabel("Max speed", MAX_W / 2, ROW_MID + 10);
+  drawCellLabel("Max Speed", MAX_W / 2, ROW_MID + 7);
   if (maxPadded != lastMaxStr) {
     if (maxPadded.length() < lastMaxStr.length())
       tft.fillRect(3, ROW_MID + 25, MAX_W - 6, 28, BG);
     tft.setTextColor(WHITE, BG);
     tft.setTextDatum(MC_DATUM);
-    tft.drawString(maxPadded, MAX_W / 2, ROW_MID + 39, 4);
+    tft.drawString(maxPadded, MAX_W / 2, ROW_MID + 42, 4);
     lastMaxStr = maxPadded;
   }
 
-  drawCellLabel("Session", MAX_W + (SPEED_W - MAX_W) / 2, ROW_MID + 10);
+  drawCellLabel("Session time", MAX_W + (SPEED_W - MAX_W) / 2, ROW_MID + 7);
   unsigned long totalSec = millis() / 1000UL;
   unsigned long sesMm = totalSec / 60UL;
   unsigned long sesSs = totalSec % 60UL;
@@ -423,7 +423,7 @@ void drawSpeed(TinyGPSPlus &gps)
       tft.fillRect(MAX_W + 3, ROW_MID + 25, SPEED_W - MAX_W - 6, 28, BG);
     tft.setTextColor(WHITE, BG);
     tft.setTextDatum(MC_DATUM);
-    tft.drawString(sesPadded, MAX_W + (SPEED_W - MAX_W) / 2, ROW_MID + 39, 4);
+    tft.drawString(sesPadded, MAX_W + (SPEED_W - MAX_W) / 2, ROW_MID + 42, 4);
     lastSesStr = sesPadded;
   }
 
@@ -496,12 +496,12 @@ void drawSpeed(TinyGPSPlus &gps)
   // above the bottom grid line (214). The bearing block (3 digits + degree
   // ring, ~53px) is right-anchored inside the cell and its label centered
   // over it, so label and value line up.
-  const int valMidL = 218;
-  const int valMidR = 284;
+const int valMidL = 221;
+const int valMidR = 290;
   tft.setTextColor(GRAY, BG);
   tft.setTextDatum(TC_DATUM);
-  tft.drawString("WIND (kn)", valMidL, 171, 2);
-  tft.drawString("BRG", valMidR, 171, 2);
+tft.drawString("Wind (kn)", valMidL, 166, 2);
+  tft.drawString("BRG", valMidR, 166, 2);
 
   String wndTxt = "---";
   if (wndValid) {
@@ -512,7 +512,7 @@ void drawSpeed(TinyGPSPlus &gps)
     lastWndStr = wndTxt;
     tft.setTextColor(WHITE, BG);
     tft.setTextDatum(TC_DATUM);
-    tft.drawString(wndTxt, valMidL, 197, 4);
+    tft.drawString(wndTxt, valMidL - 8, 187, 4);
   }
 
   // Zero-padded 3 chars (constant width, no ghosting), font 4 to match the
@@ -526,9 +526,9 @@ void drawSpeed(TinyGPSPlus &gps)
     lastBrgStr = degTxt;
     tft.setTextColor(WHITE, BG);
     tft.setTextDatum(TR_DATUM);
-    tft.drawString(degTxt, valMidR + 20, 197, 4);
+    tft.drawString(degTxt, valMidR + 20, 187, 4);
   }
-  tft.drawCircle(valMidR + 26, 197, 2, brgDeg >= 0 ? WHITE : BG);
+  tft.drawCircle(valMidR + 26, 187, 2, brgDeg >= 0 ? WHITE : BG);
 }
 
 void initScreen() {
