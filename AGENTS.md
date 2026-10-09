@@ -35,14 +35,16 @@ Two FreeRTOS tasks in `backend.cpp` (12288 stack each, core 0): feed task
 Key modules: `screens.*` router + 200ms throttle, `screen_speed.*` main
 (big speed nudged right of center; right column MAX/CRS/SES — gray font-2 labels,
 white font-4 values, redrawn only on change, width-capped; POS line removed),
-`screen_race.*` shared RACE/PRAC screen (frame = all but header/hints; wireframe +
-boat triangle/edge-dot + dashed yellow to destination center + wind arrow;
-GPS countdown header + next-tag; strip with mode tag + next data + N-UP/BRG/FIT;
-map layer ≤1Hz, text padded),
+`screen_race.*` shared RACE/PRAC screen (map viewport = left 4/5; wireframe +
+boat triangle/edge-dot + ~1 cm dashed yellow stub toward the next mark; right pane =
+6 equal rows from the very top, labels via `drawLabel1`, values font-2 right-aligned,
+WND row = wind arrow + whole-knot speed; mark numbers drawn above the circles;
+N-UP/BRG-UP/FIT view tag; empty state clears map+pane and shows a 3-line message;
+map ≤1Hz, text padded),
 `gps_mock.*` scripted GPS for indoor testing (synthetic RMC+GGA from `GET /sim/next`
 into `gps.encode()`; NVS flag; uploads suppressed; MOCK banner; portal `/mock`),
-`race_session.*` health-pulled session cache (marks/lines/wind/startTime+offset,
-NVS `race` ns, ArduinoJson heap doc; unassigned keeps cache),
+`race_session.*` health-pulled session cache (marks/lines/windDir+windSpeed/startTime+offset,
+NVS `race` ns, ArduinoJson heap doc; explicit unassigned clears it, offline keeps cache),
 `screen_waypoints.*` (LL flag, max 10 FIFO RAM-only),
 `screen_diagnostics.*` (RR from main), `screen_config.*` (LL from main),
 `wifi_manager.*` non-blocking AP+STA (scan prefers visible strongest, park/retry),
@@ -52,7 +54,7 @@ grab re-renders the current page into an off-screen 8bpp sprite since the
 ST7789 is write-only — `#define tft (*gCanvas)`; font 1 on a sprite faults,
 so capture uses font 2 for the race pane labels),
 `config_store.*` NVS ns `wifi` blob `cfg` + `wifi_%d_ssid/pass`.
-(Race engine `race_store.*` removed 2026-10-06 — replanning from scratch.)
+(Race engine now lives in `race_session.*` + `race_run.*` + `race_templates.*` + `screen_race.*`.)
 
 ## UI navigation (hints: L/LL left, R/RR right)
 
@@ -65,7 +67,16 @@ so capture uses font 2 for the race pane labels),
   text in place with space padding instead, e.g. `" " + val + " "` (both sides
   for MC_DATUM, leading space suffices for TR_DATUM). Static labels can just be
   redrawn with the same string. Full clear only on page switch / init / mode toggle.
-- `src/config.h`: `BASE_URL`, `OTA_BASE_URL` (both prod Render), `BUILD_VERSION 1.0.98`.
+- `/screen` re-renders cleanly, so it HIDES incremental-redraw ghosting (stale pixels,
+  missing grid/labels) — verify that class of bug on the PANEL, not the grab. Font 1
+  (GLCD) drawn into a `TFT_eSprite` faults intermittently → small labels use
+  `drawLabel1()`/`drawLabel1C()` in `canvas.h` (manual GLCD via `drawPixel`).
+- Race screen: full-screen overlays (menu, template browse) are removed via
+  `redrawCurrentPage()`; a course change that closes them forces it too, and
+  `resetRaceText()` runs on `courseChanged` so the pane (grid+labels) always repaints.
+  `gGrabbing` (set during a `/screen` capture) skips side effects (race-run reset,
+  menu auto-close).
+- `src/config.h`: `BASE_URL`, `OTA_BASE_URL` (both prod Render), `BUILD_VERSION` (local-dev 1.0.166).
 - Device reports fw: `Firmware-Version: BUILD_VERSION` header on `GET /health` +
   `POST /gps`, plus `"fw"` in gps JSON body.
 
