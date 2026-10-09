@@ -420,8 +420,8 @@ void drawSpeed(TinyGPSPlus &gps)
     prevNDeg = nDeg;
   }
 
-  // Ring values: WND (left) and BRG (right), gray font-2 labels, GLCD
-  // (font-1 via drawLabel1 — capture-safe) values fixed at 3 chars.
+  // Ring values: WND (left) and BRG (right), gray font-2 labels, white
+  // font-2 values one size down from the other cells, fixed 3 chars.
   const int valMidL = (cmpL + cmpCx) / 2;
   const int valMidR = (cmpCx + tft.width() - 2) / 2;
   tft.setTextColor(GRAY, BG);
@@ -436,7 +436,9 @@ void drawSpeed(TinyGPSPlus &gps)
   }
   if (wndTxt != lastWndStr) {
     lastWndStr = wndTxt;
-    drawLabel1(valMidL - 9, 184, wndTxt.c_str(), WHITE);
+    tft.setTextColor(WHITE, BG);
+    tft.setTextDatum(TC_DATUM);
+    tft.drawString(wndTxt, valMidL, 184, 2);
   }
 
   // Zero-padded 3 chars (constant width, no ghosting); degree ring drawn
@@ -448,9 +450,11 @@ void drawSpeed(TinyGPSPlus &gps)
   }
   if (degTxt != lastBrgStr) {
     lastBrgStr = degTxt;
-    drawLabel1(valMidR, 184, degTxt.c_str(), WHITE);
+    tft.setTextColor(WHITE, BG);
+    tft.setTextDatum(TR_DATUM);
+    tft.drawString(degTxt, valMidR + 18, 184, 2);
   }
-  tft.drawCircle(valMidR + 20, 186, 2, brgDeg >= 0 ? WHITE : BG);
+  tft.drawCircle(valMidR + 22, 189, 2, brgDeg >= 0 ? WHITE : BG);
 }
 
 void initScreen() {

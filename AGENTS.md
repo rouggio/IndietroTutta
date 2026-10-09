@@ -44,8 +44,8 @@ EQUILATERAL triangles stacked radially without overlap: green boat (HALF
 the shared size, tip tangent to the ring border, base pushed out along the
 bearing) + red wind (same size, tip tangent to the boat base, tip downwind
 = windDir+180; session wind wins, else env wind); below the ring WND/BRG
-gray font-2 labels + GLCD font-1 values (drawLabel1, fixed 3 chars; bearing
-with a drawn degree ring; wind = knots, no unit string); values redrawn only on change, arrows
+gray font-2 labels + white font-2 values (fixed 3 chars; bearing with a
+drawn degree ring; wind = knots, no unit string); values redrawn only on change, arrows
 repaint only when an angle changed (prev -1/-2 sentinels), one-off fillRect
 wipe only on speed-width change; POS line removed),
 `screen_race.*` shared RACE/PRAC screen (map viewport = left 4/5; wireframe +
