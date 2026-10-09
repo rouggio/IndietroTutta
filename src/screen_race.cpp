@@ -1062,8 +1062,12 @@ void drawScreenRace(TinyGPSPlus &gps, bool requiresInit)
         showTransient("WRONG!  ");
     }
     if (courseChanged && (menuOpen || tplOpen) && !gGrabbing) {
+        // A full-screen menu / template list sat over the page; force a clean
+        // repaint so its pixels (header title, pane grid/labels) don't ghost.
         menuOpen = false;
         tplOpen = false;
+        redrawCurrentPage();
+        return;
     }
     if (menuOpen) {
         // Full-screen menu: engine already ran above; paint and stop.
