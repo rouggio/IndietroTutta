@@ -1054,6 +1054,10 @@ void drawScreenRace(TinyGPSPlus &gps, bool requiresInit)
     if (courseChanged) {
         lastRaceCourseKey = key;
         if (!gGrabbing) raceRunReset();
+        // A course change can follow an overlay or the empty state that wiped
+        // the pane without resetting its caches — force the text/pane repaint
+        // (resetRaceText clears the value caches and paneClean).
+        resetRaceText();
     }
     raceRunUpdate(gps);
     raceSignalsApply(gps);
