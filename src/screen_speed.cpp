@@ -7,7 +7,6 @@
 #include "backend.h"
 #include "buttons.h"
 #include "screens.h"
-#include "screen_timers.h"
 #include "gps_mock.h"
 
 #include "screen_speed.h"
@@ -281,30 +280,21 @@ void drawSpeed(TinyGPSPlus &gps)
   if (config.speedUnit == 1) { value *= 1.852; maxValue *= 1.852; }         // km/h
   else if (config.speedUnit == 2) { value *= 1.15078; maxValue *= 1.15078; } // mph
 
-  // Instant speed centered in the west grid slot — recentered higher while
-  // the chrono south cell is visible
-  static bool lastRunning = false;
-  bool running = chronoIsRunning();
-  int labelY = running ? 62 : 78;
-  int bigY = running ? 112 : 128;
-  if (running != lastRunning) {
-    tft.fillRect(0, 34, GRID_X, 134, BG);
-    lastRunning = running;
-  }
+  // Instant speed centered in the west grid slot
   const int cx = GRID_X / 2;
   tft.setTextDatum(MC_DATUM);
 
   tft.setTextColor(GRAY, BG);
   String label = "SPEED (" + String(unitLabels[config.speedUnit]) + ")";
-  tft.drawString(label, cx, labelY, 2);
+  tft.drawString(label, cx, 78, 2);
 
   tft.setTextColor(TFT_YELLOW, BG);
   if (gps.speed.isValid()) {
     String spd = " " + String(value, 1) + " ";
-    tft.drawString(spd, cx, bigY, 8);
+    tft.drawString(spd, cx, 128, 8);
   } else {
     String spd = "  ---  ";
-    tft.drawString(spd, cx, bigY, 8);
+    tft.drawString(spd, cx, 128, 8);
   }
 
   // Right column: Max / Course / Session, one per equal grid cell.
@@ -361,21 +351,6 @@ void drawScreenSpeed(TinyGPSPlus &gps, bool requiresInit)
   // Normal display
   drawTopBar(gps);
   drawSpeed(gps);
-
-  // Chrono-running indicator: grid line at the bottom of the speed cell
-  // plus the live timer value in the new south cell (only while running)
-  static bool runningLineDrawn = false;
-  if (chronoIsRunning()) {
-    tft.drawFastHLine(0, 172, GRID_X, GRAY);
-    tft.setTextColor(WHITE, BG);
-    tft.setTextDatum(MC_DATUM);
-    String chronoStr = "   " + chronoDisplayText() + "   ";
-    tft.drawString(chronoStr, GRID_X / 2, 193, 4);
-    runningLineDrawn = true;
-  } else if (runningLineDrawn) {
-    tft.fillRect(0, 172, GRID_X, 210 - 172, BG);
-    runningLineDrawn = false;
-  }
 
   drawMainGrid();
 
