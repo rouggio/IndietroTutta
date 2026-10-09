@@ -37,19 +37,25 @@ Two FreeRTOS tasks in `backend.cpp` (12288 stack each, core 0): feed task
 
 Key modules: `screens.*` router + 200ms throttle, `screen_speed.*` main
 (body grid 2×3 under the top bar: instant speed cell = row1 cols1-2 —
-"SPEED (kn)" label + font-8 value, font 7 when 5 chars ("123.4"); row2 col1
-Max speed, col2 Session; col3 ring cell spans both rows — N-up ring
-top-aligned (diameter = cell width − 8px), 30° radial ticks inside (twice
+"Speed (kn)" label at y=40 + font-8 value centered y=105, font 7 when 5chars
+("123.4"), one-off fillRect wipe y59..148 on width change; `ROW_MID=152` gives
+the speed row 121px; row2 col1 "Max Speed", col2 "Session time" — labels
+font-2 gray at ROW_MID+7, values font-4 at ROW_MID+42, each center-wiped when
+narrower; col3 ring cell spans both rows — N-up ring
+top-aligned (diameter = cell width − 8px), RING_GRAY (0xC618) ring + 30° radial
+ticks inside (twice
 as long at 90/180/270, top skipped for the font-2 "N" which moves to the
 true-north angle in bearing-up view), two solid equilateral-shape minus-5px
 triangles stacked radially without overlap (green boat: tip tangent to the
 ring border, base pushed out along the bearing; red wind: same size, tip
 tangent to the boat base, tip downwind = windDir+180; each with a 4px-thick
 15px color-matched tail; session wind wins, else env wind), plus the no-go
-arc (9px radial band, DARK_RED, width via /nogo, centered on the upwind
+arc (9px radial band, pure TFT_RED, width via /nogo, centered on the upwind
 direction opposite the red tip, moves bearing-relative);
-below the ring WIND/BRG gray font-2 labels pushed to the cell sides + values redrawn only on change, arrows
-repaint only when an angle changed (prev -1/-2 sentinels), one-off fillRect
+below the ring "Wind (kn)" (x=221) and "BRG" (x=290) gray font-2 labels at
+y=166 + font-4 values at y=187 (wind centered at x-8, bearing right-anchored
+at x+20 with a drawn degree ring at x+26) — all four redraw only on change
+(prev -1/-2 sentinels), one-off fillRect
 wipe only on speed-width change; POS line removed),
 `screen_race.*` shared RACE/PRAC screen (map viewport = left 4/5; wireframe +
 boat triangle/edge-dot + ~1 cm dashed yellow stub toward the next mark; right pane =
@@ -96,7 +102,7 @@ so capture uses font 2 for the race pane labels),
   `resetRaceText()` runs on `courseChanged` so the pane (grid+labels) always repaints.
   `gGrabbing` (set during a `/screen` capture) skips side effects (race-run reset,
   menu auto-close).
-- `src/config.h`: `BASE_URL`, `OTA_BASE_URL` (both prod Render), `BUILD_VERSION` (local-dev 1.0.179).
+- `src/config.h`: `BASE_URL`, `OTA_BASE_URL` (both prod Render), `BUILD_VERSION` (local-dev 1.0.189).
 - Device reports fw: `Firmware-Version: BUILD_VERSION` header on `GET /health` +
   `POST /gps`, plus `"fw"` in gps JSON body.
 
