@@ -14,15 +14,14 @@ enum class UIState {
 enum ScreenPage {
     PageMain = 0,
     PageDiagnostics = 1,
-    PageWaypoints = 2,
-    PageRace = 3,
-    PageConfig = 4
+    PageRace = 2,
+    PageConfig = 3
 };
 
 // Number of pages in the L-short cycle. DIAGNOSTICS and CONFIG are
 // intentionally excluded — reachable only via speed-screen gestures
 // (RR = diagnostics, LL = config).
-static constexpr int PAGE_CYCLE = 3;
+static constexpr int PAGE_CYCLE = 2;
 
 // Currently displayed page (read by the /screen capture path).
 extern ScreenPage page;

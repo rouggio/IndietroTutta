@@ -50,17 +50,10 @@ struct BackendWork {
     double course;
     double altitude;
     int sats;
-    bool flagged;
-    char uid[41]; // waypoint id for flagged posts, "" otherwise
     bool simulated; // true when the fix came from mock GPS (indoor testing)
 };
 
-struct BackendDelete {
-    char uid[41];
-};
-
 static QueueHandle_t workQueue = nullptr;
-static QueueHandle_t deleteQueue = nullptr;
 static volatile bool online = false;
 static volatile bool healthNow = false;
 static volatile bool tplWant = false;
@@ -166,12 +159,9 @@ static int sendPosition(const BackendWork &w)
     body += ",\"course\":" + String(w.course, 1);
     body += ",\"altitude\":" + String(w.altitude, 1);
     body += ",\"sats\":" + String(w.sats);
-    body += ",\"flagged\":" + String(w.flagged ? "true" : "false");
+    body += ",\"flagged\":false";
     body += ",\"simulated\":" + String(w.simulated ? "true" : "false");
     body += ",\"fw\":\"" BUILD_VERSION "\"";
-    if (w.flagged && w.uid[0] != '\0') {
-        body += ",\"uid\":\"" + String(w.uid) + "\"";
-    }
 
     if (config.username[0] != '\0') {
         body += ",\"username\":\"" + String(config.username) + "\"";
@@ -185,34 +175,6 @@ static int sendPosition(const BackendWork &w)
 
     online = (code == HTTP_CODE_OK);
     return code;
-}
-
-// true when done (sent, rejected, or already gone); false to retry later
-static bool sendDeleteWaypoint(const BackendDelete &d){
-    if (WiFi.status() != WL_CONNECTED) {
-        return false;
-    }
-
-    ServerLink link;
-
-    if (!link.begin(serverBaseUrl() + "/gps/flagged")) {
-        return false;
-    }
-
-    link.http.addHeader("Content-Type", "application/json");
-    link.http.addHeader("DeviceId", String(WiFi.macAddress()));
-
-    String body = "{\"uid\":\"" + String(d.uid) + "\"}";
-
-    int code = link.http.sendRequest("DELETE", body);
-
-    link.http.end();
-
-    if (code <= 0 || code >= 500) {
-        return false;
-    }
-
-    return true;
 }
 
 // Step 5: upload the finished run (splits + event log). Ack on accept
@@ -299,15 +261,6 @@ static void backendTask(void *param){
             }
         }
 
-        BackendDelete del;
-        if (!mock && xQueueReceive(deleteQueue, &del, 0) == pdTRUE) {
-            if (sendDeleteWaypoint(del)) {
-                bufferedSerialPrintln("[BACKEND] Waypoint delete sent");
-            } else {
-                xQueueSendToFront(deleteQueue, &del, 0);
-            }
-        }
-
         // Slow-pass telemetry: a stalled pass starves the GPS feed, so the
         // diagnostics Age spikes. Log the split to find the hog.
         // (Heartbeat runs on its own task now — health no longer appears here.)
@@ -349,16 +302,12 @@ static void healthTask(void *param)
 void backendInit(TinyGPSPlus* gps)
 {
     mainGps = gps;
-    if (workQueue && deleteQueue) {
+    if (workQueue) {
         return;
     }
 
     if (!workQueue) {
         workQueue = xQueueCreate(16, sizeof(BackendWork));
-    }
-
-    if (!deleteQueue) {
-        deleteQueue = xQueueCreate(8, sizeof(BackendDelete));
     }
 
     xTaskCreatePinnedToCore(
@@ -382,75 +331,12 @@ void backendInit(TinyGPSPlus* gps)
     );
 }
 
-bool backendSendFlaggedPosition(TinyGPSPlus &gps, const char* uid)
-{
-    // Mock mode: never upload scripted fixes as real waypoints.
-    if (gpsMockActive()) {
-        bufferedSerialPrintln("[BACKEND] Flag suppressed (mock GPS)");
-        return false;
-    }
-    if (!gps.location.isValid()) {
-        bufferedSerialPrintln("[GPS] Cannot flag position: no valid GPS fix");
-        return false;
-    }
-
-    BackendWork w = {
-        gps.location.lat(),
-        gps.location.lng(),
-        gps.speed.knots(),
-        gps.course.deg(),
-        gps.altitude.meters(),
-        gps.satellites.value(),
-        true,
-        {0}
-    };
-
-    if (uid) {
-        strncpy(w.uid, uid, sizeof(w.uid) - 1);
-    }
-
-    const bool queued = enqueueWork(w);
-
-    bufferedSerialPrintln(
-        queued ? "[BACKEND] Flagged position queued" :
-                 "[BACKEND] Cannot flag position: queue unavailable"
-    );
-
-    return queued;
-}
-
-bool backendEnqueueDeleteWaypoint(const char* uid)
-{
-    if (!deleteQueue || !uid || uid[0] == '\0') {
-        return false;
-    }
-
-    BackendDelete d = {{0}};
-    strncpy(d.uid, uid, sizeof(d.uid) - 1);
-
-    if (uxQueueSpacesAvailable(deleteQueue) == 0) {
-        BackendDelete dropped;
-        xQueueReceive(deleteQueue, &dropped, 0);
-        bufferedSerialPrintln("[BACKEND] Delete queue full, dropped oldest");
-    }
-
-    const bool queued = xQueueSend(deleteQueue, &d, 0) == pdTRUE;
-
-    bufferedSerialPrintln(
-        queued ? "[BACKEND] Waypoint delete queued" :
-                 "[BACKEND] Cannot queue waypoint delete"
-    );
-
-    return queued;
-}
-
 void backendLoop(TinyGPSPlus &gps)
 {
     static unsigned long gpsTransmissionLastCheck = 0;
 
     // Mock mode no longer suppresses uploads: fixes are tagged simulated
-    // at enqueue time and the map shows them as such. Flagged waypoints
-    // and deletes stay real-only (see backendSendFlaggedPosition + task).
+    // at enqueue time and the map shows them as such.
     const bool mock = gpsMockActive();
 
     double speedKnots = gps.speed.isValid() ? gps.speed.knots() : 0;
@@ -473,8 +359,7 @@ void backendLoop(TinyGPSPlus &gps)
         gps.speed.knots(),
         gps.course.deg(),
         gps.altitude.meters(),
-        gps.satellites.value(),
-        false
+        gps.satellites.value()
     };
     w.simulated = mock;
 

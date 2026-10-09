@@ -15,6 +15,3 @@ void backendFetchTemplates();
 void backendInit(TinyGPSPlus* gps);
 
 void backendLoop(TinyGPSPlus &gps);
-
-bool backendSendFlaggedPosition(TinyGPSPlus &gps, const char* uid);
-bool backendEnqueueDeleteWaypoint(const char* uid);
