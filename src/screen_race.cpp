@@ -496,7 +496,7 @@ static void drawRaceMap(TinyGPSPlus& gps, bool full)
             tft.setTextDatum(MC_DATUM);
             tft.setTextColor(RFG, RBG);
             tft.drawString("No session available", cx, cy - 30, 2);
-            drawLabel1C(cx, cy + 2, "start a new practice session from the menu", RDIM);
+            drawLabel1C(cx, cy + 2, "Start a practice session from menu", RDIM);
             drawLabel1C(cx, cy + 18, "or await committee instructions", RDIM);
         }
         dynOk = false;
@@ -838,7 +838,8 @@ static void drawRaceText(TinyGPSPlus& gps)
     // too); values change-detect. Drawn even with no session (grid + '---')
     // so the cell layout stays consistent.
     if (!paneClean) {
-        tft.fillRect(PANE_X, PANE_TOP, PANE_W, PANE_H, RBG);
+        // PANE_W-1 keeps the frame's 1px right border (x=319) intact.
+        tft.fillRect(PANE_X, PANE_TOP, PANE_W - 1, PANE_H, RBG);
         for (int r = 1; r < 6; r++) {
             const int ly = paneRowY(r);
             tft.drawLine(PANE_X + 2, ly, PANE_X + PANE_W - 3, ly, RDIM);
@@ -848,7 +849,7 @@ static void drawRaceText(TinyGPSPlus& gps)
         paneClean = true;
     }
     char cell[14];
-    const int vx = PANE_X + PANE_W - 5;
+    const int vx = PANE_X + PANE_W - 8;
     // Row 0: speed.
     if (gps.speed.isValid()) snprintf(cell, sizeof(cell), "%4.1f", gps.speed.knots());
     else snprintf(cell, sizeof(cell), " --- ");
@@ -881,7 +882,7 @@ static void drawRaceText(TinyGPSPlus& gps)
     // (band clear once, then both sides).
     char hintL[16], hintR[16];
     snprintf(hintL, sizeof(hintL), "%s", (tplOpen || menuOpen) ? "L Back" : "L Next  LL Menu");
-    snprintf(hintR, sizeof(hintR), "%s", (tplOpen || menuOpen) ? "R Sel RR Pick" : "RR View");
+    snprintf(hintR, sizeof(hintR), "%s", (tplOpen || menuOpen) ? "R Sel RR Pick" : "RR Switch View");
     if (strcmp(hintL, lastHintL) != 0 || strcmp(hintR, lastHintR) != 0) {
         tft.fillRect(0, 219, 320, 21, RBG);
         strncpy(lastHintL, hintL, sizeof(lastHintL) - 1);
