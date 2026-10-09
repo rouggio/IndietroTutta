@@ -30,13 +30,16 @@ BACKEND := $(firstword $(wildcard ../backend ../IndietroTuttaBackend))
 OTA_DIR := $(BACKEND)/public/ota
 OTA_LATEST_URL ?= https://indietrotutta.onrender.com/ota/latest.txt
 FIRMWARE := .pio/build/esp32dev/firmware.bin
+# `dl` target: device LAN IP is DHCP-assigned, override when it moves:
+#   make dl DEVICE_IP=192.168.0.123
+DEVICE_IP ?= 192.168.0.106
 
 ifneq ($(strip $(PORT)),)
 	UPLOAD_ARGS := --upload-port $(PORT)
 	MONITOR_ARGS := --port $(PORT)
 endif
 
-.PHONY: venv install compile build bump-version dist ota-local upload monitor clean watch git-push deploy all
+.PHONY: venv install compile build bump-version dist ota-local dl upload monitor clean watch git-push deploy all
 
 venv:
 	$(BASE_PYTHON) -m venv $(VENV)
@@ -83,7 +86,35 @@ ota-local: bump-version compile
 	cp "$(FIRMWARE)" "$(OTA_DIR)/firmware.bin"; \
 	echo "$$VERSION" > "$(OTA_DIR)/latest.txt"; \
 	echo "Local OTA staged: $$VERSION (NOT committed, cloud untouched)"; \
-	echo "Device: switch to DEV, then POST /ota to pull it."
+	echo "Device: switch to DEV, then POST /ota to pull it (or just 'make dl')."
+
+# Local deploy (`dl`): everything ota-local does, then the device pulls the
+# fresh build right away (POST /ota — OTA-on-boot is normally off) and we
+# wait until /status reports the new version. Cloud untouched.
+dl: ota-local
+	@set -e; \
+	VERSION=$$(cat "$(OTA_DIR)/latest.txt"); \
+	status=$$(curl -fsS -m 5 "http://$(DEVICE_IP)/status" 2>/dev/null || true); \
+	if [ -z "$$status" ]; then \
+		echo "ERROR: device $(DEVICE_IP) not reachable (GET /status) - confirm the DHCP IP"; \
+		exit 1; \
+	fi; \
+	echo "Device: $$status"; \
+	curl -s -m 120 -X POST "http://$(DEVICE_IP)/ota" >/dev/null || true; \
+	echo "OTA pull started (download blocks the device), waiting for reboot..."; \
+	for i in $$(seq 1 30); do \
+		sleep 5; \
+		ver=$$(curl -fsS -m 4 "http://$(DEVICE_IP)/status" 2>/dev/null | sed -n 's/.*"version":"\([^"]*\)".*/\1/p'); \
+		if [ -n "$$ver" ]; then \
+			echo "Device reports $$ver"; \
+			if [ "$$ver" = "$$VERSION" ]; then \
+				echo "Local deploy complete: $$VERSION is on the device."; \
+				exit 0; \
+			fi; \
+		fi; \
+	done; \
+	echo "WARNING: device never confirmed $$VERSION - check 'make monitor'."; \
+	exit 1
 
 upload:
 	$(PY) -m platformio run -t upload $(UPLOAD_ARGS)

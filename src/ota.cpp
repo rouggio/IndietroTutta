@@ -293,7 +293,10 @@ void doUpdate() {
     
   });
 
-  httpUpdate.rebootOnUpdate(true);
+  // We handle the reboot ourselves: right before restart the panel gets a
+  // clean fill so the next boot shows the splash neatly (the progress
+  // overlay leaves stale pixels otherwise).
+  httpUpdate.rebootOnUpdate(false);
 
   t_httpUpdate_return ret =
     serverUseTLS() ? httpUpdate.update(link.tls, url)
@@ -325,11 +328,15 @@ void doUpdate() {
 
     case HTTP_UPDATE_OK:
 
-      // Board normally reboots automatically
       appendOTAScreen(
         "Update complete"
       );
 
+      // Clean slate for the reboot: erase the log + progress overlay so the
+      // boot splash appears on a solid panel instead of half-erased glyphs.
+      tft.fillScreen(TFT_BLACK);
+      delay(300);
+      ESP.restart();
       break;
   }
 }

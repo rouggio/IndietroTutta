@@ -1,7 +1,8 @@
 # AGENTS.md — IndietroTutta device firmware (ESP32)
 
 Portable marine GPS instrument: ST7789 240×320, 2 buttons, GPS UART2, WiFi AP+STA,
-OTA self-update. Main screen is always big `speed` + right column (Max/Course/Session grid).
+OTA self-update. Main screen is always big `speed` + right column
+(Max speed / compass / Session grid).
 
 ## Hardware / toolchain
 
@@ -11,7 +12,8 @@ OTA self-update. Main screen is always big `speed` + right column (Max/Course/Se
 - Buttons GPIO21=Left GPIO22=Right, active-low, 50ms debounce, 500ms long-press.
 - GPS UART2 RX16 TX17 @9600, parsed by TinyGPSPlus in `gps.cpp`.
 - Build: `make compile` (must be SUCCESS before commit), `make upload PORT=COM5`,
-  `make monitor`, `make dist` (bump + OTA publish). Toolchain: `.venv` PlatformIO.
+  `make monitor`, `make dist` (bump + OTA publish), `make dl` (local deploy:
+  ota-local + device pulls immediately, `DEVICE_IP ?= 192.168.0.106`). Toolchain: `.venv` PlatformIO.
 
 ## Architecture — superloop + backend task
 
@@ -33,8 +35,11 @@ Two FreeRTOS tasks in `backend.cpp` (12288 stack each, core 0): feed task
 - `serial_buffer.cpp`: 200-line mutex-guarded log for `/serial`.
 
 Key modules: `screens.*` router + 200ms throttle, `screen_speed.*` main
-(big speed nudged right of center; right column MAX/CRS/SES — gray font-2 labels,
-white font-4 values, redrawn only on change, width-capped; POS line removed),
+(big speed nudged right of center; right column = compressed Max speed +
+Session cells around a compass cell — N-up ring + COG arrow (white) + wind
+arrow (cyan, tip downwind, from raceSession windDir/windSpeed) + wind speed
+in knots; gray font-2 labels, white font-4 values, values redrawn only on
+change, arrows erase+redraw over BG each frame, width-capped; POS line removed),
 `screen_race.*` shared RACE/PRAC screen (map viewport = left 4/5; wireframe +
 boat triangle/edge-dot + ~1 cm dashed yellow stub toward the next mark; right pane =
 6 equal rows from the very top, labels via `drawLabel1`, values font-2 right-aligned,
@@ -87,6 +92,6 @@ so capture uses font 2 for the race pane labels),
 - `server_link.*`: dev/prod switch (NVS `srv` mode/host, portal `/server`); dev+host = plain HTTP to LAN backend, else TLS prod. All fetchers (`health/gps/sim/templates/OTA`) go through `ServerLink`.
 - Portal always up: open AP `IndietroTutta`, DNS → `192.168.4.1` → `/config`.
   Routes: `/config /save /wifi/remove /reset (wipe all!) /reboot /status /health /serial /mock?on=1|0 /ota (POST immediate check vs current server) /server?mode=prod|dev&host=<ip:port> (GET=current) /btn?b=L|R&e=R|RR (remote button) /screen (RGB565 BE 320x240 grab: re-renders the current page into an off-screen 8bpp sprite and streams it, since the ST7789 can't be read back; `scripts/grab_screen.py` → PNG)`. All unauthenticated.
-- OTA: `GET ota/latest.txt` → semver compare → `HTTPUpdate firmware.bin` + progress bar + `redrawCurrentPage()`. Boot check if `otaCheckOnStart`, 60s WiFi timeout. `make ota-local` stages a dev build into LAN `public/ota/` with no commit/push/hook (cloud untouched; `config.h` + `public/ota/*` stay dirty by design).
+- OTA: `GET ota/latest.txt` → semver compare → `HTTPUpdate firmware.bin` + progress bar + `redrawCurrentPage()`. `rebootOnUpdate(false)`: on success the panel gets a clean `fillScreen` before `ESP.restart()` so the boot splash shows neatly (no stale progress-overlay pixels). Boot check if `otaCheckOnStart`, 60s WiFi timeout. `make ota-local` stages a dev build into LAN `public/ota/` with no commit/push/hook (cloud untouched; `config.h` + `public/ota/*` stay dirty by design); `make dl` = ota-local + immediate pull + verify.
 - Bruno in `bruno/` covers portal routes (`access-point` + `local-network` envs).
 - Quirks: empty portal name keeps stored username; username regex both sides; WiFi rotate-on-5s-fail never blocks UI; OTA download blocks loop; waypoints/laps RAM-only.

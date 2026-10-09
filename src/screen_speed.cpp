@@ -8,6 +8,7 @@
 #include "buttons.h"
 #include "screens.h"
 #include "gps_mock.h"
+#include "race_session.h"
 
 #include "screen_speed.h"
 
@@ -225,8 +226,11 @@ void drawTopBar(TinyGPSPlus &gps)
 // Right-column cache: values redrawn only on change (no flicker),
 // space-padded to overwrite narrower predecessors. Reset in initScreen().
 static String lastMaxStr = "";
-static String lastCrsStr = "";
 static String lastSesStr = "";
+// Compass cell: angles of the arrows last drawn (-1 = none). Reset on init
+// so a redraw never leaves a stale arrow un-erased.
+static int prevBrgDeg = -1;
+static int prevWndDeg = -1;
 
 static void drawRightValue(const String& padded, int y, uint8_t font, String& last)
 {
@@ -250,8 +254,10 @@ static const int GRID_X = 222;
 static const int GRID_TOP = 30;
 static const int GRID_BOTTOM = 210;
 // East column: 3 equal cells between top and bottom line
-static const int GRID_ROW1 = 90;
-static const int GRID_ROW2 = 150;
+// East column: compressed Max/Session cells (50px each) around a tall
+// compass cell (80px) that replaced the old Course label/value readout.
+static const int GRID_ROW1 = 80;
+static const int GRID_ROW2 = 160;
 
 static void drawMainGrid()
 {
@@ -259,6 +265,35 @@ static void drawMainGrid()
   tft.drawFastHLine(0, GRID_BOTTOM, tft.width(), GRAY);
   tft.drawFastHLine(GRID_X, GRID_ROW1, tft.width() - GRID_X, GRAY);
   tft.drawFastHLine(GRID_X, GRID_ROW2, tft.width() - GRID_X, GRAY);
+}
+
+// ---- Compass cell (middle) --------------------------------------------
+// N-up ring with a small north tick — static pixels, overdrawn every frame.
+static void drawCompassRing(int cx, int cy, int r)
+{
+  tft.drawCircle(cx, cy, r, GRAY);
+  tft.drawFastVLine(cx, cy - r + 1, 4, GRAY);
+}
+
+// Arrow from a short tail to the tip at `r` pixels on bearing `deg`
+// (0 = up, clockwise) with a barbed head. Also used to erase (color = BG).
+static void drawNupArrow(int cx, int cy, int r, int deg, uint16_t color)
+{
+  const double a = deg * M_PI / 180.0;
+  const double sx = sin(a), cz = cos(a);
+  const int tail = (int)(r * 0.35);
+  const int bx = cx - (int)(tail * sx), by = cy + (int)(tail * cz);
+  const int tx = cx + (int)(r * sx), ty = cy - (int)(r * cz);
+  tft.drawLine(bx, by, tx, ty, color);
+  // Head: two barbs off the tip, unit tail-ward vector rotated ±28°.
+  const double hd = r * 0.45;
+  const double ux = -sx, uy = cz;
+  for (double s = -28.0; s <= 28.0; s += 56.0) {
+    const double w = s * M_PI / 180.0;
+    const double rx = ux * cos(w) - uy * sin(w);
+    const double ry = ux * sin(w) + uy * cos(w);
+    tft.drawLine(tx, ty, tx + (int)(rx * hd), ty + (int)(ry * hd), color);
+  }
 }
 
 void drawSpeed(TinyGPSPlus &gps)
@@ -297,34 +332,44 @@ void drawSpeed(TinyGPSPlus &gps)
     tft.drawString(spd, cx, 128, 8);
   }
 
-  // Right column: Max / Course / Session, one per equal grid cell.
-  // Labels gray, values white. No fillRect/clear on the refresh path.
-  drawRightLabel("Max speed", 39);
+  // Right column: Max speed / compass / Session. Labels gray, values white.
+  // No fillRect/clear on the refresh path — stale pixels are overwritten.
+  drawRightLabel("Max speed", 34);
   String maxPadded;
   if (hasSessionMax) {
     maxPadded = "  " + String(maxValue, 1) + " ";
   } else {
     maxPadded = "  ---  ";
   }
-  drawRightValue(maxPadded, 61, 4, lastMaxStr);
+  drawRightValue(maxPadded, 52, 4, lastMaxStr);
 
-  drawRightLabel("Course", 99);
-  String crsVal;
-  if (gps.course.isValid()) {
-    // Fixed-width (3-digit field) so shrinking bearings fully overwrite.
-    // No trailing spaces: the string always ends at the anchor, where the
-    // degree ring is drawn (the font has no ° glyph — ring is drawn).
-    String deg = String((int)gps.course.deg());
-    while (deg.length() < 3) deg = " " + deg;
-    crsVal = "     " + deg;
-  } else {
-    crsVal = "   ---  ";
-  }
-  drawRightValue(crsVal, 121, 4, lastCrsStr);
-  // Degree ring at a fixed spot right of the digits (erased when invalid).
-  tft.drawCircle(tft.width() - 3, 127, 2, gps.course.isValid() ? TFT_WHITE : BG);
+  // Compass cell: N-up ring, COG arrow (white, tip at bearing) + wind arrow
+  // (cyan, tip downwind) + wind speed in knots under the ring. Arrows
+  // rotate, so each frame the previous ones are erased in BG first, then
+  // the ring is refreshed and the new arrows drawn (wind under bearing).
+  const int cmpCx = GRID_X + (tft.width() - GRID_X) / 2;
+  const int cmpCy = (GRID_ROW1 + GRID_ROW2) / 2;
+  const int cmpR = 26;
+  drawCompassRing(cmpCx, cmpCy, cmpR);
 
-  drawRightLabel("Session", 159);
+  const int brgDeg = gps.course.isValid() ? (int)(gps.course.deg() + 0.5) % 360 : -1;
+  const bool wndValid = raceSession.valid && raceSession.windSpeed > 0;
+  const int wndDeg = wndValid ? (raceSession.windDir + 180) % 360 : -1;
+
+  if (prevBrgDeg >= 0) drawNupArrow(cmpCx, cmpCy, cmpR, prevBrgDeg, BG);
+  if (prevWndDeg >= 0) drawNupArrow(cmpCx, cmpCy, cmpR - 5, prevWndDeg, BG);
+  drawCompassRing(cmpCx, cmpCy, cmpR); // restore ring/tick under the arrows
+  if (wndDeg >= 0) drawNupArrow(cmpCx, cmpCy, cmpR - 5, wndDeg, CYAN);
+  if (brgDeg >= 0) drawNupArrow(cmpCx, cmpCy, cmpR, brgDeg, WHITE);
+  prevBrgDeg = brgDeg;
+  prevWndDeg = wndDeg;
+
+  tft.setTextColor(WHITE, BG);
+  tft.setTextDatum(MC_DATUM);
+  String wndTxt = wndValid ? (" " + String(raceSession.windSpeed) + " kn ") : String("  ---  ");
+  tft.drawString(wndTxt, cmpCx, cmpCy + cmpR + 9, 2);
+
+  drawRightLabel("Session", 163);
   unsigned long totalSec = millis() / 1000UL;
   unsigned long sesMm = totalSec / 60UL;
   unsigned long sesSs = totalSec % 60UL;
@@ -340,8 +385,9 @@ void initScreen() {
   prevFix = TriState::Unknown;
   prevFixTile = -1;
   lastMaxStr = "";
-  lastCrsStr = "";
   lastSesStr = "";
+  prevBrgDeg = -1;
+  prevWndDeg = -1;
 }
 
 void drawScreenSpeed(TinyGPSPlus &gps, bool requiresInit)
