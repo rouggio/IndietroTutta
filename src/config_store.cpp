@@ -5,12 +5,51 @@
 
 Config config;
 
+// Upwind no-go arc width (total degrees). Stored OUTSIDE the `cfg` blob so
+// changing the struct never disturbs it; own NVS key in the same namespace.
+int noGoArcDeg = 60;
+
+static constexpr int NOGO_DEFAULT_DEG = 60;
+static constexpr int NOGO_MIN_DEG = 10;
+static constexpr int NOGO_MAX_DEG = 180;
+
+int getNoGoDeg()
+{
+    Preferences prefs;
+
+    if (!prefs.begin("wifi", true))
+        return NOGO_DEFAULT_DEG;
+
+    const int v = prefs.getInt("nogo", NOGO_DEFAULT_DEG);
+    prefs.end();
+    return v;
+}
+
+bool setNoGoDeg(int deg)
+{
+    if (deg < NOGO_MIN_DEG || deg > NOGO_MAX_DEG)
+        return false;
+
+    Preferences prefs;
+
+    if (!prefs.begin("wifi", false))
+        return false;
+
+    const bool ok = prefs.putInt("nogo", deg) > 0;
+    prefs.end();
+    if (ok)
+        noGoArcDeg = deg;
+    return ok;
+}
+
 // ---------------------------------------------------------
 // General configuration
 // ---------------------------------------------------------
 
 bool loadConfig(Config& config)
 {
+    noGoArcDeg = getNoGoDeg();
+
     Preferences prefs;
 
     if (!prefs.begin("wifi", false))

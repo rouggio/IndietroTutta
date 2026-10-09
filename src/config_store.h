@@ -21,6 +21,13 @@ struct Config
 
 extern Config config;
 
+// Upwind no-go arc width (total degrees) shown on the main-screen ring.
+// Own NVS key ("wifi"/"nogo", default 60) — NOT inside the `cfg` blob, so
+// old installs never lose their config when this field appears.
+int getNoGoDeg();
+bool setNoGoDeg(int deg);       // clamps to 10..180, persists, updates the live copy
+extern int noGoArcDeg;          // live copy used by the UI
+
 bool loadConfig(Config& config);
 bool saveConfig(const Config& config);
 

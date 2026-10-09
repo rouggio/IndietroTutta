@@ -238,6 +238,7 @@ static String lastBrgStr = "";
 static int prevBoatDeg = -2;
 static int prevWindDeg = -2;
 static int prevArcDeg = -1;  // no-go arc center last drawn (-1 = none)
+static int prevNoGoHalf = -1; // no-go half-width last drawn (-1 = none)
 static int prevRingUp = -1;
 static int prevNDeg = -1;
 // Ring view: true = bearing-up (boat triangle points to the top, ring
@@ -247,21 +248,11 @@ static bool ringBrgUp = false;
 static String lastSpdStr = "";
 static uint8_t lastSpdFont = 8;
 
-static void drawRightValue(const String& padded, int rightEdge, int y,
-                           uint8_t font, String& last)
-{
-  if (padded == last) return;
-  last = padded;
-  tft.setTextColor(WHITE, BG);
-  tft.setTextDatum(TR_DATUM);
-  tft.drawString(padded, rightEdge, y, font);
-}
-
-static void drawRightLabel(const char* label, int rightEdge, int y)
+static void drawCellLabel(const char* label, int cx, int y)
 {
   tft.setTextColor(GRAY, BG);
-  tft.setTextDatum(TR_DATUM);
-  tft.drawString(label, rightEdge, y, 2);
+  tft.setTextDatum(TC_DATUM);
+  tft.drawString(label, cx, y, 2);
 }
 
 // ====== LAYOUT ======
@@ -305,32 +296,35 @@ static void drawCompassRing(int cx, int cy, int r, int nDeg)
   drawCompassN(cx + (int)(nr * sin(a)), cy - (int)(nr * cos(a)), "N", GRAY);
 }
 
-// Upwind no-go arc: 60° wide (±30° around `centerDeg`, 0 = up), drawn as a
-// 3px radial band hugging the ring border (r-2..r). Also erases (BG).
-static void drawNoGoArc(int cx, int cy, int r, int centerDeg, uint16_t color)
+// Upwind no-go arc: ±`half` degrees around `centerDeg` (0 = up), drawn as
+// a 9px radial band (r-8..r) that swallows the ring inside its sector —
+// the arc merges with / overlaps the ring border. Also erases (BG).
+static void drawNoGoArc(int cx, int cy, int r, int centerDeg, int half, uint16_t color)
 {
-  for (int d = centerDeg - 30; d <= centerDeg + 30; d++) {
+  for (int d = centerDeg - half; d <= centerDeg + half; d++) {
     const double a = d * M_PI / 180.0;
     const double sx = sin(a), cz = cos(a);
-    tft.drawLine(cx + (int)((r - 2) * sx), cy - (int)((r - 2) * cz),
+    tft.drawLine(cx + (int)((r - 8) * sx), cy - (int)((r - 8) * cz),
                  cx + (int)(r * sx), cy - (int)(r * cz), color);
   }
 }
 
-// Solid EQUILATERAL triangle pointing at `deg` (0 = up, clockwise): tip at
-// `tipR` from the center, base centered at `baseR` along the same bearing,
-// half-width (tipR-baseR)/√3, no stick. Also used to erase (color = BG).
+// Solid triangle pointing at `deg` (0 = up, clockwise): tip `h` px beyond
+// the base along the bearing, base centered at `baseR` (equilateral width
+// minus 5px), plus a 10px color-matched tail behind the base. Erases too.
 static void drawNupTriangle(int cx, int cy, int tipR, int baseR, int deg, uint16_t color)
 {
   const double a = deg * M_PI / 180.0;
   const double sx = sin(a), cz = cos(a);
   const int h = tipR - baseR;              // altitude
-  const int w = (int)(h / sqrt(3.0));      // equilateral half-base
+  const double w = h / sqrt(3.0) - 2.5;    // equilateral half-base, -5px total
   const int bx = cx + (int)(baseR * sx), by = cy - (int)(baseR * cz);
   const int tx = cx + (int)(tipR * sx), ty = cy - (int)(tipR * cz);
   const int p1x = bx + (int)(w * cz), p1y = by + (int)(w * sx);
   const int p2x = bx - (int)(w * cz), p2y = by - (int)(w * sx);
   tft.fillTriangle(tx, ty, p1x, p1y, p2x, p2y, color);
+  tft.drawLine(cx + (int)((baseR - 10) * sx), cy - (int)((baseR - 10) * cz),
+               bx, by, color);
 }
 
 void drawSpeed(TinyGPSPlus &gps)
@@ -377,24 +371,40 @@ void drawSpeed(TinyGPSPlus &gps)
     lastSpdFont = spdFont;
   }
 
-  // Max speed (row 2, col 1) + session time (row 2, col 2). Labels gray,
-  // values white, redrawn only on change (no flicker).
+  // Max speed (row 2, col 1) + session time (row 2, col 2): label and
+  // value centered in their cells. Values redraw only on change; a
+  // narrower value wipes its cell zone first (no ghosts at the edges).
   String maxPadded;
   if (hasSessionMax) {
-    maxPadded = "  " + String(maxValue, 1) + " ";
+    maxPadded = " " + String(maxValue, 1) + " ";
   } else {
-    maxPadded = "  ---  ";
+    maxPadded = " --- ";
   }
-  drawRightLabel("Max speed", MAX_W - 8, ROW_MID + 12);
-  drawRightValue(maxPadded, MAX_W - 7, ROW_MID + 32, 4, lastMaxStr);
+  drawCellLabel("Max speed", MAX_W / 2, ROW_MID + 12);
+  if (maxPadded != lastMaxStr) {
+    if (maxPadded.length() < lastMaxStr.length())
+      tft.fillRect(3, ROW_MID + 31, MAX_W - 6, 28, BG);
+    tft.setTextColor(WHITE, BG);
+    tft.setTextDatum(MC_DATUM);
+    tft.drawString(maxPadded, MAX_W / 2, ROW_MID + 45, 4);
+    lastMaxStr = maxPadded;
+  }
 
-  drawRightLabel("Session", SPEED_W - 8, ROW_MID + 12);
+  drawCellLabel("Session", MAX_W + (SPEED_W - MAX_W) / 2, ROW_MID + 12);
   unsigned long totalSec = millis() / 1000UL;
   unsigned long sesMm = totalSec / 60UL;
   unsigned long sesSs = totalSec % 60UL;
   char sesBuf[16];
   snprintf(sesBuf, sizeof(sesBuf), "%02lu'%02lu\"", sesMm, sesSs);
-  drawRightValue("  " + String(sesBuf) + " ", SPEED_W - 1, ROW_MID + 32, 4, lastSesStr);
+  String sesPadded = " " + String(sesBuf) + " ";
+  if (sesPadded != lastSesStr) {
+    if (sesPadded.length() < lastSesStr.length())
+      tft.fillRect(MAX_W + 3, ROW_MID + 31, SPEED_W - MAX_W - 6, 28, BG);
+    tft.setTextColor(WHITE, BG);
+    tft.setTextDatum(MC_DATUM);
+    tft.drawString(sesPadded, MAX_W + (SPEED_W - MAX_W) / 2, ROW_MID + 45, 4);
+    lastSesStr = sesPadded;
+  }
 
   // Ring cell (col 3, rows 1-2): N-up ring, top-aligned. Boat = green
   // equilateral triangle, tip tangent to the ring border (bearing, base
@@ -424,7 +434,9 @@ void drawSpeed(TinyGPSPlus &gps)
   const int wndAbs = wndValid ? ((sesWind ? raceSession.windDir : raceSession.envWindDir) + 180) % 360 : -1;
   const bool brgUp = ringBrgUp && brgDeg >= 0;  // no bearing → stay N-up
   // Upwind direction (where the wind comes FROM) — no-go arc center,
-  // exactly opposite the downwind tip of the red wind triangle.
+  // exactly opposite the downwind tip of the red wind triangle. The arc
+  // width (total degrees) is the /nogo setting.
+  const int noGoHalf = noGoArcDeg / 2;
   const int upwRaw = sesWind ? raceSession.windDir
                    : (raceSession.envWindSpeed > 0 ? raceSession.envWindDir : -1);
   int arcDeg = -1;
@@ -436,21 +448,23 @@ void drawSpeed(TinyGPSPlus &gps)
   const int nDeg = brgUp ? (360 - brgDeg) % 360 : 0;
 
   if (boatDeg != prevBoatDeg || windRel != prevWindDeg ||
-      arcDeg != prevArcDeg || (int)brgUp != prevRingUp) {
+      arcDeg != prevArcDeg || noGoHalf != prevNoGoHalf ||
+      (int)brgUp != prevRingUp) {
     if (prevBoatDeg >= 0) drawNupTriangle(cmpCx, cmpCy, boatTip, boatBase, prevBoatDeg, BG);
     if (prevWindDeg >= 0) drawNupTriangle(cmpCx, cmpCy, windTip, windBase, prevWindDeg, BG);
-    if (prevArcDeg >= 0) drawNoGoArc(cmpCx, cmpCy, cmpR, prevArcDeg, BG);
+    if (prevArcDeg >= 0) drawNoGoArc(cmpCx, cmpCy, cmpR, prevArcDeg, prevNoGoHalf, BG);
     if (prevNDeg >= 0 && prevNDeg != nDeg) {   // stale N from an old angle
       const double pa = prevNDeg * M_PI / 180.0;
       drawCompassN(cmpCx + (int)((cmpR - 12) * sin(pa)), cmpCy - (int)((cmpR - 12) * cos(pa)), " N ", BG);
     }
     drawCompassRing(cmpCx, cmpCy, cmpR, nDeg); // restore ring + N under the shapes
-    if (arcDeg >= 0) drawNoGoArc(cmpCx, cmpCy, cmpR, arcDeg, DARK_RED);
+    if (arcDeg >= 0) drawNoGoArc(cmpCx, cmpCy, cmpR, arcDeg, noGoHalf, DARK_RED);
     if (windRel >= 0) drawNupTriangle(cmpCx, cmpCy, windTip, windBase, windRel, RED);
     if (boatDeg >= 0) drawNupTriangle(cmpCx, cmpCy, boatTip, boatBase, boatDeg, GREEN);
     prevBoatDeg = boatDeg;
     prevWindDeg = windRel;
     prevArcDeg = arcDeg;
+    prevNoGoHalf = noGoHalf;
     prevRingUp = (int)brgUp;
     prevNDeg = nDeg;
   }
@@ -508,6 +522,7 @@ void initScreen() {
   prevBoatDeg = -2;
   prevWindDeg = -2;
   prevArcDeg = -1;
+  prevNoGoHalf = -1;
   prevRingUp = -1;
   prevNDeg = -1;
 }

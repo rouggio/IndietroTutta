@@ -475,6 +475,23 @@ static void handleMock()
                 String("{\"mock\":") + (on ? "true" : "false") + "}");
 }
 
+// No-go arc width (GET /nogo → current; POST /nogo?deg=<width>): total
+// degrees of the upwind no-go arc on the main-screen ring (10..180).
+// Persisted outside the config blob so the API never disturbs `/save`.
+static void handleNoGo()
+{
+    if (server.method() == HTTP_POST && server.hasArg("deg")) {
+        if (!setNoGoDeg(server.arg("deg").toInt())) {
+            server.send(400, "text/plain", "deg must be 10..180");
+            return;
+        }
+        redrawCurrentPage();
+        bufferedSerialPrintln(String("[HTTP] no-go arc -> ") + noGoArcDeg + " deg");
+    }
+    server.send(200, "application/json",
+                String("{\"nogo\":") + noGoArcDeg + "}");
+}
+
 // Server select (GET /server → current; POST /server?mode=prod|dev&host=<ip:port>).
 // Dev mode with a host talks plain HTTP to the LAN backend (local :3000 serves
 // public/ota/, so OTA follows the same switch). Prod (or dev with no host)
@@ -556,6 +573,7 @@ static void handleStatus()
     sys["username"] = config.username;
     sys["mock"] = gpsMockActive();
     sys["server"] = serverBaseUrl();
+    sys["nogo"] = noGoArcDeg;
 
     String json;
     serializeJson(doc, json);
@@ -715,6 +733,8 @@ void httpServerInit(TinyGPSPlus &gps)
     server.on("/reset", HTTP_POST, handleReset);
     server.on("/reboot", HTTP_POST, handleReboot);
     server.on("/mock", HTTP_POST, handleMock);
+    server.on("/nogo", HTTP_POST, handleNoGo);
+    server.on("/nogo", HTTP_GET, handleNoGo);
     server.on("/ota", HTTP_POST, handleOta);
     server.on("/server", HTTP_GET, handleServer);
     server.on("/server", HTTP_POST, handleServer);
