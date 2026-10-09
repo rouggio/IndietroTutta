@@ -34,6 +34,9 @@ static const int PANE_X = 256;
 static const int PANE_W = 64;
 static const int PANE_Y0 = 30;
 static const int PANE_ROWH = 29;
+static const int PANE_H = WIRE_Y1 - WIRE_TOP; // 178
+// Top edge of pane row r (6 equal rows filling the pane, no top gap).
+static inline int paneRowY(int r) { return PANE_Y0 + (r * PANE_H) / 6; }
 
 static void drawFrameChrome()
 {
@@ -83,6 +86,7 @@ static void buildProjection(RaceProj& p, double rotDeg)
     int n = 0;
     // Center on the course bbox first for a stable cosLat.
     double minLat = 1e9, maxLat = -1e9, minLon = 1e9, maxLon = -1e9;
+    double maxR = 0.0; // largest mark radius (m) — grows the fit box
     auto eatBox = [&](double lat, double lon) {
         if (lat < minLat) minLat = lat;
         if (lat > maxLat) maxLat = lat;
@@ -91,6 +95,7 @@ static void buildProjection(RaceProj& p, double rotDeg)
     };
     for (uint8_t i = 0; i < raceSession.markCount; i++) {
         eatBox(raceSession.marks[i].lat, raceSession.marks[i].lon);
+        if (raceSession.marks[i].r > maxR) maxR = raceSession.marks[i].r;
     }
     if (raceSession.startLine.valid) {
         eatBox(raceSession.startLine.latA, raceSession.startLine.lonA);
@@ -136,9 +141,14 @@ static void buildProjection(RaceProj& p, double rotDeg)
         if (raw[i][1] > rmaxy) rmaxy = raw[i][1];
     }
     double spanX = rmaxx - rminx, spanY = rmaxy - rminy;
+    // Grow the fit box by the largest mark radius so the circles (and their
+    // labels) stay fully inside and the course is centered, not clipped.
+    const double rGrowth = maxR / DEG_M;
+    spanX += 2 * rGrowth;
+    spanY += 2 * rGrowth;
     if (spanX < 0.0005) spanX = 0.0005;
     if (spanY < 0.0005) spanY = 0.0005;
-    const int pad = 10;
+    const int pad = 12;
     const int ww = MAP_W - 2 * pad;
     const int wh = (WIRE_Y1 - WIRE_TOP) - 2 * pad;
     const double sx = ww / spanX;
@@ -435,8 +445,10 @@ static void drawStaticLayer(const RaceProj& p, double rotEff)
         if (!firstOfPile) continue;
         num[0] = '\0';
         bool first = true;
+        int pile = 0;
         for (uint8_t j = i; j < raceSession.markCount; j++) {
             if (raceSession.marks[j].lat != m.lat || raceSession.marks[j].lon != m.lon) continue;
+            pile++;
             char tmp[5];
             snprintf(tmp, sizeof(tmp), "%s%d", first ? "" : "-", j + 1);
             strncat(num, tmp, sizeof(num) - strlen(num) - 1);
@@ -444,7 +456,9 @@ static void drawStaticLayer(const RaceProj& p, double rotEff)
         }
         tft.setTextDatum(MC_DATUM);
         tft.setTextColor(i == 0 ? RFG : RDIM, RBG);
-        tft.drawString(num, px, py, 2);
+        // Piled marks: lift the number above the circle so it doesn't overlap.
+        const int ly = pile > 1 ? (py - rPx - 10) : py;
+        tft.drawString(num, px, ly, 2);
     }
     // Header wind readout moved to the right pane (WND row) — the arrow
     // lives there as degrees now. Mock banner stays top-left.
@@ -457,12 +471,17 @@ static void drawRaceMap(TinyGPSPlus& gps, bool full)
 {
     if (!raceSession.valid) {
         if (full) {
-            tft.fillRect(MAP_X, WIRE_TOP, MAP_W, WIRE_Y1 - WIRE_TOP, RBG);
+            // Clear BOTH the map and the right pane: stale course/pane pixels
+            // must not survive the empty state.
+            tft.fillRect(0, WIRE_TOP, 320, WIRE_Y1 - WIRE_TOP, RBG);
             drawFrameChrome();
+            const int cx = MAP_X + MAP_W / 2;
+            const int cy = WIRE_TOP + (WIRE_Y1 - WIRE_TOP) / 2;
             tft.setTextDatum(MC_DATUM);
-            tft.setTextColor(RDIM, RBG);
-            tft.drawString("NO COURSE", MAP_X + MAP_W / 2, WIRE_TOP + (WIRE_Y1 - WIRE_TOP) / 2, 4);
-            tft.drawString("assign a session", MAP_X + MAP_W / 2, WIRE_TOP + (WIRE_Y1 - WIRE_TOP) / 2 + 28, 2);
+            tft.setTextColor(RFG, RBG);
+            tft.drawString("No session available", cx, cy - 30, 2);
+            drawLabel1C(cx, cy + 2, "start a new practice session from the menu", RDIM);
+            drawLabel1C(cx, cy + 18, "or await committee instructions", RDIM);
         }
         dynOk = false;
         return;
@@ -523,11 +542,11 @@ static void drawRaceMap(TinyGPSPlus& gps, bool full)
     }
 
     // Boat: triangle on the chart, or a projected dot on the frame edge.
-    // Dashed yellow line from the boat (or edge dot) to the destination.
+    // Dashed yellow stub from the boat (or edge dot) toward the destination.
     // Dirty path: erase old dash + old boat, repaint identical static pixels,
     // draw the new dash + boat. Skipped entirely when nothing moved.
     int px = 0, py = 0;
-    int bx = -1, by = -1, dx = -1, dy = -1;
+    int bx = -1, by = -1, dx = -1, dy = -1, ex = -1, ey = -1;
     bool haveBoat = false, haveDash = false, isDot = false;
     double ang = 0.0;
     if (gps.location.isValid()) {
@@ -541,6 +560,16 @@ static void drawRaceMap(TinyGPSPlus& gps, bool full)
         if (nextDestination(gps, dLat, dLon, tag, sizeof(tag))) {
             projToPx(p, dLat, dLon, dx, dy);
             haveDash = true;
+            // Short fixed stub (~1 cm) toward the checkpoint, not the whole leg.
+            const double vx = dx - bx, vy = dy - by;
+            const double len = hypot(vx, vy);
+            const int stub = 40; // px
+            if (len > stub) {
+                ex = (int)(bx + vx / len * stub);
+                ey = (int)(by + vy / len * stub);
+            } else {
+                ex = dx; ey = dy;
+            }
         }
         ang = gps.course.isValid() ? (gps.course.deg() - rotEff) : 0.0;
     }
@@ -549,7 +578,7 @@ static void drawRaceMap(TinyGPSPlus& gps, bool full)
     } else if (haveBoat == oldHaveBoat && (!haveBoat ||
                (bx == oldBx && by == oldBy && ang == oldAng && isDot == oldWasDot &&
                 haveDash == oldHaveDash && (!haveDash ||
-                 (dx == oldDash[0] && dy == oldDash[1]))))) {
+                 (ex == oldDash[0] && ey == oldDash[1]))))) {
         return; // nothing moved
     } else {
         // Erase old dash + old boat, then restore identical static pixels.
@@ -569,7 +598,7 @@ static void drawRaceMap(TinyGPSPlus& gps, bool full)
         drawFrameChrome();
     }
     if (haveDash) {
-        drawDashed(bx, by, dx, dy, RBOAT);
+        drawDashed(bx, by, ex, ey, RBOAT);
     }
     if (haveBoat) {
         if (isDot) {
@@ -580,7 +609,7 @@ static void drawRaceMap(TinyGPSPlus& gps, bool full)
     }
     oldBx = bx; oldBy = by; oldAng = ang; oldWasDot = isDot;
     oldHaveBoat = haveBoat; oldHaveDash = haveDash;
-    oldDash[0] = dx; oldDash[1] = dy; oldDash[2] = 0; oldDash[3] = 0;
+    oldDash[0] = ex; oldDash[1] = ey; oldDash[2] = 0; oldDash[3] = 0;
     dynOk = true;
 }
 
@@ -744,6 +773,10 @@ static void drawRaceText(TinyGPSPlus& gps)
     }
     drawSmart(160, 2, 4, TC_DATUM, RFG, ban, pBan, sizeof(pBan), pBanW);
 
+    // View-type indicator (RR cycles north-up → bearing-up → best-fit).
+    static const char* vwTag[3] = { "N-UP", "BRG-UP", "FIT" };
+    drawLabel1(6, 9, vwTag[viewMode % 3], TFT_GREEN);
+
     // Destination geometry (map boat/dash + pane cells).
     char tag[8];
     double dLat = 0.0, dLon = 0.0;
@@ -785,58 +818,48 @@ static void drawRaceText(TinyGPSPlus& gps)
         snprintf(tim, sizeof(tim), "--:--");
     }
 
-    // Right values pane: background + grid once, cells change-detect.
-    // Rows fill the pane top-down with no head gap.
-    if (!paneClean) {
-        tft.fillRect(PANE_X, PANE_Y0, PANE_W, 178, RBG);
-        for (int r = 1; r < 6; r++) {
-            const int ly = PANE_Y0 + 1 + r * PANE_ROWH - 4;
-            tft.drawLine(PANE_X + 2, ly, PANE_X + PANE_W - 3, ly, RDIM);
+    // Right values pane: 6 equal rows filling the pane from the frame top
+    // (no dead first cell); small labels via the manual GLCD helper so they
+    // render on the capture sprite too; values change-detect. Drawn only when
+    // a session is assigned — the empty state must not repaint stale values.
+    if (raceSession.valid) {
+        if (!paneClean) {
+            tft.fillRect(PANE_X, PANE_Y0, PANE_W, PANE_H, RBG);
+            for (int r = 1; r < 6; r++) {
+                const int ly = paneRowY(r);
+                tft.drawLine(PANE_X + 2, ly, PANE_X + PANE_W - 3, ly, RDIM);
+            }
+            static const char* labs[6] = { "SPD KN", "BRG", "DST M", "NEXT", "TIME", "WND" };
+            for (int r = 0; r < 6; r++) drawLabel1(PANE_X + 3, paneRowY(r) + 3, labs[r], RDIM);
+            paneClean = true;
         }
-        paneClean = true;
+        char cell[14];
+        const int vx = PANE_X + PANE_W - 5;
+        // Row 0: speed.
+        if (gps.speed.isValid()) snprintf(cell, sizeof(cell), "%4.1f", gps.speed.knots());
+        else snprintf(cell, sizeof(cell), " --- ");
+        drawSmart(vx, paneRowY(0) + 12, 2, TR_DATUM, RFG, cell, pSpd, sizeof(pSpd), pSpdW);
+        // Row 1: bearing to destination.
+        if (showBrg) snprintf(cell, sizeof(cell), "%3d", (int)brg);
+        else snprintf(cell, sizeof(cell), "---");
+        drawSmart(vx, paneRowY(1) + 12, 2, TR_DATUM, RFG, cell, pBrg, sizeof(pBrg), pBrgW);
+        // Row 2: distance.
+        if (showBrg) snprintf(cell, sizeof(cell), "%4ld", distM);
+        else snprintf(cell, sizeof(cell), "----");
+        drawSmart(vx, paneRowY(2) + 12, 2, TR_DATUM, RFG, cell, pDst, sizeof(pDst), pDstW);
+        // Row 3: next destination.
+        if (raceSession.valid && haveDest) snprintf(cell, sizeof(cell), "%-4.4s", tag);
+        else snprintf(cell, sizeof(cell), "----");
+        drawSmart(vx, paneRowY(3) + 12, 2, TR_DATUM, RFG, cell, pNxt, sizeof(pNxt), pNxtW);
+        // Row 4: time.
+        drawSmart(vx, paneRowY(4) + 12, 2, TR_DATUM, RFG, tim, pTim, sizeof(pTim), pTimW);
+        // Row 5: wind direction (from the session).
+        if (raceSession.valid) snprintf(cell, sizeof(cell), "%3d", raceSession.windDir);
+        else snprintf(cell, sizeof(cell), "---");
+        drawSmart(vx, paneRowY(5) + 12, 2, TR_DATUM, RFG, cell, pWnd, sizeof(pWnd), pWndW);
+    } else {
+        paneClean = false; // next session redraws a clean pane
     }
-    char cell[14];
-    const int vy = PANE_Y0 + 1, vv = PANE_Y0 + 11;
-    // Row 0: speed.
-    drawSmart(PANE_X + 3, vy, gGrabbing ? 2 : 1, TL_DATUM, RDIM, "SPD KN",
-              pLabS, sizeof(pLabS), pLabSW);
-    if (gps.speed.isValid()) snprintf(cell, sizeof(cell), "%4.1f", gps.speed.knots());
-    else snprintf(cell, sizeof(cell), " --- ");
-    drawSmart(PANE_X + PANE_W - 6, vv, 2, TR_DATUM, RFG, cell,
-              pSpd, sizeof(pSpd), pSpdW);
-    // Row 1: bearing to destination.
-    drawSmart(PANE_X + 3, vy + PANE_ROWH, gGrabbing ? 2 : 1, TL_DATUM, RDIM, "BRG",
-              pLabB, sizeof(pLabB), pLabBW);
-    if (showBrg) snprintf(cell, sizeof(cell), "%3d", (int)brg);
-    else snprintf(cell, sizeof(cell), "---");
-    drawSmart(PANE_X + PANE_W - 6, vv + PANE_ROWH, 2, TR_DATUM, RFG, cell,
-              pBrg, sizeof(pBrg), pBrgW);
-    // Row 2: distance.
-    drawSmart(PANE_X + 3, vy + 2 * PANE_ROWH, gGrabbing ? 2 : 1, TL_DATUM, RDIM, "DST M",
-              pLabD, sizeof(pLabD), pLabDW);
-    if (showBrg) snprintf(cell, sizeof(cell), "%4ld", distM);
-    else snprintf(cell, sizeof(cell), "----");
-    drawSmart(PANE_X + PANE_W - 6, vv + 2 * PANE_ROWH, 2, TR_DATUM, RFG, cell,
-              pDst, sizeof(pDst), pDstW);
-    // Row 3: next destination.
-    drawSmart(PANE_X + 3, vy + 3 * PANE_ROWH, gGrabbing ? 2 : 1, TL_DATUM, RDIM, "NEXT",
-              pLabN, sizeof(pLabN), pLabNW);
-    if (raceSession.valid && haveDest) snprintf(cell, sizeof(cell), "%-4.4s", tag);
-    else snprintf(cell, sizeof(cell), "----");
-    drawSmart(PANE_X + PANE_W - 6, vv + 3 * PANE_ROWH, 2, TR_DATUM, RFG, cell,
-              pNxt, sizeof(pNxt), pNxtW);
-    // Row 4: time.
-    drawSmart(PANE_X + 3, vy + 4 * PANE_ROWH, gGrabbing ? 2 : 1, TL_DATUM, RDIM, "TIME",
-              pLabT, sizeof(pLabT), pLabTW);
-    drawSmart(PANE_X + PANE_W - 6, vv + 4 * PANE_ROWH, 2, TR_DATUM, RFG, tim,
-              pTim, sizeof(pTim), pTimW);
-    // Row 5: wind direction (from the session; header arrow retired here).
-    drawSmart(PANE_X + 3, vy + 5 * PANE_ROWH, gGrabbing ? 2 : 1, TL_DATUM, RDIM, "WND",
-              pLabW, sizeof(pLabW), pLabWW);
-    if (raceSession.valid) snprintf(cell, sizeof(cell), "%3d", raceSession.windDir);
-    else snprintf(cell, sizeof(cell), "---");
-    drawSmart(PANE_X + PANE_W - 6, vv + 5 * PANE_ROWH, 2, TR_DATUM, RFG, cell,
-              pWnd, sizeof(pWnd), pWndW);
 
     // Hint bar: texts change length across modes now, so repaint on change
     // (band clear once, then both sides).
@@ -866,12 +889,12 @@ static uint8_t menuCount(bool isPractice)
 static void menuText(bool isPractice, uint8_t i, char* buf, size_t n)
 {
     if (isPractice) {
-        if (i == 0) snprintf(buf, n, "Start PRAC");
-        else if (i == 1) snprintf(buf, n, "Repeat last");
-        else snprintf(buf, n, "Abandon");
+        if (i == 0) snprintf(buf, n, "Start practice session");
+        else if (i == 1) snprintf(buf, n, "Repeat last session");
+        else snprintf(buf, n, "Abandon session");
     } else {
         if (i == 0) snprintf(buf, n, "Resync now");
-        else snprintf(buf, n, "Abandon");
+        else snprintf(buf, n, "Abandon session");
     }
 }
 
@@ -889,7 +912,7 @@ static void drawRaceMenu(bool full)
     } else {
         tft.fillRect(0, 60, tft.width(), 70, TFT_BLACK);
     }
-    char buf[16], row[20];
+    char buf[32], row[40];
     for (uint8_t i = 0; i < menuN; i++) {
         menuText(isPractice, i, buf, sizeof(buf));
         snprintf(row, sizeof(row), "%s %s", i == menuSel ? ">" : " ", buf);
@@ -1027,7 +1050,7 @@ void drawScreenRace(TinyGPSPlus &gps, bool requiresInit)
         redrawCurrentPage();
         return;
     }
-    if (courseChanged && (menuOpen || tplOpen)) {
+    if (courseChanged && (menuOpen || tplOpen) && !gGrabbing) {
         menuOpen = false;
         tplOpen = false;
     }

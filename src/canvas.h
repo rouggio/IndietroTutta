@@ -8,6 +8,7 @@
 // tft.readPixel() grab always returned 0/black). A sprite buffer is the only
 // surface TFT_eSPI can read.
 #include <TFT_eSPI.h>
+#include <string.h>
 
 extern TFT_eSPI* gCanvas;
 // True while a screenshot is being rendered into the off-screen sprite:
@@ -39,4 +40,29 @@ inline void canvasPushImage(int32_t x, int32_t y, int32_t w, int32_t h,
             if (c == transparent) continue;
             tft.drawPixel(x + i, y + j, c);
         }
+}
+
+// Minimal GLCD (font 1, 5x8) string renderer. TFT_eSPI's font-1 draw path
+// faults intermittently when the target is a TFT_eSprite, so small labels
+// are drawn here through the virtual drawPixel() (works on panel + sprite).
+// `font` (the GLCD bitmap) comes from TFT_eSPI.h.
+inline void drawLabel1(int32_t x, int32_t y, const char* s, uint16_t color) {
+    for (; s && *s; ++s) {
+        const uint8_t c = (uint8_t)*s;
+        if (c >= 32) {
+            for (int8_t i = 0; i < 5; i++) {
+                uint8_t line = pgm_read_byte(font + (c * 5) + i);
+                for (int8_t j = 0; j < 8; j++) {
+                    if (line & 0x1) tft.drawPixel(x + i, y + j, color);
+                    line >>= 1;
+                }
+            }
+        }
+        x += 6;
+    }
+}
+
+inline void drawLabel1C(int32_t cx, int32_t y, const char* s, uint16_t color) {
+    const int32_t w = 6 * (int32_t)strlen(s ? s : "");
+    drawLabel1(cx - w / 2, y, s, color);
 }
