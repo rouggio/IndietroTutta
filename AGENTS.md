@@ -20,7 +20,7 @@ spans both rows). Top bar (icons) + bottom hints untouched.
 
 `src/main.cpp loop()`: serial_buffer → buttons → gps → screens → wifi → backend → ota.
 Two FreeRTOS tasks in `backend.cpp` (12288 stack each, core 0): feed task
-(mock poll + telemetry upload + deletes + template fetch; slow passes
+(mock poll + telemetry upload + deletes + course fetch; slow passes
 >2s logged with leg split) and health task (heartbeat 30s idle / 5s live
 + run upload) so a slow `/health` never starves the GPS feed.
 
@@ -77,7 +77,7 @@ grab re-renders the current page into an off-screen 8bpp sprite since the
 ST7789 is write-only — `#define tft (*gCanvas)`; font 1 on a sprite faults,
 so capture uses font 2 for the race pane labels),
 `config_store.*` NVS ns `wifi` blob `cfg` + `wifi_%d_ssid/pass`.
-(Race engine now lives in `race_session.*` + `race_run.*` + `race_templates.*` + `screen_race.*`.)
+(Race engine now lives in `race_session.*` + `race_run.*` + `race_courses.*` + `screen_race.*`.)
 
 ## UI navigation (hints: L/LL left, R/RR right)
 
@@ -86,7 +86,7 @@ so capture uses font 2 for the race pane labels),
   DIAGNOSTICS + CONFIG excluded.
 - MAIN: `L` next, `LL`→CONFIG, `R` toggles the ring view N-up ↔ bearing-up
   (RAM; boat triangle to the top, wind bearing-relative, N at true north),
-  `RR`→DIAGNOSTICS. RACE: `L` next, `LL` menu (practice: Start→template browse / Repeat→re-anchor+gun / Abandon; race: Resync/Abandon; `R` cycles, `RR` picks, `L` backs out), browse: `R` next template, `RR` pick (+10s gun, line 20m upwind), `L` back. `RR` cycles N-UP → BRG → FIT. DIAGNOSTICS/CONFIG: `L` back to MAIN.
+  `RR`→DIAGNOSTICS. RACE: `L` next, `LL` menu (practice: Start→course browse / Repeat→re-anchor+gun / Abandon; race: Resync/Abandon; `R` cycles, `RR` picks, `L` backs out), browse: `R` next course, `RR` pick (+10s gun, line 20m upwind), `L` back. `RR` cycles N-UP → BRG → FIT. DIAGNOSTICS/CONFIG: `L` back to MAIN.
 - CONFIG: `R` select row, `RR` apply, `LL` force OTA now.
 - Every page switch full-black clear; ghost-clear readouts in speed.
 - NO fillRect/fillScreen/clear on the 200ms refresh path — it flickers. Overwrite
@@ -97,7 +97,7 @@ so capture uses font 2 for the race pane labels),
   missing grid/labels) — verify that class of bug on the PANEL, not the grab. Font 1
   (GLCD) drawn into a `TFT_eSprite` faults intermittently → small labels use
   `drawLabel1()`/`drawLabel1C()` in `canvas.h` (manual GLCD via `drawPixel`).
-- Race screen: full-screen overlays (menu, template browse) are removed via
+- Race screen: full-screen overlays (menu, course browse) are removed via
   `redrawCurrentPage()`; a course change that closes them forces it too, and
   `resetRaceText()` runs on `courseChanged` so the pane (grid+labels) always repaints.
   `gGrabbing` (set during a `/screen` capture) skips side effects (race-run reset,
@@ -112,7 +112,7 @@ so capture uses font 2 for the race pane labels),
   `session` push (course + startTime + offset, cached in NVS) and top-level `wind`
   (venue wind at the boat's last stored position, env fallback, RAM); `POST /gps`
   JSON lat/lon/speed/course/alt/sats/flagged/username. `setInsecure()` everywhere, no auth.
-- `server_link.*`: dev/prod switch (NVS `srv` mode/host, portal `/server`); dev+host = plain HTTP to LAN backend, else TLS prod. All fetchers (`health/gps/sim/templates/OTA`) go through `ServerLink`.
+- `server_link.*`: dev/prod switch (NVS `srv` mode/host, portal `/server`); dev+host = plain HTTP to LAN backend, else TLS prod. All fetchers (`health/gps/sim/courses/OTA`) go through `ServerLink`.
 - Portal always up: open AP `IndietroTutta`, DNS → `192.168.4.1` → `/config`.
   Routes: `/config /save /wifi/remove /reset (wipe all!) /reboot /status /health /serial /mock?on=1|0 /nogo (GET current; POST /nogo?deg=<total width 10..180> — no-go arc width, own NVS key, shown in /status) /ota (POST immediate check vs current server) /server?mode=prod|dev&host=<ip:port> (GET=current) /btn?b=L|R&e=R|RR (remote button) /screen (RGB565 BE 320x240 grab: re-renders the current page into an off-screen 8bpp sprite and streams it, since the ST7789 can't be read back; `scripts/grab_screen.py` → PNG)`. All unauthenticated.
 - OTA: `GET ota/latest.txt` → semver compare → `HTTPUpdate firmware.bin` + progress bar + `redrawCurrentPage()`. `rebootOnUpdate(false)`: on success the panel gets a clean `fillScreen` before `ESP.restart()` so the boot splash shows neatly (no stale progress-overlay pixels). Boot check if `otaCheckOnStart`, 60s WiFi timeout. `make ota-local` stages a dev build into LAN `public/ota/` with no commit/push/hook (cloud untouched; `config.h` + `public/ota/*` stay dirty by design); `make dl` = ota-local + immediate pull + verify.
