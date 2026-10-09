@@ -19,6 +19,7 @@
 #define WHITE TFT_WHITE
 #define GREEN TFT_GREEN
 #define CYAN TFT_CYAN
+#define RED TFT_RED
 #define DARK_RED 0x8000
 #define GRAY 0x7BEF
 
@@ -227,10 +228,12 @@ void drawTopBar(TinyGPSPlus &gps)
 // space-padded to overwrite narrower predecessors. Reset in initScreen().
 static String lastMaxStr = "";
 static String lastSesStr = "";
-// Compass cell: angles of the arrows last drawn (-1 = none). Reset on init
-// so a redraw never leaves a stale arrow un-erased.
-static int prevBrgDeg = -1;
-static int prevWndDeg = -1;
+static String lastWndStr = "";
+static String lastBrgStr = "";
+// Compass cell: angles of the triangles last drawn. -1 = nothing drawn,
+// -2 = cell not rendered yet (sentinel — forces ring+N+arrows on first pass).
+static int prevBrgDeg = -2;
+static int prevWndDeg = -2;
 
 static void drawRightValue(const String& padded, int y, uint8_t font, String& last)
 {
@@ -268,32 +271,27 @@ static void drawMainGrid()
 }
 
 // ---- Compass cell (middle) --------------------------------------------
-// N-up ring with a small north tick — static pixels, overdrawn every frame.
+// N-up ring with an "N" glyph just inside the top (GLCD renderer —
+// capture-safe). Drawn before the arrows so the solid triangles cover it
+// when they overlay; the erase pass may clip it, hence it lives in the
+// same repaint step as the ring redraw.
 static void drawCompassRing(int cx, int cy, int r)
 {
   tft.drawCircle(cx, cy, r, GRAY);
-  tft.drawFastVLine(cx, cy - r + 1, 4, GRAY);
+  drawLabel1C(cx, cy - r + 8, "N", GRAY);
 }
 
-// Arrow from a short tail to the tip at `r` pixels on bearing `deg`
-// (0 = up, clockwise) with a barbed head. Also used to erase (color = BG).
-static void drawNupArrow(int cx, int cy, int r, int deg, uint16_t color)
+// Solid triangle pointing at `deg` (0 = up, clockwise): tip at `r` from
+// the center, base on the center, no stick. Also used to erase (BG).
+static void drawNupTriangle(int cx, int cy, int r, int deg, uint16_t color)
 {
   const double a = deg * M_PI / 180.0;
   const double sx = sin(a), cz = cos(a);
-  const int tail = (int)(r * 0.35);
-  const int bx = cx - (int)(tail * sx), by = cy + (int)(tail * cz);
+  const int w = r * 0.32;
   const int tx = cx + (int)(r * sx), ty = cy - (int)(r * cz);
-  tft.drawLine(bx, by, tx, ty, color);
-  // Head: two barbs off the tip, unit tail-ward vector rotated ±28°.
-  const double hd = r * 0.45;
-  const double ux = -sx, uy = cz;
-  for (double s = -28.0; s <= 28.0; s += 56.0) {
-    const double w = s * M_PI / 180.0;
-    const double rx = ux * cos(w) - uy * sin(w);
-    const double ry = ux * sin(w) + uy * cos(w);
-    tft.drawLine(tx, ty, tx + (int)(rx * hd), ty + (int)(ry * hd), color);
-  }
+  const int p1x = cx + (int)(w * cz), p1y = cy + (int)(w * sx);
+  const int p2x = cx - (int)(w * cz), p2y = cy - (int)(w * sx);
+  tft.fillTriangle(tx, ty, p1x, p1y, p2x, p2y, color);
 }
 
 void drawSpeed(TinyGPSPlus &gps)
@@ -343,31 +341,45 @@ void drawSpeed(TinyGPSPlus &gps)
   }
   drawRightValue(maxPadded, 52, 4, lastMaxStr);
 
-  // Compass cell: N-up ring, COG arrow (white, tip at bearing) + wind arrow
-  // (cyan, tip downwind) + wind speed in knots under the ring. Arrows
-  // rotate, so each frame the previous ones are erased in BG first, then
-  // the ring is refreshed and the new arrows drawn (wind under bearing).
-  const int cmpCx = GRID_X + (tft.width() - GRID_X) / 2;
+  // Compass cell: ring left-aligned in the column, "N" inside its top,
+  // wind speed top-right, boat bearing bottom-right. Boat = solid GREEN
+  // triangle, tip tangent to the ring (N-up bearing); wind = solid RED
+  // triangle internal to it (tip downwind). Triangles repaint ONLY when an
+  // angle actually changed: old ones erased in BG, ring+N restored, then
+  // both redrawn (wind under the boat). Unchanged frames draw nothing —
+  // that is what keeps the ring/cell edges from shimmering.
+  const int cmpCx = GRID_X + 6 + 22;
   const int cmpCy = (GRID_ROW1 + GRID_ROW2) / 2;
-  const int cmpR = 26;
-  drawCompassRing(cmpCx, cmpCy, cmpR);
+  const int cmpR = 22;
 
   const int brgDeg = gps.course.isValid() ? (int)(gps.course.deg() + 0.5) % 360 : -1;
   const bool wndValid = raceSession.valid && raceSession.windSpeed > 0;
   const int wndDeg = wndValid ? (raceSession.windDir + 180) % 360 : -1;
 
-  if (prevBrgDeg >= 0) drawNupArrow(cmpCx, cmpCy, cmpR, prevBrgDeg, BG);
-  if (prevWndDeg >= 0) drawNupArrow(cmpCx, cmpCy, cmpR - 5, prevWndDeg, BG);
-  drawCompassRing(cmpCx, cmpCy, cmpR); // restore ring/tick under the arrows
-  if (wndDeg >= 0) drawNupArrow(cmpCx, cmpCy, cmpR - 5, wndDeg, CYAN);
-  if (brgDeg >= 0) drawNupArrow(cmpCx, cmpCy, cmpR, brgDeg, WHITE);
-  prevBrgDeg = brgDeg;
-  prevWndDeg = wndDeg;
+  if (brgDeg != prevBrgDeg || wndDeg != prevWndDeg) {
+    if (prevBrgDeg >= 0) drawNupTriangle(cmpCx, cmpCy, cmpR - 1, prevBrgDeg, BG);
+    if (prevWndDeg >= 0) drawNupTriangle(cmpCx, cmpCy, cmpR - 9, prevWndDeg, BG);
+    drawCompassRing(cmpCx, cmpCy, cmpR); // restore ring + N under the arrows
+    if (wndDeg >= 0) drawNupTriangle(cmpCx, cmpCy, cmpR - 9, wndDeg, RED);
+    if (brgDeg >= 0) drawNupTriangle(cmpCx, cmpCy, cmpR - 1, brgDeg, GREEN);
+    prevBrgDeg = brgDeg;
+    prevWndDeg = wndDeg;
+  }
 
-  tft.setTextColor(WHITE, BG);
-  tft.setTextDatum(MC_DATUM);
-  String wndTxt = wndValid ? (" " + String(raceSession.windSpeed) + " kn ") : String("  ---  ");
-  tft.drawString(wndTxt, cmpCx, cmpCy + cmpR + 9, 2);
+  // Wind speed, top right of the cell (font-2 bbox stays above the ring).
+  String wndTxt = " ---   ";
+  if (wndValid) wndTxt = " " + String(raceSession.windSpeed) + " kn ";
+  drawRightValue(wndTxt, GRID_ROW1 + 1, 2, lastWndStr);
+
+  // Boat bearing, bottom right: zero-padded 3 chars (constant width, no
+  // ghosting) ending at the anchor; degree ring drawn right of it.
+  String degTxt = "---";
+  if (brgDeg >= 0) {
+    degTxt = String(brgDeg);
+    while (degTxt.length() < 3) degTxt = "0" + degTxt;
+  }
+  drawRightValue(degTxt, cmpCy + 8, 4, lastBrgStr);
+  tft.drawCircle(tft.width() - 2, cmpCy + 14, 2, brgDeg >= 0 ? WHITE : BG);
 
   drawRightLabel("Session", 163);
   unsigned long totalSec = millis() / 1000UL;
@@ -386,8 +398,10 @@ void initScreen() {
   prevFixTile = -1;
   lastMaxStr = "";
   lastSesStr = "";
-  prevBrgDeg = -1;
-  prevWndDeg = -1;
+  lastWndStr = "";
+  lastBrgStr = "";
+  prevBrgDeg = -2;
+  prevWndDeg = -2;
 }
 
 void drawScreenSpeed(TinyGPSPlus &gps, bool requiresInit)
