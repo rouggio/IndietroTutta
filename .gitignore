@@ -24,6 +24,10 @@ libdeps/
 *.swp
 *~
 
+# /screen grab artifact (scripts/grab_screen.py)
+screen.png
+crop_values.png
+
 # Python cache
 __pycache__/
 *.py[cod]

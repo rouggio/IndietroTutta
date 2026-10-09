@@ -96,7 +96,7 @@ so capture uses font 2 for the race pane labels),
   `resetRaceText()` runs on `courseChanged` so the pane (grid+labels) always repaints.
   `gGrabbing` (set during a `/screen` capture) skips side effects (race-run reset,
   menu auto-close).
-- `src/config.h`: `BASE_URL`, `OTA_BASE_URL` (both prod Render), `BUILD_VERSION` (local-dev 1.0.166).
+- `src/config.h`: `BASE_URL`, `OTA_BASE_URL` (both prod Render), `BUILD_VERSION` (local-dev 1.0.179).
 - Device reports fw: `Firmware-Version: BUILD_VERSION` header on `GET /health` +
   `POST /gps`, plus `"fw"` in gps JSON body.
 
