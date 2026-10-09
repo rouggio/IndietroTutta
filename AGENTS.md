@@ -39,15 +39,16 @@ Key modules: `screens.*` router + 200ms throttle, `screen_speed.*` main
 (body grid 2×3 under the top bar: instant speed cell = row1 cols1-2 —
 "SPEED (kn)" label + font-8 value, font 7 when 5 chars ("123.4"); row2 col1
 Max speed, col2 Session; col3 ring cell spans both rows — N-up ring
-top-aligned (diameter = cell width − 8px), font-2 "N" inside (moves to the
-true-north angle in bearing-up view), two solid EQUILATERAL triangles
-stacked radially without overlap: green boat (tip tangent to the ring
-border, base pushed out along the bearing) + red wind (same size, tip
-tangent to the boat base, tip downwind = windDir+180; session wind wins,
-else env wind), plus the 60° no-go arc (3px radial band, DARK_RED, centered
-on the upwind direction opposite the red tip, moves bearing-relative);
-below the ring WND/BRG gray font-2 labels + values (wind = font 4, knots,
-no unit; bearing = font 2, zero-padded with a drawn degree ring); values redrawn only on change, arrows
+top-aligned (diameter = cell width − 8px), 30° radial ticks inside (twice
+as long at 90/180/270, top skipped for the font-2 "N" which moves to the
+true-north angle in bearing-up view), two solid equilateral-shape minus-5px
+triangles stacked radially without overlap (green boat: tip tangent to the
+ring border, base pushed out along the bearing; red wind: same size, tip
+tangent to the boat base, tip downwind = windDir+180; each with a 4px-thick
+15px color-matched tail; session wind wins, else env wind), plus the no-go
+arc (9px radial band, DARK_RED, width via /nogo, centered on the upwind
+direction opposite the red tip, moves bearing-relative);
+below the ring WIND/BRG gray font-2 labels pushed to the cell sides + values redrawn only on change, arrows
 repaint only when an angle changed (prev -1/-2 sentinels), one-off fillRect
 wipe only on speed-width change; POS line removed),
 `screen_race.*` shared RACE/PRAC screen (map viewport = left 4/5; wireframe +

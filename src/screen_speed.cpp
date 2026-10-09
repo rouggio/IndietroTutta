@@ -291,6 +291,17 @@ static void drawCompassN(int x, int y, const char* s, uint16_t color)
 static void drawCompassRing(int cx, int cy, int r, int nDeg)
 {
   tft.drawCircle(cx, cy, r, GRAY);
+  // Radial ticks every 30°, just inside the ring: short at 30/60/...,
+  // twice as long at 90/180/270; 0 (top) is skipped — the N sits there.
+  // Ticks are static ring pixels like the N, repainted by the gate's ring
+  // pass (arrow erases may clip them).
+  for (int d = 30; d < 360; d += 30) {
+    const double a = d * M_PI / 180.0;
+    const double sx = sin(a), cz = cos(a);
+    const int ra = r - 2, rb = (d % 90 == 0) ? r - 9 : r - 5;
+    tft.drawLine(cx + (int)(ra * sx), cy - (int)(ra * cz),
+                 cx + (int)(rb * sx), cy - (int)(rb * cz), GRAY);
+  }
   const double a = nDeg * M_PI / 180.0;
   const int nr = r - 12;
   drawCompassN(cx + (int)(nr * sin(a)), cy - (int)(nr * cos(a)), "N", GRAY);
@@ -311,7 +322,8 @@ static void drawNoGoArc(int cx, int cy, int r, int centerDeg, int half, uint16_t
 
 // Solid triangle pointing at `deg` (0 = up, clockwise): tip `h` px beyond
 // the base along the bearing, base centered at `baseR` (equilateral width
-// minus 5px), plus a 10px color-matched tail behind the base. Erases too.
+// minus 5px), plus a 4px-thick / 15px color-matched tail behind the base.
+// Erases too.
 static void drawNupTriangle(int cx, int cy, int tipR, int baseR, int deg, uint16_t color)
 {
   const double a = deg * M_PI / 180.0;
@@ -323,8 +335,12 @@ static void drawNupTriangle(int cx, int cy, int tipR, int baseR, int deg, uint16
   const int p1x = bx + (int)(w * cz), p1y = by + (int)(w * sx);
   const int p2x = bx - (int)(w * cz), p2y = by - (int)(w * sx);
   tft.fillTriangle(tx, ty, p1x, p1y, p2x, p2y, color);
-  tft.drawLine(cx + (int)((baseR - 10) * sx), cy - (int)((baseR - 10) * cz),
-               bx, by, color);
+  for (int k = 0; k < 4; k++) {            // tail: 4 parallel 1px lines
+    const double off = (double)k - 1.5;
+    const int ox = (int)(off * cz), oy = (int)(off * sx);
+    tft.drawLine(cx + (int)((baseR - 15) * sx) + ox, cy - (int)((baseR - 15) * cz) + oy,
+                 bx + ox, by + oy, color);
+  }
 }
 
 void drawSpeed(TinyGPSPlus &gps)
@@ -380,7 +396,7 @@ void drawSpeed(TinyGPSPlus &gps)
   } else {
     maxPadded = " --- ";
   }
-  drawCellLabel("Max speed", MAX_W / 2, ROW_MID + 12);
+  drawCellLabel("Max speed", MAX_W / 2, ROW_MID + 9);
   if (maxPadded != lastMaxStr) {
     if (maxPadded.length() < lastMaxStr.length())
       tft.fillRect(3, ROW_MID + 31, MAX_W - 6, 28, BG);
@@ -390,7 +406,7 @@ void drawSpeed(TinyGPSPlus &gps)
     lastMaxStr = maxPadded;
   }
 
-  drawCellLabel("Session", MAX_W + (SPEED_W - MAX_W) / 2, ROW_MID + 12);
+  drawCellLabel("Session", MAX_W + (SPEED_W - MAX_W) / 2, ROW_MID + 9);
   unsigned long totalSec = millis() / 1000UL;
   unsigned long sesMm = totalSec / 60UL;
   unsigned long sesSs = totalSec % 60UL;
@@ -469,14 +485,14 @@ void drawSpeed(TinyGPSPlus &gps)
     prevNDeg = nDeg;
   }
 
-  // Ring values: WND (left) and BRG (right), gray font-2 labels, values
-  // one size down from the other cells (wind = font 4, bearing font 2),
-  // fixed 3 chars.
-  const int valMidL = (cmpL + cmpCx) / 2;
-  const int valMidR = (cmpCx + tft.width() - 2) / 2;
+  // Ring values: WIND (left column) and BRG (right column) — gray font-2
+  // labels pushed toward their cell sides, values under them (wind font 4,
+  // knots, no unit; bearing font 2 + drawn degree ring at a fixed spot).
+  const int valMidL = (cmpL + cmpCx) / 2 - 10;
+  const int valMidR = (cmpCx + tft.width() - 2) / 2 + 10;
   tft.setTextColor(GRAY, BG);
   tft.setTextDatum(TC_DATUM);
-  tft.drawString("WND", valMidL, 162, 2);
+  tft.drawString("WIND", valMidL, 162, 2);
   tft.drawString("BRG", valMidR, 162, 2);
 
   String wndTxt = "---";
@@ -502,9 +518,9 @@ void drawSpeed(TinyGPSPlus &gps)
     lastBrgStr = degTxt;
     tft.setTextColor(WHITE, BG);
     tft.setTextDatum(TR_DATUM);
-    tft.drawString(degTxt, valMidR + 18, 184, 2);
+    tft.drawString(degTxt, valMidR + 13, 184, 2);
   }
-  tft.drawCircle(valMidR + 22, 189, 2, brgDeg >= 0 ? WHITE : BG);
+  tft.drawCircle(valMidR + 17, 189, 2, brgDeg >= 0 ? WHITE : BG);
 }
 
 void initScreen() {
