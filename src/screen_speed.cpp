@@ -237,6 +237,7 @@ static String lastBrgStr = "";
 // and the angle where the N glyph was last painted (stale-N clear).
 static int prevBoatDeg = -2;
 static int prevWindDeg = -2;
+static int prevArcDeg = -1;  // no-go arc center last drawn (-1 = none)
 static int prevRingUp = -1;
 static int prevNDeg = -1;
 // Ring view: true = bearing-up (boat triangle points to the top, ring
@@ -282,6 +283,15 @@ static void drawMainGrid()
 }
 
 // ---- Ring cell (col 3, spans both rows) --------------------------------
+// "N" glyph on the ring (font 2 — one GLCD step up), centered at (x,y).
+// Erase variant passes " N " (wider opaque box clears the ink + margin).
+static void drawCompassN(int x, int y, const char* s, uint16_t color)
+{
+  tft.setTextColor(color, BG);
+  tft.setTextDatum(MC_DATUM);
+  tft.drawString(s, x, y, 2);
+}
+
 // N-up ring, top-aligned in the cell (4px margins); "N" glyph just inside
 // the top — or, in bearing-up view, at the angle where true north sits
 // (`nDeg`, 0 = top). Drawn BEFORE the arrows so the solid triangles cover
@@ -291,8 +301,20 @@ static void drawCompassRing(int cx, int cy, int r, int nDeg)
 {
   tft.drawCircle(cx, cy, r, GRAY);
   const double a = nDeg * M_PI / 180.0;
-  const int nr = r - 8;
-  drawLabel1C(cx + (int)(nr * sin(a)), cy - (int)(nr * cos(a)), "N", GRAY);
+  const int nr = r - 12;
+  drawCompassN(cx + (int)(nr * sin(a)), cy - (int)(nr * cos(a)), "N", GRAY);
+}
+
+// Upwind no-go arc: 60° wide (±30° around `centerDeg`, 0 = up), drawn as a
+// 3px radial band hugging the ring border (r-2..r). Also erases (BG).
+static void drawNoGoArc(int cx, int cy, int r, int centerDeg, uint16_t color)
+{
+  for (int d = centerDeg - 30; d <= centerDeg + 30; d++) {
+    const double a = d * M_PI / 180.0;
+    const double sx = sin(a), cz = cos(a);
+    tft.drawLine(cx + (int)((r - 2) * sx), cy - (int)((r - 2) * cz),
+                 cx + (int)(r * sx), cy - (int)(r * cz), color);
+  }
 }
 
 // Solid EQUILATERAL triangle pointing at `deg` (0 = up, clockwise): tip at
@@ -374,20 +396,22 @@ void drawSpeed(TinyGPSPlus &gps)
   snprintf(sesBuf, sizeof(sesBuf), "%02lu'%02lu\"", sesMm, sesSs);
   drawRightValue("  " + String(sesBuf) + " ", SPEED_W - 1, ROW_MID + 32, 4, lastSesStr);
 
-  // Ring cell (col 3, rows 1-2): N-up ring, top-aligned. Boat = HALF-size
-  // green triangle, tip tangent to the ring border (bearing, base pushed
-  // out along it); wind = same size red triangle, tip tangent to the
-  // boat's base (no overlap: the two stack radially), tip downwind.
-  // View mode (R toggle): N-up = true north at the top; bearing-up = the
-  // boat triangle always at the top, wind shifts bearing-relative and the
-  // N glyph sits where true north is. Triangles repaint ONLY when an
-  // angle, the mode or nothing-yet changed: old ones erased in BG, stale
-  // N cleared, ring+N restored, both redrawn (wind under the boat).
+  // Ring cell (col 3, rows 1-2): N-up ring, top-aligned. Boat = green
+  // equilateral triangle, tip tangent to the ring border (bearing, base
+  // pushed out along it); wind = same size red triangle, tip tangent to
+  // the boat's base (no overlap: the two stack radially), tip downwind.
+  // The 60° no-go arc (3px, dark red) hugs the ring opposite the wind
+  // triangle — where the wind comes FROM. / View mode (R toggle): N-up =
+  // true north at the top; bearing-up = the boat always at the top, wind
+  // + arc shift bearing-relative and the N glyph sits where north is.
+  // Repaints ONLY when an angle / the arc / the mode changed: old shapes
+  // erased in BG, stale N cleared, ring+N restored, arc + triangles
+  // redrawn (arc under, wind under the boat).
   const int cmpL = SPEED_W + 2;               // ring cell inner edges
   const int cmpR = (tft.width() - 2 - cmpL - 8) / 2; // dia = width - 4px/side
   const int cmpCx = cmpL + 4 + cmpR;
   const int cmpCy = BODY_TOP + 4 + cmpR;      // top-aligned
-  const int triR = cmpR * 3 / 10;             // shared triangle altitude
+  const int triR = cmpR * 35 / 100;           // shared triangle altitude
   const int boatTip = cmpR - 1;               // tangent (1px in: no ring flicker)
   const int boatBase = boatTip - triR;
   const int windTip = boatBase;               // tangent to the boat base
@@ -399,29 +423,41 @@ void drawSpeed(TinyGPSPlus &gps)
   const int wndKn = sesWind ? raceSession.windSpeed : raceSession.envWindSpeed;
   const int wndAbs = wndValid ? ((sesWind ? raceSession.windDir : raceSession.envWindDir) + 180) % 360 : -1;
   const bool brgUp = ringBrgUp && brgDeg >= 0;  // no bearing → stay N-up
+  // Upwind direction (where the wind comes FROM) — no-go arc center,
+  // exactly opposite the downwind tip of the red wind triangle.
+  const int upwRaw = sesWind ? raceSession.windDir
+                   : (raceSession.envWindSpeed > 0 ? raceSession.envWindDir : -1);
+  int arcDeg = -1;
+  if (upwRaw >= 0) {
+    arcDeg = (brgUp && brgDeg >= 0) ? (upwRaw - brgDeg + 360) % 360 : upwRaw % 360;
+  }
   const int boatDeg = brgDeg >= 0 ? (brgUp ? 0 : brgDeg) : -1;
   const int windRel = wndAbs >= 0 ? (brgUp ? (wndAbs - brgDeg + 360) % 360 : wndAbs) : -1;
   const int nDeg = brgUp ? (360 - brgDeg) % 360 : 0;
 
   if (boatDeg != prevBoatDeg || windRel != prevWindDeg ||
-      (int)brgUp != prevRingUp) {
+      arcDeg != prevArcDeg || (int)brgUp != prevRingUp) {
     if (prevBoatDeg >= 0) drawNupTriangle(cmpCx, cmpCy, boatTip, boatBase, prevBoatDeg, BG);
     if (prevWindDeg >= 0) drawNupTriangle(cmpCx, cmpCy, windTip, windBase, prevWindDeg, BG);
+    if (prevArcDeg >= 0) drawNoGoArc(cmpCx, cmpCy, cmpR, prevArcDeg, BG);
     if (prevNDeg >= 0 && prevNDeg != nDeg) {   // stale N from an old angle
       const double pa = prevNDeg * M_PI / 180.0;
-      drawLabel1C(cmpCx + (int)((cmpR - 8) * sin(pa)), cmpCy - (int)((cmpR - 8) * cos(pa)), "N", BG);
+      drawCompassN(cmpCx + (int)((cmpR - 12) * sin(pa)), cmpCy - (int)((cmpR - 12) * cos(pa)), " N ", BG);
     }
-    drawCompassRing(cmpCx, cmpCy, cmpR, nDeg); // restore ring + N under the arrows
+    drawCompassRing(cmpCx, cmpCy, cmpR, nDeg); // restore ring + N under the shapes
+    if (arcDeg >= 0) drawNoGoArc(cmpCx, cmpCy, cmpR, arcDeg, DARK_RED);
     if (windRel >= 0) drawNupTriangle(cmpCx, cmpCy, windTip, windBase, windRel, RED);
     if (boatDeg >= 0) drawNupTriangle(cmpCx, cmpCy, boatTip, boatBase, boatDeg, GREEN);
     prevBoatDeg = boatDeg;
     prevWindDeg = windRel;
+    prevArcDeg = arcDeg;
     prevRingUp = (int)brgUp;
     prevNDeg = nDeg;
   }
 
-  // Ring values: WND (left) and BRG (right), gray font-2 labels, white
-  // font-2 values one size down from the other cells, fixed 3 chars.
+  // Ring values: WND (left) and BRG (right), gray font-2 labels, values
+  // one size down from the other cells (wind = font 4, bearing font 2),
+  // fixed 3 chars.
   const int valMidL = (cmpL + cmpCx) / 2;
   const int valMidR = (cmpCx + tft.width() - 2) / 2;
   tft.setTextColor(GRAY, BG);
@@ -438,7 +474,7 @@ void drawSpeed(TinyGPSPlus &gps)
     lastWndStr = wndTxt;
     tft.setTextColor(WHITE, BG);
     tft.setTextDatum(TC_DATUM);
-    tft.drawString(wndTxt, valMidL, 184, 2);
+    tft.drawString(wndTxt, valMidL, 180, 4);
   }
 
   // Zero-padded 3 chars (constant width, no ghosting); degree ring drawn
@@ -471,6 +507,7 @@ void initScreen() {
   lastSpdFont = 8;
   prevBoatDeg = -2;
   prevWindDeg = -2;
+  prevArcDeg = -1;
   prevRingUp = -1;
   prevNDeg = -1;
 }
