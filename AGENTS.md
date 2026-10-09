@@ -25,14 +25,14 @@ Two FreeRTOS tasks in `backend.cpp` (12288 stack each, core 0): feed task
 + run upload) so a slow `/health` never starves the GPS feed.
 
 - UI thread only snapshots GPS + `enqueueWork()` (16-deep queue, drops oldest).
-  Waypoints carry a device-generated `uid` (`wp-<millis>-<seq>`, stored on the
-  marker); deletes go through an 8-deep uid queue (`DELETE /gps/flagged`,
-  retried until sent/gone).
+- Task drains queue → `POST /gps` (always sends `flagged:false`; the device no longer
+  creates waypoints — flagged/deleted points are a WEB-side feature, backend
+  `/gps?flagged=true` + `DELETE /gps/flagged` stay for the builder's waypoint adopter),
 - Task drains queue → `POST /gps`, plus `GET /health` every 30s.
 - `backendLoop()` adaptive GPS throttle: `30s@0kn → 2s@5kn` linear (`gpsIntervalForSpeed`).
 - `backend.h: backendOnline()`, `backendSendFlaggedPosition()`, `backendInit/Loop`.
   Telemetry uploads carry `simulated:true` when mock GPS is active (map shows
-  sim tracks); flagged waypoints + deletes stay real-only (suppressed in mock).
+  sim tracks),
 - `serial_buffer.cpp`: 200-line mutex-guarded log for `/serial`.
 
 Key modules: `screens.*` router + 200ms throttle, `screen_speed.*` main
@@ -69,7 +69,6 @@ into `gps.encode()`; NVS flag; uploads suppressed; MOCK banner; portal `/mock`),
 NVS `race` ns, ArduinoJson heap doc; explicit unassigned clears it, offline keeps cache;
 health top-level `wind` → envWindDir/envWindSpeed RAM-only fallback: UI compass +
 practice Start/Repeat placement use it when the session carries no wind),
-`screen_waypoints.*` (LL flag, max 10 FIFO RAM-only),
 `screen_diagnostics.*` (RR from main), `screen_config.*` (LL from main),
 `wifi_manager.*` non-blocking AP+STA (scan prefers visible strongest, park/retry),
 `ota.*` semver vs `latest.txt`, `http_server.*` portal port 80,
@@ -82,11 +81,12 @@ so capture uses font 2 for the race pane labels),
 
 ## UI navigation (hints: L/LL left, R/RR right)
 
-- L-cycle = MAIN → WAYPOINTS → RACE → MAIN (`PAGE_CYCLE=3`). DIAGNOSTICS + CONFIG excluded.
+- L-cycle = MAIN → RACE → MAIN (`PAGE_CYCLE=2`; the WAYPOINTS page was REMOVED on
+  `feature/remove-waypoints` `9e55584`, flagged-post/delete plumbing included).
+  DIAGNOSTICS + CONFIG excluded.
 - MAIN: `L` next, `LL`→CONFIG, `R` toggles the ring view N-up ↔ bearing-up
   (RAM; boat triangle to the top, wind bearing-relative, N at true north),
   `RR`→DIAGNOSTICS. RACE: `L` next, `LL` menu (practice: Start→template browse / Repeat→re-anchor+gun / Abandon; race: Resync/Abandon; `R` cycles, `RR` picks, `L` backs out), browse: `R` next template, `RR` pick (+10s gun, line 20m upwind), `L` back. `RR` cycles N-UP → BRG → FIT. DIAGNOSTICS/CONFIG: `L` back to MAIN.
-- WAYPOINTS: `R` cycle, `LL` flag (also `POST /gps flagged:true`), `RR` delete.
 - CONFIG: `R` select row, `RR` apply, `LL` force OTA now.
 - Every page switch full-black clear; ghost-clear readouts in speed.
 - NO fillRect/fillScreen/clear on the 200ms refresh path — it flickers. Overwrite
@@ -117,4 +117,4 @@ so capture uses font 2 for the race pane labels),
   Routes: `/config /save /wifi/remove /reset (wipe all!) /reboot /status /health /serial /mock?on=1|0 /nogo (GET current; POST /nogo?deg=<total width 10..180> — no-go arc width, own NVS key, shown in /status) /ota (POST immediate check vs current server) /server?mode=prod|dev&host=<ip:port> (GET=current) /btn?b=L|R&e=R|RR (remote button) /screen (RGB565 BE 320x240 grab: re-renders the current page into an off-screen 8bpp sprite and streams it, since the ST7789 can't be read back; `scripts/grab_screen.py` → PNG)`. All unauthenticated.
 - OTA: `GET ota/latest.txt` → semver compare → `HTTPUpdate firmware.bin` + progress bar + `redrawCurrentPage()`. `rebootOnUpdate(false)`: on success the panel gets a clean `fillScreen` before `ESP.restart()` so the boot splash shows neatly (no stale progress-overlay pixels). Boot check if `otaCheckOnStart`, 60s WiFi timeout. `make ota-local` stages a dev build into LAN `public/ota/` with no commit/push/hook (cloud untouched; `config.h` + `public/ota/*` stay dirty by design); `make dl` = ota-local + immediate pull + verify.
 - Bruno in `bruno/` covers portal routes (`access-point` + `local-network` envs).
-- Quirks: empty portal name keeps stored username; username regex both sides; WiFi rotate-on-5s-fail never blocks UI; OTA download blocks loop; waypoints/laps RAM-only.
+- Quirks: empty portal name keeps stored username; username regex both sides; WiFi rotate-on-5s-fail never blocks UI; OTA download blocks loop; laps RAM-only.
