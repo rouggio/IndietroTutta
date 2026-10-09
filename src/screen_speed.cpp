@@ -22,6 +22,8 @@
 #define RED TFT_RED
 #define DARK_RED 0x8000
 #define GRAY 0x7BEF
+#define RING_GRAY 0xC618 // brighter silver — ring, ticks and N (contrast)
+#define ARC_RED TFT_RED  // no-go arc (was DARK_RED: too faint on black)
 
 const int MIN_SAT_THRESHOLD = 4; // Minimum number of satellites for a good fix
 
@@ -262,7 +264,7 @@ static void drawCellLabel(const char* label, int cx, int y)
 static const int BODY_TOP = 31;     // below the top-bar separator (y=30)
 static const int SPEED_W = 184;     // v-line: speed/max/session | ring cell
 static const int MAX_W = 92;        // v-line: max | session (row 2 only)
-static const int ROW_MID = 144;     // h-line across cols 1-2 (speed row +16px)
+static const int ROW_MID = 152;     // h-line across cols 1-2 (row 2 = 62px cells)
 static const int BODY_BOTTOM = 214; // bottom line, full width
 
 static void drawMainGrid()
@@ -290,7 +292,7 @@ static void drawCompassN(int x, int y, const char* s, uint16_t color)
 // lives in the same repaint step as the triangles.
 static void drawCompassRing(int cx, int cy, int r, int nDeg)
 {
-  tft.drawCircle(cx, cy, r, GRAY);
+  tft.drawCircle(cx, cy, r, RING_GRAY);
   // Radial ticks every 30°, just inside the ring: short at 30/60/...,
   // twice as long at 90/180/270; 0 (top) is skipped — the N sits there.
   // Ticks are static ring pixels like the N, repainted by the gate's ring
@@ -300,11 +302,11 @@ static void drawCompassRing(int cx, int cy, int r, int nDeg)
     const double sx = sin(a), cz = cos(a);
     const int ra = r - 2, rb = (d % 90 == 0) ? r - 9 : r - 5;
     tft.drawLine(cx + (int)(ra * sx), cy - (int)(ra * cz),
-                 cx + (int)(rb * sx), cy - (int)(rb * cz), GRAY);
+                 cx + (int)(rb * sx), cy - (int)(rb * cz), RING_GRAY);
   }
   const double a = nDeg * M_PI / 180.0;
   const int nr = r - 12;
-  drawCompassN(cx + (int)(nr * sin(a)), cy - (int)(nr * cos(a)), "N", GRAY);
+  drawCompassN(cx + (int)(nr * sin(a)), cy - (int)(nr * cos(a)), "N", RING_GRAY);
 }
 
 // Upwind no-go arc: ±`half` degrees around `centerDeg` (0 = up), drawn as
@@ -369,6 +371,9 @@ void drawSpeed(TinyGPSPlus &gps)
   tft.setTextColor(GRAY, BG);
   tft.setTextDatum(TC_DATUM);
   String label = "SPEED (" + String(unitLabels[config.speedUnit]) + ")";
+// Font 2 is 16px tall: the label sits just under the top-bar separator
+  // (y=30) and must stay ABOVE the width-change wipe below (y>=59), or
+  // the wipe clips its bottom rows.
   tft.drawString(label, cx, 42, 2);
 
   String spd = gps.speed.isValid() ? String(value, 1) : String("---");
@@ -377,12 +382,12 @@ void drawSpeed(TinyGPSPlus &gps)
     if (spd.length() != lastSpdStr.length() || spdFont != lastSpdFont) {
       // One-off wipe on a width change (rare: decade cross / unit toggle);
       // constant-width overwrites never reach this path. Stays clear of
-      // the grid lines (x<184, y<144) — no flicker on them.
-      tft.fillRect(2, 59, 181, 77, BG);
+      // the grid lines (x<184, y<ROW_MID) — no flicker on them.
+      tft.fillRect(2, 59, 181, 89, BG);
     }
     tft.setTextColor(TFT_YELLOW, BG);
     tft.setTextDatum(MC_DATUM);
-    tft.drawString(spd, cx, 98, spdFont);
+    tft.drawString(spd, cx, 108, spdFont);
     lastSpdStr = spd;
     lastSpdFont = spdFont;
   }
@@ -396,17 +401,17 @@ void drawSpeed(TinyGPSPlus &gps)
   } else {
     maxPadded = " --- ";
   }
-  drawCellLabel("Max speed", MAX_W / 2, ROW_MID + 9);
+  drawCellLabel("Max speed", MAX_W / 2, ROW_MID + 10);
   if (maxPadded != lastMaxStr) {
     if (maxPadded.length() < lastMaxStr.length())
-      tft.fillRect(3, ROW_MID + 31, MAX_W - 6, 28, BG);
+      tft.fillRect(3, ROW_MID + 25, MAX_W - 6, 28, BG);
     tft.setTextColor(WHITE, BG);
     tft.setTextDatum(MC_DATUM);
-    tft.drawString(maxPadded, MAX_W / 2, ROW_MID + 45, 4);
+    tft.drawString(maxPadded, MAX_W / 2, ROW_MID + 39, 4);
     lastMaxStr = maxPadded;
   }
 
-  drawCellLabel("Session", MAX_W + (SPEED_W - MAX_W) / 2, ROW_MID + 9);
+  drawCellLabel("Session", MAX_W + (SPEED_W - MAX_W) / 2, ROW_MID + 10);
   unsigned long totalSec = millis() / 1000UL;
   unsigned long sesMm = totalSec / 60UL;
   unsigned long sesSs = totalSec % 60UL;
@@ -415,10 +420,10 @@ void drawSpeed(TinyGPSPlus &gps)
   String sesPadded = " " + String(sesBuf) + " ";
   if (sesPadded != lastSesStr) {
     if (sesPadded.length() < lastSesStr.length())
-      tft.fillRect(MAX_W + 3, ROW_MID + 31, SPEED_W - MAX_W - 6, 28, BG);
+      tft.fillRect(MAX_W + 3, ROW_MID + 25, SPEED_W - MAX_W - 6, 28, BG);
     tft.setTextColor(WHITE, BG);
     tft.setTextDatum(MC_DATUM);
-    tft.drawString(sesPadded, MAX_W + (SPEED_W - MAX_W) / 2, ROW_MID + 45, 4);
+    tft.drawString(sesPadded, MAX_W + (SPEED_W - MAX_W) / 2, ROW_MID + 39, 4);
     lastSesStr = sesPadded;
   }
 
@@ -474,7 +479,7 @@ void drawSpeed(TinyGPSPlus &gps)
       drawCompassN(cmpCx + (int)((cmpR - 12) * sin(pa)), cmpCy - (int)((cmpR - 12) * cos(pa)), " N ", BG);
     }
     drawCompassRing(cmpCx, cmpCy, cmpR, nDeg); // restore ring + N under the shapes
-    if (arcDeg >= 0) drawNoGoArc(cmpCx, cmpCy, cmpR, arcDeg, noGoHalf, DARK_RED);
+    if (arcDeg >= 0) drawNoGoArc(cmpCx, cmpCy, cmpR, arcDeg, noGoHalf, ARC_RED);
     if (windRel >= 0) drawNupTriangle(cmpCx, cmpCy, windTip, windBase, windRel, RED);
     if (boatDeg >= 0) drawNupTriangle(cmpCx, cmpCy, boatTip, boatBase, boatDeg, GREEN);
     prevBoatDeg = boatDeg;
@@ -485,15 +490,18 @@ void drawSpeed(TinyGPSPlus &gps)
     prevNDeg = nDeg;
   }
 
-  // Ring values: WIND (left column) and BRG (right column) — gray font-2
-  // labels pushed toward their cell sides, values under them (wind font 4,
-  // knots, no unit; bearing font 2 + drawn degree ring at a fixed spot).
-  const int valMidL = (cmpL + cmpCx) / 2 - 10;
-  const int valMidR = (cmpCx + tft.width() - 2) / 2 + 10;
+  // Ring values: WIND (kn) (left column) and BRG (right column) — gray
+  // font-2 labels, font-4 values under them. Labels sit at y=171, clear of
+  // the ring (bottom edge at BODY_TOP+4+2*cmpR = 159); values at 197 stay
+  // above the bottom grid line (214). The bearing block (3 digits + degree
+  // ring, ~53px) is right-anchored inside the cell and its label centered
+  // over it, so label and value line up.
+  const int valMidL = 218;
+  const int valMidR = 284;
   tft.setTextColor(GRAY, BG);
   tft.setTextDatum(TC_DATUM);
-  tft.drawString("WIND", valMidL, 162, 2);
-  tft.drawString("BRG", valMidR, 162, 2);
+  tft.drawString("WIND (kn)", valMidL, 171, 2);
+  tft.drawString("BRG", valMidR, 171, 2);
 
   String wndTxt = "---";
   if (wndValid) {
@@ -504,11 +512,11 @@ void drawSpeed(TinyGPSPlus &gps)
     lastWndStr = wndTxt;
     tft.setTextColor(WHITE, BG);
     tft.setTextDatum(TC_DATUM);
-    tft.drawString(wndTxt, valMidL, 180, 4);
+    tft.drawString(wndTxt, valMidL, 197, 4);
   }
 
-  // Zero-padded 3 chars (constant width, no ghosting); degree ring drawn
-  // right of the digits at a fixed spot.
+  // Zero-padded 3 chars (constant width, no ghosting), font 4 to match the
+  // wind value; degree ring right of the digits at a fixed spot.
   String degTxt = "---";
   if (brgDeg >= 0) {
     degTxt = String(brgDeg);
@@ -518,9 +526,9 @@ void drawSpeed(TinyGPSPlus &gps)
     lastBrgStr = degTxt;
     tft.setTextColor(WHITE, BG);
     tft.setTextDatum(TR_DATUM);
-    tft.drawString(degTxt, valMidR + 13, 184, 2);
+    tft.drawString(degTxt, valMidR + 20, 197, 4);
   }
-  tft.drawCircle(valMidR + 17, 189, 2, brgDeg >= 0 ? WHITE : BG);
+  tft.drawCircle(valMidR + 26, 197, 2, brgDeg >= 0 ? WHITE : BG);
 }
 
 void initScreen() {
