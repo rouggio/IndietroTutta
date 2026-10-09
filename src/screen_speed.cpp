@@ -299,7 +299,7 @@ void drawSpeed(TinyGPSPlus &gps)
 
   // Right column: Max / Course / Session, one per equal grid cell.
   // Labels gray, values white. No fillRect/clear on the refresh path.
-  drawRightLabel("Max", 39);
+  drawRightLabel("Max speed", 39);
   String maxPadded;
   if (hasSessionMax) {
     maxPadded = "  " + String(maxValue, 1) + " ";
