@@ -43,7 +43,7 @@ map layer ≤1Hz, text padded),
 into `gps.encode()`; NVS flag; uploads suppressed; MOCK banner; portal `/mock`),
 `race_session.*` health-pulled session cache (marks/lines/wind/startTime+offset,
 NVS `race` ns, ArduinoJson heap doc; unassigned keeps cache),
-`screen_waypoints.*` (LL flag, max 10 FIFO RAM-only), `screen_timers.*` chrono,
+`screen_waypoints.*` (LL flag, max 10 FIFO RAM-only),
 `screen_diagnostics.*` (RR from main), `screen_config.*` (LL from main),
 `wifi_manager.*` non-blocking AP+STA (scan prefers visible strongest, park/retry),
 `ota.*` semver vs `latest.txt`, `http_server.*` portal port 80,
@@ -52,11 +52,11 @@ NVS `race` ns, ArduinoJson heap doc; unassigned keeps cache),
 
 ## UI navigation (hints: L/LL left, R/RR right)
 
-- L-cycle = MAIN → WAYPOINTS → TIMERS → RACE → MAIN (`PAGE_CYCLE=4`). DIAGNOSTICS + CONFIG excluded.
+- L-cycle = MAIN → WAYPOINTS → RACE → MAIN (`PAGE_CYCLE=3`). DIAGNOSTICS + CONFIG excluded.
 - MAIN: `L` next, `LL`→CONFIG, `RR`→DIAGNOSTICS. RACE: `L` next, `LL` menu (practice: Start→template browse / Repeat→re-anchor+gun / Abandon; race: Resync/Abandon; `R` cycles, `RR` picks, `L` backs out), browse: `R` next template, `RR` pick (+10s gun, line 20m upwind), `L` back. `RR` cycles N-UP → BRG → FIT. DIAGNOSTICS/CONFIG: `L` back to MAIN.
 - WAYPOINTS: `R` cycle, `LL` flag (also `POST /gps flagged:true`), `RR` delete.
-- TIMERS: `R` start/stop, `RR` lap/reset. CONFIG: `R` select row, `RR` apply, `LL` force OTA now.
-- Every page switch full-black clear; ghost-clear readouts in speed/timers.
+- CONFIG: `R` select row, `RR` apply, `LL` force OTA now.
+- Every page switch full-black clear; ghost-clear readouts in speed.
 - NO fillRect/fillScreen/clear on the 200ms refresh path — it flickers. Overwrite
   text in place with space padding instead, e.g. `" " + val + " "` (both sides
   for MC_DATUM, leading space suffices for TR_DATUM). Static labels can just be
