@@ -12,7 +12,7 @@
 #include <stdio.h>
 #include <string.h>
 
-extern TFT_eSPI tft;
+#include "canvas.h"
 
 static const uint16_t RBG = TFT_BLACK;
 static const uint16_t RFG = TFT_WHITE;
@@ -798,40 +798,40 @@ static void drawRaceText(TinyGPSPlus& gps)
     char cell[14];
     const int vy = PANE_Y0 + 1, vv = PANE_Y0 + 11;
     // Row 0: speed.
-    drawSmart(PANE_X + 3, vy, 1, TL_DATUM, RDIM, "SPD KN",
+    drawSmart(PANE_X + 3, vy, gGrabbing ? 2 : 1, TL_DATUM, RDIM, "SPD KN",
               pLabS, sizeof(pLabS), pLabSW);
     if (gps.speed.isValid()) snprintf(cell, sizeof(cell), "%4.1f", gps.speed.knots());
     else snprintf(cell, sizeof(cell), " --- ");
     drawSmart(PANE_X + PANE_W - 6, vv, 2, TR_DATUM, RFG, cell,
               pSpd, sizeof(pSpd), pSpdW);
     // Row 1: bearing to destination.
-    drawSmart(PANE_X + 3, vy + PANE_ROWH, 1, TL_DATUM, RDIM, "BRG",
+    drawSmart(PANE_X + 3, vy + PANE_ROWH, gGrabbing ? 2 : 1, TL_DATUM, RDIM, "BRG",
               pLabB, sizeof(pLabB), pLabBW);
     if (showBrg) snprintf(cell, sizeof(cell), "%3d", (int)brg);
     else snprintf(cell, sizeof(cell), "---");
     drawSmart(PANE_X + PANE_W - 6, vv + PANE_ROWH, 2, TR_DATUM, RFG, cell,
               pBrg, sizeof(pBrg), pBrgW);
     // Row 2: distance.
-    drawSmart(PANE_X + 3, vy + 2 * PANE_ROWH, 1, TL_DATUM, RDIM, "DST M",
+    drawSmart(PANE_X + 3, vy + 2 * PANE_ROWH, gGrabbing ? 2 : 1, TL_DATUM, RDIM, "DST M",
               pLabD, sizeof(pLabD), pLabDW);
     if (showBrg) snprintf(cell, sizeof(cell), "%4ld", distM);
     else snprintf(cell, sizeof(cell), "----");
     drawSmart(PANE_X + PANE_W - 6, vv + 2 * PANE_ROWH, 2, TR_DATUM, RFG, cell,
               pDst, sizeof(pDst), pDstW);
     // Row 3: next destination.
-    drawSmart(PANE_X + 3, vy + 3 * PANE_ROWH, 1, TL_DATUM, RDIM, "NEXT",
+    drawSmart(PANE_X + 3, vy + 3 * PANE_ROWH, gGrabbing ? 2 : 1, TL_DATUM, RDIM, "NEXT",
               pLabN, sizeof(pLabN), pLabNW);
     if (raceSession.valid && haveDest) snprintf(cell, sizeof(cell), "%-4.4s", tag);
     else snprintf(cell, sizeof(cell), "----");
     drawSmart(PANE_X + PANE_W - 6, vv + 3 * PANE_ROWH, 2, TR_DATUM, RFG, cell,
               pNxt, sizeof(pNxt), pNxtW);
     // Row 4: time.
-    drawSmart(PANE_X + 3, vy + 4 * PANE_ROWH, 1, TL_DATUM, RDIM, "TIME",
+    drawSmart(PANE_X + 3, vy + 4 * PANE_ROWH, gGrabbing ? 2 : 1, TL_DATUM, RDIM, "TIME",
               pLabT, sizeof(pLabT), pLabTW);
     drawSmart(PANE_X + PANE_W - 6, vv + 4 * PANE_ROWH, 2, TR_DATUM, RFG, tim,
               pTim, sizeof(pTim), pTimW);
     // Row 5: wind direction (from the session; header arrow retired here).
-    drawSmart(PANE_X + 3, vy + 5 * PANE_ROWH, 1, TL_DATUM, RDIM, "WND",
+    drawSmart(PANE_X + 3, vy + 5 * PANE_ROWH, gGrabbing ? 2 : 1, TL_DATUM, RDIM, "WND",
               pLabW, sizeof(pLabW), pLabWW);
     if (raceSession.valid) snprintf(cell, sizeof(cell), "%3d", raceSession.windDir);
     else snprintf(cell, sizeof(cell), "---");
@@ -1008,13 +1008,13 @@ void drawScreenRace(TinyGPSPlus &gps, bool requiresInit)
         tft.fillScreen(RBG);
         lastRaceCourseKey = -2; // force map redraw
         resetRaceText();
-        raceRunReset();
+        if (!gGrabbing) raceRunReset(); // capture must not wipe a live run
     }
     const int key = raceCourseKey();
     const bool courseChanged = (key != lastRaceCourseKey);
     if (courseChanged) {
         lastRaceCourseKey = key;
-        raceRunReset();
+        if (!gGrabbing) raceRunReset();
     }
     raceRunUpdate(gps);
     raceSignalsApply(gps);

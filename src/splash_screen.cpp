@@ -4,7 +4,7 @@
 #include "splash_screen.h"
 #include "splash_logo.h"
 
-extern TFT_eSPI tft;
+#include "canvas.h"
 
 // Frontend navy (#0f172a) so the logo square blends in seamlessly
 static uint16_t splashBg()
@@ -28,7 +28,7 @@ void drawSplashScreen() {
   tft.setTextDatum(TL_DATUM);
   tft.drawString("Indietro", x, textY, 4);
   x += w1 + gap;
-  tft.pushImage(x, logoY, SPLASH_LOGO_W, SPLASH_LOGO_H, (uint16_t*)splashLogo);
+  canvasPushImage(x, logoY, SPLASH_LOGO_W, SPLASH_LOGO_H, (uint16_t*)splashLogo);
   x += SPLASH_LOGO_W + gap;
   tft.drawString("Tutta!", x, textY, 4);
 }

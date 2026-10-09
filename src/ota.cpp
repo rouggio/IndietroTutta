@@ -10,7 +10,7 @@
 #include "screens.h"
 #include "server_link.h"
 
-extern TFT_eSPI tft;
+#include "canvas.h"
 
 #define GRAY 0x7BEF
 

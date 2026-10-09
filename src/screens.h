@@ -24,6 +24,9 @@ enum ScreenPage {
 // (RR = diagnostics, LL = config).
 static constexpr int PAGE_CYCLE = 3;
 
+// Currently displayed page (read by the /screen capture path).
+extern ScreenPage page;
+
 // Non-blocking splash: drawn once at boot, kept on screen while setup
 // runs underneath; endSplash() releases it as soon as the loop is ready
 // (subject to a short minimum display time).

@@ -11,7 +11,7 @@
 
 #include "screen_speed.h"
 
-extern TFT_eSPI tft;
+#include "canvas.h"
 
 // ==== COLORS ====
 #define BG TFT_BLACK
@@ -147,7 +147,7 @@ void drawTopBar(TinyGPSPlus &gps)
     tft.fillRoundRect(icon_x, 2, tile_width, tile_height, 4, TFT_DARKGREEN);
     tft.drawRoundRect(icon_x, 2, tile_width, tile_height, 4, GREEN);
     tft.setTextColor(GREEN, TFT_DARKGREEN);
-    tft.pushImage(icon_x + icont_offset_x, 5, icon_width, icon_height, icon_wifi, TFT_BLACK);
+    canvasPushImage(icon_x + icont_offset_x, 5, icon_width, icon_height, icon_wifi, TFT_BLACK);
     prevWifiConnected = TriState::True;
   }
   else if (!wifiConnected() && prevWifiConnected != TriState::False)
@@ -155,7 +155,7 @@ void drawTopBar(TinyGPSPlus &gps)
     tft.fillRoundRect(icon_x, 2, tile_width, tile_height, 4, DARK_RED);
     tft.drawRoundRect(icon_x, 2, tile_width, tile_height, 4, TFT_RED);
     tft.setTextColor(TFT_RED, DARK_RED);
-    tft.pushImage(icon_x + icont_offset_x, 5, icon_width, icon_height, icon_no_signal, TFT_BLACK);
+    canvasPushImage(icon_x + icont_offset_x, 5, icon_width, icon_height, icon_no_signal, TFT_BLACK);
     prevWifiConnected = TriState::False;
   }
 
@@ -211,7 +211,7 @@ void drawTopBar(TinyGPSPlus &gps)
   int sats = gps.satellites.isValid() ? gps.satellites.value() : 0;
 
   // GPS satellites (top-right)
-  tft.pushImage(tft.width() - 57, 7, 16, 16, icon_sat, TFT_BLACK);
+  canvasPushImage(tft.width() - 57, 7, 16, 16, icon_sat, TFT_BLACK);
 
   tft.setTextColor(sats > 0 ? sats > MIN_SAT_THRESHOLD ? GREEN : TFT_YELLOW : TFT_RED, BG);
   tft.setTextDatum(TR_DATUM);

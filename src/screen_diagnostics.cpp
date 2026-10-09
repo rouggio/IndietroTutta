@@ -8,7 +8,7 @@
 #include "screens.h"
 #include "screen_diagnostics.h"
 
-extern TFT_eSPI tft;
+#include "canvas.h"
 
 // ==== COLORS ====
 #define BG TFT_BLACK

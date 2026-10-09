@@ -9,7 +9,7 @@
 #include "screen_config.h"
 #include "server_link.h"
 
-extern TFT_eSPI tft;
+#include "canvas.h"
 
 // ==== COLORS ====
 #define BG TFT_BLACK

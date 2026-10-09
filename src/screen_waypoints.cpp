@@ -6,7 +6,7 @@
 #include "screens.h"
 #include "screen_waypoints.h"
 
-extern TFT_eSPI tft;
+#include "canvas.h"
 
 // ==== COLORS ====
 #define BG TFT_BLACK

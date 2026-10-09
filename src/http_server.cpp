@@ -16,8 +16,7 @@
 #include "ota.h"
 
 #include <TFT_eSPI.h>
-
-extern TFT_eSPI tft;
+#include "canvas.h"
 
 static WebServer server(80);
 
@@ -597,8 +596,14 @@ static void handleBtn()
 }
 
 // Framebuffer grab (GET /screen): raw RGB565 big-endian, 320x240, no header.
-// scripts/grab_screen.py turns it into a PNG. Slow (SPI reads, seconds) —
-// a debugging tool, not a live feed.
+// scripts/grab_screen.py turns it into a PNG. Slow — a debugging tool, not a
+// live feed.
+//
+// The ST7789 panel is write-only: TFT_eSPI's tft.readPixel() cannot read it
+// back (it always returned 0, so grabs were black). The only readable surface
+// is a TFT_eSprite buffer, so we re-render the current page into an 8-bit
+// (RGB332) off-screen sprite and stream that. 8bpp keeps it to ~77 KB, which
+// fits the heap on demand, and the UI's flat palette round-trips closely.
 static void handleScreen()
 {
     const int w = tft.width();
@@ -607,15 +612,42 @@ static void handleScreen()
         server.send(500, "text/plain", "bad geometry");
         return;
     }
+    if (!gpsRef) {
+        server.send(503, "text/plain", "no gps");
+        return;
+    }
+
+    TFT_eSprite spr(gCanvas); // bound to the hardware panel for width/height
+    spr.setColorDepth(8);
+    if (spr.createSprite(w, h) == nullptr) {
+        server.send(503, "text/plain", "no memory for capture");
+        return;
+    }
+
+    // Redirect all drawing at the sprite and force a full repaint of the
+    // page currently on screen (requiresInit resets each screen's change-
+    // detect caches so every element is drawn). gGrabbing suppresses side
+    // effects the init path would otherwise trigger.
+    TFT_eSPI* saved = gCanvas;
+    gCanvas = &spr;
+    gGrabbing = true;
+    drawScreen(*gpsRef, true, page);
+    gGrabbing = false;
+    gCanvas = saved;
+
     server.setContentLength((size_t)w * h * 2);
     server.send(200, "application/octet-stream", "");
     static uint16_t row[480];
     for (int y = 0; y < h; y++) {
         const int n = w > 480 ? 480 : w;
-        for (int x = 0; x < n; x++) row[x] = tft.readPixel(x, y);
+        for (int x = 0; x < n; x++) {
+            const uint16_t px = spr.readPixel(x, y);
+            row[x] = (uint16_t)((px >> 8) | (px << 8)); // big-endian on the wire
+        }
         server.sendContent((const char*)row, (size_t)n * 2);
-        if ((y & 15) == 15) delay(1); // feed the watchdog on slow panels
+        if ((y & 15) == 15) delay(1); // feed the watchdog
     }
+    spr.deleteSprite();
 }
 
 static void handleRedirect()

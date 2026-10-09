@@ -1,4 +1,5 @@
 #include "screens.h"
+#include "canvas.h"
 #include "screen_speed.h"
 #include "screen_diagnostics.h"
 #include "screen_waypoints.h"
@@ -15,7 +16,9 @@ static UIState uiState = UIState::Screens;
 static const int CX = 160;
 static const int CY = 120;
 
-TFT_eSPI tft = TFT_eSPI();
+TFT_eSPI tftHW = TFT_eSPI();
+TFT_eSPI* gCanvas = &tftHW;   // drawing target: hardware by default
+bool gGrabbing = false;       // true while rendering a /screen capture
 
 unsigned long lastUpdate = 0;
 
