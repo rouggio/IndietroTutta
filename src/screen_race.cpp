@@ -32,17 +32,15 @@ static const int FRAME_SOUTH = 213;
 // Right values pane: 1/5 width, six mini-labeled rows filling the height.
 static const int PANE_X = 256;
 static const int PANE_W = 64;
-static const int PANE_Y0 = 30;
-static const int PANE_ROWH = 29;
-static const int PANE_H = WIRE_Y1 - WIRE_TOP; // 178
+static const int PANE_TOP = 1;                 // starts at the very top (under the 1px frame)
+static const int PANE_H = WIRE_Y1 - PANE_TOP;  // fills down to the map bottom
 // Top edge of pane row r (6 equal rows filling the pane, no top gap).
-static inline int paneRowY(int r) { return PANE_Y0 + (r * PANE_H) / 6; }
+static inline int paneRowY(int r) { return PANE_TOP + (r * PANE_H) / 6; }
 
 static void drawFrameChrome()
 {
     tft.drawRect(0, 0, 320, FRAME_SOUTH, RDIM);
-    tft.drawLine(255, 30, 255, FRAME_SOUTH - 1, RDIM); // viewport divider
-    tft.drawLine(255, 30, 319, 30, RDIM);              // pane top edge
+    tft.drawLine(255, 0, 255, FRAME_SOUTH - 1, RDIM); // viewport divider (full height)
 }
 
 static const double DEG_M = 111320.0;
@@ -197,6 +195,26 @@ static void drawSideArrow(int cx, int cy, int rr, char side, uint16_t color)
     }
 }
 
+// Small wind arrow at (cx,cy): points toward `fromDeg` (the direction the
+// wind comes FROM, meteorological) with a barbed head at the tip.
+static void drawWindArrow(int cx, int cy, int fromDeg, int r, uint16_t color)
+{
+    const double a = fromDeg * M_PI / 180.0;
+    const double sx = sin(a), cz = cos(a);
+    const int tx = cx + (int)(r * sx), ty = cy - (int)(r * cz); // tip (upwind)
+    const int bx = cx - (int)(r * sx), by = cy + (int)(r * cz); // tail
+    tft.drawLine(bx, by, tx, ty, color);
+    // Head: two barbs off the tip, unit tail-ward vector rotated ±25°.
+    const double ux = -sx, uy = cz;
+    const double hd = r * 0.5;
+    for (double s = -25.0; s <= 25.0; s += 50.0) {
+        const double w = s * M_PI / 180.0;
+        const double rx = ux * cos(w) - uy * sin(w);
+        const double ry = ux * sin(w) + uy * cos(w);
+        tft.drawLine(tx, ty, tx + (int)(rx * hd), ty + (int)(ry * hd), color);
+    }
+}
+// pre-start = start, racing = marks[progIdx], finished = finish).
 // Current target identity for map highlighting (mirrors nextDestination:
 // pre-start = start, racing = marks[progIdx], finished = finish).
 // Line targets: lineIdx 0 = start line, 1 = finish line (mark idx unused).
@@ -445,10 +463,8 @@ static void drawStaticLayer(const RaceProj& p, double rotEff)
         if (!firstOfPile) continue;
         num[0] = '\0';
         bool first = true;
-        int pile = 0;
         for (uint8_t j = i; j < raceSession.markCount; j++) {
             if (raceSession.marks[j].lat != m.lat || raceSession.marks[j].lon != m.lon) continue;
-            pile++;
             char tmp[5];
             snprintf(tmp, sizeof(tmp), "%s%d", first ? "" : "-", j + 1);
             strncat(num, tmp, sizeof(num) - strlen(num) - 1);
@@ -456,9 +472,9 @@ static void drawStaticLayer(const RaceProj& p, double rotEff)
         }
         tft.setTextDatum(MC_DATUM);
         tft.setTextColor(i == 0 ? RFG : RDIM, RBG);
-        // Piled marks: lift the number above the circle so it doesn't overlap.
-        const int ly = pile > 1 ? (py - rPx - 10) : py;
-        tft.drawString(num, px, ly, 2);
+        // Always above the circle so it never overlaps the ring — nor a line
+        // (start/finish) the mark happens to sit on.
+        tft.drawString(num, px, py - rPx - 10, 2);
     }
     // Header wind readout moved to the right pane (WND row) — the arrow
     // lives there as degrees now. Mock banner stays top-left.
@@ -719,7 +735,6 @@ static uint8_t menuSel = 0;
 static uint8_t menuN = 0;
 static bool menuDirty = false;
 static bool menuFull = false; // set on open: full clear + title, like CONFIG
-static unsigned long menuUntil = 0;
 // Template browse state (instant practice setup; map frozen while open).
 static bool tplOpen = false;
 static uint8_t tplSel = 0;
@@ -818,48 +833,49 @@ static void drawRaceText(TinyGPSPlus& gps)
         snprintf(tim, sizeof(tim), "--:--");
     }
 
-    // Right values pane: 6 equal rows filling the pane from the frame top
-    // (no dead first cell); small labels via the manual GLCD helper so they
-    // render on the capture sprite too; values change-detect. Drawn only when
-    // a session is assigned — the empty state must not repaint stale values.
-    if (raceSession.valid) {
-        if (!paneClean) {
-            tft.fillRect(PANE_X, PANE_Y0, PANE_W, PANE_H, RBG);
-            for (int r = 1; r < 6; r++) {
-                const int ly = paneRowY(r);
-                tft.drawLine(PANE_X + 2, ly, PANE_X + PANE_W - 3, ly, RDIM);
-            }
-            static const char* labs[6] = { "SPD KN", "BRG", "DST M", "NEXT", "TIME", "WND" };
-            for (int r = 0; r < 6; r++) drawLabel1(PANE_X + 3, paneRowY(r) + 3, labs[r], RDIM);
-            paneClean = true;
+    // Right values pane: 6 equal rows filling the pane from the very top;
+    // small labels via the manual GLCD helper (renders on the capture sprite
+    // too); values change-detect. Drawn even with no session (grid + '---')
+    // so the cell layout stays consistent.
+    if (!paneClean) {
+        tft.fillRect(PANE_X, PANE_TOP, PANE_W, PANE_H, RBG);
+        for (int r = 1; r < 6; r++) {
+            const int ly = paneRowY(r);
+            tft.drawLine(PANE_X + 2, ly, PANE_X + PANE_W - 3, ly, RDIM);
         }
-        char cell[14];
-        const int vx = PANE_X + PANE_W - 5;
-        // Row 0: speed.
-        if (gps.speed.isValid()) snprintf(cell, sizeof(cell), "%4.1f", gps.speed.knots());
-        else snprintf(cell, sizeof(cell), " --- ");
-        drawSmart(vx, paneRowY(0) + 12, 2, TR_DATUM, RFG, cell, pSpd, sizeof(pSpd), pSpdW);
-        // Row 1: bearing to destination.
-        if (showBrg) snprintf(cell, sizeof(cell), "%3d", (int)brg);
-        else snprintf(cell, sizeof(cell), "---");
-        drawSmart(vx, paneRowY(1) + 12, 2, TR_DATUM, RFG, cell, pBrg, sizeof(pBrg), pBrgW);
-        // Row 2: distance.
-        if (showBrg) snprintf(cell, sizeof(cell), "%4ld", distM);
-        else snprintf(cell, sizeof(cell), "----");
-        drawSmart(vx, paneRowY(2) + 12, 2, TR_DATUM, RFG, cell, pDst, sizeof(pDst), pDstW);
-        // Row 3: next destination.
-        if (raceSession.valid && haveDest) snprintf(cell, sizeof(cell), "%-4.4s", tag);
-        else snprintf(cell, sizeof(cell), "----");
-        drawSmart(vx, paneRowY(3) + 12, 2, TR_DATUM, RFG, cell, pNxt, sizeof(pNxt), pNxtW);
-        // Row 4: time.
-        drawSmart(vx, paneRowY(4) + 12, 2, TR_DATUM, RFG, tim, pTim, sizeof(pTim), pTimW);
-        // Row 5: wind direction (from the session).
-        if (raceSession.valid) snprintf(cell, sizeof(cell), "%3d", raceSession.windDir);
-        else snprintf(cell, sizeof(cell), "---");
-        drawSmart(vx, paneRowY(5) + 12, 2, TR_DATUM, RFG, cell, pWnd, sizeof(pWnd), pWndW);
-    } else {
-        paneClean = false; // next session redraws a clean pane
+        static const char* labs[6] = { "SPD KN", "BRG", "DST M", "NEXT", "TIME", "WND" };
+        for (int r = 0; r < 6; r++) drawLabel1(PANE_X + 3, paneRowY(r) + 4, labs[r], RDIM);
+        paneClean = true;
     }
+    char cell[14];
+    const int vx = PANE_X + PANE_W - 5;
+    // Row 0: speed.
+    if (gps.speed.isValid()) snprintf(cell, sizeof(cell), "%4.1f", gps.speed.knots());
+    else snprintf(cell, sizeof(cell), " --- ");
+    drawSmart(vx, paneRowY(0) + 16, 2, TR_DATUM, RFG, cell, pSpd, sizeof(pSpd), pSpdW);
+    // Row 1: bearing to destination.
+    if (showBrg) snprintf(cell, sizeof(cell), "%3d", (int)brg);
+    else snprintf(cell, sizeof(cell), "---");
+    drawSmart(vx, paneRowY(1) + 16, 2, TR_DATUM, RFG, cell, pBrg, sizeof(pBrg), pBrgW);
+    // Row 2: distance.
+    if (showBrg) snprintf(cell, sizeof(cell), "%4ld", distM);
+    else snprintf(cell, sizeof(cell), "----");
+    drawSmart(vx, paneRowY(2) + 16, 2, TR_DATUM, RFG, cell, pDst, sizeof(pDst), pDstW);
+    // Row 3: next destination.
+    if (raceSession.valid && haveDest) snprintf(cell, sizeof(cell), "%-4.4s", tag);
+    else snprintf(cell, sizeof(cell), "----");
+    drawSmart(vx, paneRowY(3) + 16, 2, TR_DATUM, RFG, cell, pNxt, sizeof(pNxt), pNxtW);
+    // Row 4: time.
+    drawSmart(vx, paneRowY(4) + 16, 2, TR_DATUM, RFG, tim, pTim, sizeof(pTim), pTimW);
+    // Row 5: wind — arrow (source direction) + speed (whole knots, no decimals).
+    if (raceSession.valid) {
+        drawWindArrow(PANE_X + 16, paneRowY(5) + 24, raceSession.windDir, 9, RFG);
+        if (raceSession.windSpeed > 0) snprintf(cell, sizeof(cell), "%2d", raceSession.windSpeed);
+        else snprintf(cell, sizeof(cell), "--");
+    } else {
+        snprintf(cell, sizeof(cell), "--");
+    }
+    drawSmart(vx, paneRowY(5) + 16, 2, TR_DATUM, RFG, cell, pWnd, sizeof(pWnd), pWndW);
 
     // Hint bar: texts change length across modes now, so repaint on change
     // (band clear once, then both sides).
@@ -1045,11 +1061,6 @@ void drawScreenRace(TinyGPSPlus &gps, bool requiresInit)
     if (raceWrongPoll()) {
         showTransient("WRONG!  ");
     }
-    if (menuOpen && (long)(millis() - menuUntil) >= 0) {
-        menuOpen = false; // timed out: full repaint drops the box
-        redrawCurrentPage();
-        return;
-    }
     if (courseChanged && (menuOpen || tplOpen) && !gGrabbing) {
         menuOpen = false;
         tplOpen = false;
@@ -1134,7 +1145,6 @@ void screenRaceButton(Button button, ButtonEvent event)
         if (button == Button::Right && event == ButtonEvent::ShortPress) {
             menuSel = (uint8_t)((menuSel + 1) % (menuN ? menuN : 1));
             menuDirty = true;
-            menuUntil = millis() + 10000;
             return;
         }
         if (button == Button::Right && event == ButtonEvent::LongPress) {
@@ -1158,7 +1168,6 @@ void screenRaceButton(Button button, ButtonEvent event)
         menuN = menuCount(isPractice);
         menuDirty = true;
         menuFull = true;
-        menuUntil = millis() + 10000;
         return;
     }
     // Right short does nothing on this screen (durations dropped).

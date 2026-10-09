@@ -106,6 +106,7 @@ static bool sessionFromJson(JsonObject sess, RaceSession& out)
     tmp.startTime = st ? raceIsoEpoch(st) : 0;
     tmp.startOffsetSec = sess["startOffsetSec"] | 0L;
     tmp.windDir = sess["windDir"] | 0;
+    tmp.windSpeed = sess["windSpeed"] | 0;
     tmp.courseVersion = sess["courseVersion"] | 0;
 
     JsonArray marks = sess["marks"].as<JsonArray>();
@@ -224,6 +225,7 @@ bool raceSessionSave()
                String(",\"startTime\":") + raceSession.startTime +
                String(",\"startOffsetSec\":") + raceSession.startOffsetSec +
                String(",\"windDir\":") + raceSession.windDir +
+               String(",\"windSpeed\":") + raceSession.windSpeed +
                String(",\"courseVersion\":") + raceSession.courseVersion +
                String(",\"marks\":[");
     for (uint8_t i = 0; i < raceSession.markCount; i++) {
@@ -299,6 +301,7 @@ bool raceSessionLoad()
     tmp.startTime = root["startTime"] | 0L;
     tmp.startOffsetSec = root["startOffsetSec"] | 0L;
     tmp.windDir = root["windDir"] | 0;
+    tmp.windSpeed = root["windSpeed"] | 0;
     tmp.courseVersion = root["courseVersion"] | 0;
     JsonArray marks = root["marks"].as<JsonArray>();
     uint8_t n = 0;

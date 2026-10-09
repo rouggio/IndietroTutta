@@ -46,6 +46,7 @@ struct RaceSession {
     long startTime = 0;  // UTC epoch of gun (without pursuit offset), 0 = none
     long startOffsetSec = 0;
     int windDir = 0;
+    int windSpeed = 0; // knots (0 = unknown)
     int courseVersion = 0;
     uint8_t markCount = 0;
     RaceMark marks[10];
