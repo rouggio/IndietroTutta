@@ -262,7 +262,7 @@ static void drawRightLabel(const char* label, int rightEdge, int y)
 static const int BODY_TOP = 31;     // below the top-bar separator (y=30)
 static const int SPEED_W = 184;     // v-line: speed/max/session | ring cell
 static const int MAX_W = 92;        // v-line: max | session (row 2 only)
-static const int ROW_MID = 128;     // h-line across cols 1-2
+static const int ROW_MID = 144;     // h-line across cols 1-2 (speed row +16px)
 static const int BODY_BOTTOM = 214; // bottom line, full width
 
 static void drawMainGrid()
@@ -286,16 +286,18 @@ static void drawCompassRing(int cx, int cy, int r)
 }
 
 // Solid EQUILATERAL triangle pointing at `deg` (0 = up, clockwise): tip at
-// `r` from the center, base centered on (cx,cy) with half-width r/√3, no
-// stick. Also used to erase (color = BG).
-static void drawNupTriangle(int cx, int cy, int r, int deg, uint16_t color)
+// `tipR` from the center, base centered at `baseR` along the same bearing,
+// half-width (tipR-baseR)/√3, no stick. Also used to erase (color = BG).
+static void drawNupTriangle(int cx, int cy, int tipR, int baseR, int deg, uint16_t color)
 {
   const double a = deg * M_PI / 180.0;
   const double sx = sin(a), cz = cos(a);
-  const int w = (int)(r / sqrt(3.0));
-  const int tx = cx + (int)(r * sx), ty = cy - (int)(r * cz);
-  const int p1x = cx + (int)(w * cz), p1y = cy + (int)(w * sx);
-  const int p2x = cx - (int)(w * cz), p2y = cy - (int)(w * sx);
+  const int h = tipR - baseR;              // altitude
+  const int w = (int)(h / sqrt(3.0));      // equilateral half-base
+  const int bx = cx + (int)(baseR * sx), by = cy - (int)(baseR * cz);
+  const int tx = cx + (int)(tipR * sx), ty = cy - (int)(tipR * cz);
+  const int p1x = bx + (int)(w * cz), p1y = by + (int)(w * sx);
+  const int p2x = bx - (int)(w * cz), p2y = by - (int)(w * sx);
   tft.fillTriangle(tx, ty, p1x, p1y, p2x, p2y, color);
 }
 
@@ -319,13 +321,13 @@ void drawSpeed(TinyGPSPlus &gps)
   else if (config.speedUnit == 2) { value *= 1.15078; maxValue *= 1.15078; } // mph
 
   // Instant speed cell (row 1, cols 1-2): unit label top-center, value
-  // centered below — the cell is sized so "88.8" fits with small margins.
+  // centered below — sized for "88.8" (font 8) + margins top and bottom.
   // A 5-char value ("123.4" in km/h) drops to the narrower font 7.
   const int cx = SPEED_W / 2;
   tft.setTextColor(GRAY, BG);
   tft.setTextDatum(TC_DATUM);
   String label = "SPEED (" + String(unitLabels[config.speedUnit]) + ")";
-  tft.drawString(label, cx, 34, 2);
+  tft.drawString(label, cx, 42, 2);
 
   String spd = gps.speed.isValid() ? String(value, 1) : String("---");
   const uint8_t spdFont = spd.length() >= 5 ? 7 : 8;
@@ -333,12 +335,12 @@ void drawSpeed(TinyGPSPlus &gps)
     if (spd.length() != lastSpdStr.length() || spdFont != lastSpdFont) {
       // One-off wipe on a width change (rare: decade cross / unit toggle);
       // constant-width overwrites never reach this path. Stays clear of
-      // the grid lines (x<184, y<128) — no flicker on them.
-      tft.fillRect(2, 51, 181, 77, BG);
+      // the grid lines (x<184, y<144) — no flicker on them.
+      tft.fillRect(2, 59, 181, 77, BG);
     }
     tft.setTextColor(TFT_YELLOW, BG);
     tft.setTextDatum(MC_DATUM);
-    tft.drawString(spd, cx, 90, spdFont);
+    tft.drawString(spd, cx, 98, spdFont);
     lastSpdStr = spd;
     lastSpdFont = spdFont;
   }
@@ -351,28 +353,29 @@ void drawSpeed(TinyGPSPlus &gps)
   } else {
     maxPadded = "  ---  ";
   }
-  drawRightLabel("Max speed", MAX_W - 8, 148);
-  drawRightValue(maxPadded, MAX_W - 4, 168, 4, lastMaxStr);
+  drawRightLabel("Max speed", MAX_W - 8, ROW_MID + 12);
+  drawRightValue(maxPadded, MAX_W - 4, ROW_MID + 32, 4, lastMaxStr);
 
-  drawRightLabel("Session", SPEED_W - 8, 148);
+  drawRightLabel("Session", SPEED_W - 8, ROW_MID + 12);
   unsigned long totalSec = millis() / 1000UL;
   unsigned long sesMm = totalSec / 60UL;
   unsigned long sesSs = totalSec % 60UL;
   char sesBuf[16];
   snprintf(sesBuf, sizeof(sesBuf), "%02lu'%02lu\"", sesMm, sesSs);
-  drawRightValue("  " + String(sesBuf) + " ", SPEED_W - 4, 168, 4, lastSesStr);
+  drawRightValue("  " + String(sesBuf) + " ", SPEED_W - 4, ROW_MID + 32, 4, lastSesStr);
 
-  // Ring cell (col 3, rows 1-2): N-up ring — green boat triangle, tip
-  // tangent to the ring (bearing); red wind triangle, internal (tip
-  // downwind); wind speed + bearing below the ring. Triangles repaint
-  // ONLY when an angle actually changed: old ones erased in BG, ring+N
-  // restored, both redrawn (wind under the boat). Unchanged frames draw
-  // nothing — that keeps the ring/cell edges from shimmering.
+  // Ring cell (col 3, rows 1-2): N-up ring, top-aligned. Both triangles
+  // the same (wind-arrow) size: green boat = tip tangent to the ring
+  // border (bearing, base pushed out along it), red wind = base anchored
+  // at the ring center (tip downwind). Triangles repaint ONLY when an
+  // angle actually changed: old ones erased in BG, ring+N restored, both
+  // redrawn (wind under the boat). Unchanged frames draw nothing — that
+  // keeps the ring/cell edges from shimmering.
   const int cmpL = SPEED_W + 2;               // ring cell inner edges
   const int cmpR = (tft.width() - 2 - cmpL - 8) / 2; // dia = width - 4px/side
   const int cmpCx = cmpL + 4 + cmpR;
   const int cmpCy = BODY_TOP + 4 + cmpR;      // top-aligned
-  const int wndR = cmpR * 6 / 10;             // wind triangle, internal
+  const int wndR = cmpR * 6 / 10;             // shared triangle size
 
   const int brgDeg = gps.course.isValid() ? (int)(gps.course.deg() + 0.5) % 360 : -1;
   const bool sesWind = raceSession.valid && raceSession.windSpeed > 0;
@@ -381,30 +384,47 @@ void drawSpeed(TinyGPSPlus &gps)
   const int wndDeg = wndValid ? ((sesWind ? raceSession.windDir : raceSession.envWindDir) + 180) % 360 : -1;
 
   if (brgDeg != prevBrgDeg || wndDeg != prevWndDeg) {
-    if (prevBrgDeg >= 0) drawNupTriangle(cmpCx, cmpCy, cmpR - 1, prevBrgDeg, BG);
-    if (prevWndDeg >= 0) drawNupTriangle(cmpCx, cmpCy, wndR, prevWndDeg, BG);
+    if (prevBrgDeg >= 0) drawNupTriangle(cmpCx, cmpCy, cmpR - 1, cmpR - 1 - wndR, prevBrgDeg, BG);
+    if (prevWndDeg >= 0) drawNupTriangle(cmpCx, cmpCy, wndR, 0, prevWndDeg, BG);
     drawCompassRing(cmpCx, cmpCy, cmpR); // restore ring + N under the arrows
-    if (wndDeg >= 0) drawNupTriangle(cmpCx, cmpCy, wndR, wndDeg, RED);
-    if (brgDeg >= 0) drawNupTriangle(cmpCx, cmpCy, cmpR - 1, brgDeg, GREEN);
+    if (wndDeg >= 0) drawNupTriangle(cmpCx, cmpCy, wndR, 0, wndDeg, RED);
+    if (brgDeg >= 0) drawNupTriangle(cmpCx, cmpCy, cmpR - 1, cmpR - 1 - wndR, brgDeg, GREEN);
     prevBrgDeg = brgDeg;
     prevWndDeg = wndDeg;
   }
 
-  // Wind speed (centered) + zero-padded bearing (right, degree ring drawn
-  // after the digits) below the ring.
+  // Ring values: WND (left) and BRG (right) with gray labels, pushed to
+  // the two sides below the ring.
+  const int valMidL = (cmpL + cmpCx) / 2;
+  const int valMidR = (cmpCx + tft.width() - 2) / 2;
+  tft.setTextColor(GRAY, BG);
+  tft.setTextDatum(TC_DATUM);
+  tft.drawString("WND", valMidL, 162, 2);
+  tft.drawString("BRG", valMidR, 162, 2);
+
   String wndTxt = "--- kn";
   if (wndValid) wndTxt = String(wndKn) + " kn";
-  tft.setTextColor(WHITE, BG);
-  tft.setTextDatum(MC_DATUM);
-  tft.drawString(wndTxt, cmpCx, 170, 2);
+  if (wndTxt != lastWndStr) {
+    lastWndStr = wndTxt;
+    tft.setTextColor(WHITE, BG);
+    tft.setTextDatum(TC_DATUM);
+    tft.drawString(wndTxt, valMidL, 182, 4);
+  }
 
+  // Zero-padded 3 chars (constant width, no ghosting); degree ring drawn
+  // right of the digits at a fixed spot.
   String degTxt = "---";
   if (brgDeg >= 0) {
     degTxt = String(brgDeg);
     while (degTxt.length() < 3) degTxt = "0" + degTxt;
   }
-  drawRightValue(degTxt, cmpCx + 12, 186, 4, lastBrgStr);
-  tft.drawCircle(cmpCx + 16, 192, 2, brgDeg >= 0 ? WHITE : BG);
+  if (degTxt != lastBrgStr) {
+    lastBrgStr = degTxt;
+    tft.setTextColor(WHITE, BG);
+    tft.setTextDatum(TR_DATUM);
+    tft.drawString(degTxt, valMidR + 17, 184, 4);
+  }
+  tft.drawCircle(valMidR + 21, 190, 2, brgDeg >= 0 ? WHITE : BG);
 }
 
 void initScreen() {

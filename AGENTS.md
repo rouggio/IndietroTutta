@@ -39,10 +39,12 @@ Key modules: `screens.*` router + 200ms throttle, `screen_speed.*` main
 (body grid 2×3 under the top bar: instant speed cell = row1 cols1-2 —
 "SPEED (kn)" label + font-8 value, font 7 when 5 chars ("123.4"); row2 col1
 Max speed, col2 Session; col3 ring cell spans both rows — N-up ring
-top-aligned (diameter = cell width − 8px), "N" inside the top, solid
-EQUILATERAL triangles (green boat, tip tangent to ring = bearing; red wind,
-internal, tip downwind = windDir+180), wind speed + bearing (zero-padded,
-degree ring drawn) below the ring; values redrawn only on change, arrows
+top-aligned (diameter = cell width − 8px), "N" inside the top, two solid
+EQUILATERAL triangles of the SAME size (green boat: tip tangent to the ring
+border, base pushed out along the bearing; red wind: base anchored at the
+ring center, tip downwind = windDir+180; session wind wins, else env wind),
+below the ring WND/BRG gray labels + font-4 values pushed left/right
+(wind speed kn / zero-padded bearing + drawn degree ring); values redrawn only on change, arrows
 repaint only when an angle changed (prev -1/-2 sentinels), one-off fillRect
 wipe only on speed-width change; POS line removed),
 `screen_race.*` shared RACE/PRAC screen (map viewport = left 4/5; wireframe +
