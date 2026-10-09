@@ -354,7 +354,7 @@ void drawSpeed(TinyGPSPlus &gps)
     maxPadded = "  ---  ";
   }
   drawRightLabel("Max speed", MAX_W - 8, ROW_MID + 12);
-  drawRightValue(maxPadded, MAX_W - 4, ROW_MID + 32, 4, lastMaxStr);
+  drawRightValue(maxPadded, MAX_W - 7, ROW_MID + 32, 4, lastMaxStr);
 
   drawRightLabel("Session", SPEED_W - 8, ROW_MID + 12);
   unsigned long totalSec = millis() / 1000UL;
@@ -362,20 +362,24 @@ void drawSpeed(TinyGPSPlus &gps)
   unsigned long sesSs = totalSec % 60UL;
   char sesBuf[16];
   snprintf(sesBuf, sizeof(sesBuf), "%02lu'%02lu\"", sesMm, sesSs);
-  drawRightValue("  " + String(sesBuf) + " ", SPEED_W - 4, ROW_MID + 32, 4, lastSesStr);
+  drawRightValue("  " + String(sesBuf) + " ", SPEED_W - 1, ROW_MID + 32, 4, lastSesStr);
 
-  // Ring cell (col 3, rows 1-2): N-up ring, top-aligned. Both triangles
-  // the same (wind-arrow) size: green boat = tip tangent to the ring
-  // border (bearing, base pushed out along it), red wind = base anchored
-  // at the ring center (tip downwind). Triangles repaint ONLY when an
-  // angle actually changed: old ones erased in BG, ring+N restored, both
-  // redrawn (wind under the boat). Unchanged frames draw nothing — that
-  // keeps the ring/cell edges from shimmering.
+  // Ring cell (col 3, rows 1-2): N-up ring, top-aligned. Boat = HALF-size
+  // green triangle, tip tangent to the ring border (bearing, base pushed
+  // out along it); wind = same size red triangle, tip tangent to the
+  // boat's base (no overlap: the two stack radially), tip downwind.
+  // Triangles repaint ONLY when an angle actually changed: old ones
+  // erased in BG, ring+N restored, both redrawn (wind under the boat).
+  // Unchanged frames draw nothing — that keeps ring/cell edges stable.
   const int cmpL = SPEED_W + 2;               // ring cell inner edges
   const int cmpR = (tft.width() - 2 - cmpL - 8) / 2; // dia = width - 4px/side
   const int cmpCx = cmpL + 4 + cmpR;
   const int cmpCy = BODY_TOP + 4 + cmpR;      // top-aligned
-  const int wndR = cmpR * 6 / 10;             // shared triangle size
+  const int triR = cmpR * 3 / 10;             // shared triangle altitude
+  const int boatTip = cmpR - 1;               // tangent (1px in: no ring flicker)
+  const int boatBase = boatTip - triR;
+  const int windTip = boatBase;               // tangent to the boat base
+  const int windBase = boatBase - triR;
 
   const int brgDeg = gps.course.isValid() ? (int)(gps.course.deg() + 0.5) % 360 : -1;
   const bool sesWind = raceSession.valid && raceSession.windSpeed > 0;
@@ -384,17 +388,17 @@ void drawSpeed(TinyGPSPlus &gps)
   const int wndDeg = wndValid ? ((sesWind ? raceSession.windDir : raceSession.envWindDir) + 180) % 360 : -1;
 
   if (brgDeg != prevBrgDeg || wndDeg != prevWndDeg) {
-    if (prevBrgDeg >= 0) drawNupTriangle(cmpCx, cmpCy, cmpR - 1, cmpR - 1 - wndR, prevBrgDeg, BG);
-    if (prevWndDeg >= 0) drawNupTriangle(cmpCx, cmpCy, wndR, 0, prevWndDeg, BG);
+    if (prevBrgDeg >= 0) drawNupTriangle(cmpCx, cmpCy, boatTip, boatBase, prevBrgDeg, BG);
+    if (prevWndDeg >= 0) drawNupTriangle(cmpCx, cmpCy, windTip, windBase, prevWndDeg, BG);
     drawCompassRing(cmpCx, cmpCy, cmpR); // restore ring + N under the arrows
-    if (wndDeg >= 0) drawNupTriangle(cmpCx, cmpCy, wndR, 0, wndDeg, RED);
-    if (brgDeg >= 0) drawNupTriangle(cmpCx, cmpCy, cmpR - 1, cmpR - 1 - wndR, brgDeg, GREEN);
+    if (wndDeg >= 0) drawNupTriangle(cmpCx, cmpCy, windTip, windBase, wndDeg, RED);
+    if (brgDeg >= 0) drawNupTriangle(cmpCx, cmpCy, boatTip, boatBase, brgDeg, GREEN);
     prevBrgDeg = brgDeg;
     prevWndDeg = wndDeg;
   }
 
-  // Ring values: WND (left) and BRG (right) with gray labels, pushed to
-  // the two sides below the ring.
+  // Ring values: WND (left) and BRG (right), gray font-2 labels, GLCD
+  // (font-1 via drawLabel1 — capture-safe) values fixed at 3 chars.
   const int valMidL = (cmpL + cmpCx) / 2;
   const int valMidR = (cmpCx + tft.width() - 2) / 2;
   tft.setTextColor(GRAY, BG);
@@ -402,13 +406,14 @@ void drawSpeed(TinyGPSPlus &gps)
   tft.drawString("WND", valMidL, 162, 2);
   tft.drawString("BRG", valMidR, 162, 2);
 
-  String wndTxt = "--- kn";
-  if (wndValid) wndTxt = String(wndKn) + " kn";
+  String wndTxt = "---";
+  if (wndValid) {
+    wndTxt = String(wndKn);
+    while (wndTxt.length() < 3) wndTxt = " " + wndTxt;
+  }
   if (wndTxt != lastWndStr) {
     lastWndStr = wndTxt;
-    tft.setTextColor(WHITE, BG);
-    tft.setTextDatum(TC_DATUM);
-    tft.drawString(wndTxt, valMidL, 182, 4);
+    drawLabel1(valMidL - 9, 184, wndTxt.c_str(), WHITE);
   }
 
   // Zero-padded 3 chars (constant width, no ghosting); degree ring drawn
@@ -420,11 +425,9 @@ void drawSpeed(TinyGPSPlus &gps)
   }
   if (degTxt != lastBrgStr) {
     lastBrgStr = degTxt;
-    tft.setTextColor(WHITE, BG);
-    tft.setTextDatum(TR_DATUM);
-    tft.drawString(degTxt, valMidR + 17, 184, 4);
+    drawLabel1(valMidR, 184, degTxt.c_str(), WHITE);
   }
-  tft.drawCircle(valMidR + 21, 190, 2, brgDeg >= 0 ? WHITE : BG);
+  tft.drawCircle(valMidR + 20, 186, 2, brgDeg >= 0 ? WHITE : BG);
 }
 
 void initScreen() {
