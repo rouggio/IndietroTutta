@@ -4,7 +4,7 @@
 #include "serial_buffer.h"
 #include "race_session.h"
 #include "race_run.h"
-#include "race_templates.h"
+#include "race_courses.h"
 #include "gps_mock.h"
 #include "server_link.h"
 
@@ -56,7 +56,7 @@ struct BackendWork {
 static QueueHandle_t workQueue = nullptr;
 static volatile bool online = false;
 static volatile bool healthNow = false;
-static volatile bool tplWant = false;
+static volatile bool courseWant = false;
 static TinyGPSPlus* mainGps = nullptr;
 
 bool backendOnline()
@@ -69,9 +69,9 @@ void backendPollHealthNow()
     healthNow = true;
 }
 
-void backendFetchTemplates()
+void backendFetchCourses()
 {
-    tplWant = true; // drained by the task loop (blocking fetch there)
+    courseWant = true; // drained by the task loop (blocking fetch there)
 }
 
 // ---------------------------------------------------------
@@ -226,10 +226,10 @@ static void backendTask(void *param){
         const unsigned long passStart = now;
         unsigned long mockMs = 0, sendMs = 0;
 
-        // One-shot template library fetch for instant practice setup.
-        if (tplWant) {
-            tplWant = false;
-            tplFetch();
+        // One-shot course library fetch for instant practice setup.
+        if (courseWant) {
+            courseWant = false;
+            courseFetch();
         }
 
         // Mock GPS source (indoor testing): scripted fixes in, tagged out.

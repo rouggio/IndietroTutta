@@ -2,7 +2,7 @@
 #include "screens.h"
 #include "race_session.h"
 #include "race_run.h"
-#include "race_templates.h"
+#include "race_courses.h"
 #include "backend.h"
 #include "gps_mock.h"
 
@@ -678,7 +678,7 @@ static char lastHintR[16] = {0};
 
 // Last GPS epoch seen on this page (buttons have no gps handle).
 static long lastGpsNow = 0;
-// Last fix for template placement (Repeat/Start need position + freshness).
+// Last fix for course placement (Repeat/Start need position + freshness).
 static double lastGpsLat = 0.0, lastGpsLon = 0.0;
 static unsigned long lastFixAt = 0;
 // Transient header message (duration cycling), 2s.
@@ -735,13 +735,13 @@ static uint8_t menuSel = 0;
 static uint8_t menuN = 0;
 static bool menuDirty = false;
 static bool menuFull = false; // set on open: full clear + title, like CONFIG
-// Template browse state (instant practice setup; map frozen while open).
-static bool tplOpen = false;
-static uint8_t tplSel = 0;
-static bool tplDirty = false;
-static bool tplAsked = false;
-static bool tplWasReady = false;
-static unsigned long tplT0 = 0;
+// Course browse state (instant practice setup; map frozen while open).
+static bool courseOpen = false;
+static uint8_t courseSel = 0;
+static bool courseDirty = false;
+static bool courseAsked = false;
+static bool courseWasReady = false;
+static unsigned long courseT0 = 0;
 
 static void resetRaceText()
 {
@@ -881,8 +881,8 @@ static void drawRaceText(TinyGPSPlus& gps)
     // Hint bar: texts change length across modes now, so repaint on change
     // (band clear once, then both sides).
     char hintL[16], hintR[16];
-    snprintf(hintL, sizeof(hintL), "%s", (tplOpen || menuOpen) ? "L Back" : "L Next  LL Menu");
-    snprintf(hintR, sizeof(hintR), "%s", (tplOpen || menuOpen) ? "R Sel RR Pick" : "RR Switch View");
+    snprintf(hintL, sizeof(hintL), "%s", (courseOpen || menuOpen) ? "L Back" : "L Next  LL Menu");
+    snprintf(hintR, sizeof(hintR), "%s", (courseOpen || menuOpen) ? "R Sel RR Pick" : "RR Switch View");
     if (strcmp(hintL, lastHintL) != 0 || strcmp(hintR, lastHintR) != 0) {
         tft.fillRect(0, 219, 320, 21, RBG);
         strncpy(lastHintL, hintL, sizeof(lastHintL) - 1);
@@ -951,30 +951,30 @@ static void menuClose()
     redrawCurrentPage();
 }
 
-static void tplClose()
+static void courseClose()
 {
-    tplOpen = false;
+    courseOpen = false;
     redrawCurrentPage();
 }
 
-// Template browse list (below header; map frozen behind it). Repainted on
+// Course browse list (below header; map frozen behind it). Repainted on
 // open/selection/fetch-ready only.
-static void drawTplList()
+static void drawCourseList()
 {
     const int bx = 8, bw = 304, by = 34, bh = 172;
     tft.fillRect(bx, by, bw, bh, RBG);
     tft.drawRect(bx, by, bw, bh, RFG);
     tft.setTextDatum(TL_DATUM);
     tft.setTextColor(RDIM, RBG);
-    if (!tplReady()) {
-        tft.drawString("TEMPLATES ...", bx + 8, by + 5, 2);
+    if (!courseReady()) {
+        tft.drawString("COURSES ...", bx + 8, by + 5, 2);
         tft.setTextColor(RFG, RBG);
         tft.drawString("asking backend", bx + 8, by + 27, 2);
         return;
     }
-    const uint8_t n = tplCount();
+    const uint8_t n = courseCount();
     char head[20];
-    snprintf(head, sizeof(head), "TEMPLATES %d", n);
+    snprintf(head, sizeof(head), "COURSES %d", n);
     tft.setTextDatum(TC_DATUM);
     tft.drawString(head, bx + bw / 2, by + 5, 2);
     tft.drawFastHLine(bx + 8, by + 26, bw - 16, RDIM);
@@ -984,14 +984,14 @@ static void drawTplList()
         tft.drawString("none saved", bx + 8, by + 30, 2);
         return;
     }
-    if (tplSel >= n) tplSel = 0;
-    uint8_t top = tplSel > 2 ? tplSel - 2 : 0;
+    if (courseSel >= n) courseSel = 0;
+    uint8_t top = courseSel > 2 ? courseSel - 2 : 0;
     if (top + 6 > n && n > 6) top = n - 6;
     for (uint8_t r = 0; r < 6 && top + r < n; r++) {
-        const Tpl* t = tplGet(top + r);
+        const Course* t = courseGet(top + r);
         if (!t) continue;
         const int ry = by + 30 + r * 22;
-        const bool sel = (top + r) == tplSel;
+        const bool sel = (top + r) == courseSel;
         char nm[36];
         snprintf(nm, sizeof(nm), "%s %d %s", sel ? ">" : " ", top + r + 1, t->name);
         tft.setTextDatum(TL_DATUM);
@@ -1006,13 +1006,13 @@ static void menuConfirm()
     const bool isPractice = !(raceSession.valid && strcmp(raceSession.mode, "race") == 0);
     if (isPractice) {
         if (menuSel == 0) {
-            // Start practice → browse templates (pick fires the +10s gun).
+            // Start practice → browse courses (pick fires the +10s gun).
             menuOpen = false;
-            tplOpen = true;
-            tplSel = 0;
-            tplDirty = true;
-            tplAsked = false;
-            tplWasReady = false;
+            courseOpen = true;
+            courseSel = 0;
+            courseDirty = true;
+            courseAsked = false;
+            courseWasReady = false;
             redrawCurrentPage();
         } else if (menuSel == 1) {
             // Repeat last → same course re-anchored at the boat, fresh gun.
@@ -1022,7 +1022,7 @@ static void menuConfirm()
                 showTransient("NO COURSE ");
             } else if (now <= 0 || millis() - lastFixAt > 15000) {
                 showTransient("NO FIX ");
-            } else if (tplRepeatSession(lastGpsLat, lastGpsLon, now)) {
+            } else if (courseRepeatSession(lastGpsLat, lastGpsLon, now)) {
                 menuClose();
             } else {
                 showTransient("NO FIX ");
@@ -1066,11 +1066,11 @@ void drawScreenRace(TinyGPSPlus &gps, bool requiresInit)
     if (raceWrongPoll()) {
         showTransient("WRONG!  ");
     }
-    if (courseChanged && (menuOpen || tplOpen) && !gGrabbing) {
-        // A full-screen menu / template list sat over the page; force a clean
+    if (courseChanged && (menuOpen || courseOpen) && !gGrabbing) {
+        // A full-screen menu / course list sat over the page; force a clean
         // repaint so its pixels (header title, pane grid/labels) don't ghost.
         menuOpen = false;
-        tplOpen = false;
+        courseOpen = false;
         redrawCurrentPage();
         return;
     }
@@ -1088,28 +1088,28 @@ void drawScreenRace(TinyGPSPlus &gps, bool requiresInit)
         }
         return;
     }
-    if (tplOpen) {
-        // Template browse: fetch once, fail loud after 8s, freeze the map.
-        if (!tplAsked) {
-            tplAsked = true;
-            tplT0 = millis();
-            backendFetchTemplates();
+    if (courseOpen) {
+        // Course browse: fetch once, fail loud after 8s, freeze the map.
+        if (!courseAsked) {
+            courseAsked = true;
+            courseT0 = millis();
+            backendFetchCourses();
         }
-        if (tplReady() != tplWasReady) {
-            tplWasReady = tplReady();
-            tplDirty = true;
+        if (courseReady() != courseWasReady) {
+            courseWasReady = courseReady();
+            courseDirty = true;
         }
-        if (!tplReady() && millis() - tplT0 > 8000) {
-            tplOpen = false;
+        if (!courseReady() && millis() - courseT0 > 8000) {
+            courseOpen = false;
             showTransient("OFFLINE ");
             redrawCurrentPage();
         }
     }
-    if (!tplOpen) drawRaceMap(gps, requiresInit || courseChanged);
+    if (!courseOpen) drawRaceMap(gps, requiresInit || courseChanged);
     drawRaceText(gps);
-    if (tplOpen && (tplDirty || requiresInit || courseChanged)) {
-        drawTplList();
-        tplDirty = false;
+    if (courseOpen && (courseDirty || requiresInit || courseChanged)) {
+        drawCourseList();
+        courseDirty = false;
     }
 }
 
@@ -1118,19 +1118,19 @@ static unsigned long durMsgUntil = 0;
 
 void screenRaceButton(Button button, ButtonEvent event)
 {
-    // Template browse owns Short/Long while open (raw Press/Release pass
+    // Course browse owns Short/Long while open (raw Press/Release pass
     // through, same release-after-open reason as the menu).
-    if (tplOpen) {
+    if (courseOpen) {
         if (button == Button::Left &&
             (event == ButtonEvent::ShortPress || event == ButtonEvent::LongPress)) {
-            tplClose();
+            courseClose();
             return;
         }
         if (button == Button::Right && event == ButtonEvent::ShortPress) {
-            const uint8_t n = tplCount();
+            const uint8_t n = courseCount();
             if (n) {
-                tplSel = (uint8_t)((tplSel + 1) % n);
-                tplDirty = true;
+                courseSel = (uint8_t)((courseSel + 1) % n);
+                courseDirty = true;
             }
             return;
         }
@@ -1138,8 +1138,8 @@ void screenRaceButton(Button button, ButtonEvent event)
             long now = raceWallEpoch();
             if (now <= 0) now = lastGpsNow;
             if (now > 0 && millis() - lastFixAt <= 15000 &&
-                tplStartSession(tplSel, lastGpsLat, lastGpsLon, now)) {
-                tplClose(); // courseVersion bump redraws the new course
+                courseStartSession(courseSel, lastGpsLat, lastGpsLon, now)) {
+                courseClose(); // courseVersion bump redraws the new course
             } else {
                 showTransient("NO FIX ");
             }

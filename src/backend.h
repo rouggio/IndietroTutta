@@ -8,9 +8,9 @@ bool backendOnline();
 // waiting for the 30s tick (race screen manual resync).
 void backendPollHealthNow();
 
-// Ask the backend task to (re)fetch the template library (instant
-// practice setup). Returns immediately; poll tplReady().
-void backendFetchTemplates();
+// Ask the backend task to (re)fetch the course library (instant
+// practice setup). Returns immediately; poll courseReady().
+void backendFetchCourses();
 
 void backendInit(TinyGPSPlus* gps);
 

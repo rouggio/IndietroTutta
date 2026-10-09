@@ -1,4 +1,4 @@
-#include "race_templates.h"
+#include "race_courses.h"
 #include "race_session.h"
 #include "race_run.h"
 #include "config.h"
@@ -11,31 +11,31 @@
 #include <math.h>
 #include <string.h>
 
-static Tpl tplPool[TPL_MAX];
-static bool tplHave = false;
+static Course coursePool[COURSE_MAX];
+static bool courseHave = false;
 
-bool tplReady() { return tplHave; }
+bool courseReady() { return courseHave; }
 
-uint8_t tplCount()
+uint8_t courseCount()
 {
-    if (!tplHave) return 0;
+    if (!courseHave) return 0;
     uint8_t n = 0;
-    for (uint8_t i = 0; i < TPL_MAX; i++) if (tplPool[i].used) n++;
+    for (uint8_t i = 0; i < COURSE_MAX; i++) if (coursePool[i].used) n++;
     return n;
 }
 
-const Tpl* tplGet(uint8_t i)
+const Course* courseGet(uint8_t i)
 {
     uint8_t n = 0;
-    for (uint8_t k = 0; k < TPL_MAX; k++) {
-        if (!tplPool[k].used) continue;
-        if (n == i) return &tplPool[k];
+    for (uint8_t k = 0; k < COURSE_MAX; k++) {
+        if (!coursePool[k].used) continue;
+        if (n == i) return &coursePool[k];
         n++;
     }
     return nullptr;
 }
 
-static uint8_t markTypeFromTpl(const char* t)
+static uint8_t markTypeFromCourse(const char* t)
 {
     // Mirrors race_session markTypeFrom: None/Start/Single/Gate/Finish.
     if (!t) return 0;
@@ -46,43 +46,42 @@ static uint8_t markTypeFromTpl(const char* t)
     return 0;
 }
 
-static void tplClear()
+static void courseClear()
 {
-    for (uint8_t i = 0; i < TPL_MAX; i++) tplPool[i].used = false;
+    for (uint8_t i = 0; i < COURSE_MAX; i++) coursePool[i].used = false;
 }
 
-// Fill one pool slot from a parsed template object (preset or DB row).
+// Fill one pool slot from a parsed course row.
 // Returns false when the slot list is full.
-static bool tplFill(JsonObject o, long id, const char* key)
+static bool courseFill(JsonObject o, long id)
 {
-    Tpl* dst = nullptr;
-    for (uint8_t i = 0; i < TPL_MAX; i++) {
-        if (!tplPool[i].used) {
-            dst = &tplPool[i];
+    Course* dst = nullptr;
+    for (uint8_t i = 0; i < COURSE_MAX; i++) {
+        if (!coursePool[i].used) {
+            dst = &coursePool[i];
             break;
         }
     }
     if (!dst) return false;
     dst->id = id;
-    strncpy(dst->key, key ? key : "", sizeof(dst->key) - 1);
     const char* name = o["name"] | "Course";
     strncpy(dst->name, name, sizeof(dst->name) - 1);
     dst->markCount = 0;
     JsonArray marks = o["marks"].as<JsonArray>();
     for (JsonObject m : marks) {
-        if (dst->markCount >= TPL_MARKS) break;
-        TplMark& d = dst->marks[dst->markCount];
+        if (dst->markCount >= COURSE_MARKS) break;
+        CourseMark& d = dst->marks[dst->markCount];
         d.x = m["x"] | 0.0f;
         d.y = m["y"] | 0.0f;
         d.r = m["r"] | 30.0f;
         const char* side = m["side"] | "P";
         d.side = side[0] ? side[0] : 'P';
-        d.type = markTypeFromTpl(m["type"] | "");
+        d.type = markTypeFromCourse(m["type"] | "");
         const char* gate = m["gate"] | "";
         strncpy(d.gate, gate, sizeof(d.gate) - 1);
         dst->markCount++;
     }
-    auto fillSeg = [](TplSeg& s, JsonObject so) {
+    auto fillSeg = [](CourseSeg& s, JsonObject so) {
         if (so.isNull()) {
             s.valid = false;
             return;
@@ -104,9 +103,11 @@ static bool tplFill(JsonObject o, long id, const char* key)
     return dst->used;
 }
 
-// Backend-task context: pull presets + user templates (heap JSON docs,
-// ~2KB each — safe off the task stack).
-static void tplFetchOnce(const String& url, bool preset)
+// Backend-task context: pull the course library (heap JSON docs,
+// ~2KB each — safe off the task stack). One fetch: built-in and user
+// courses are all rows of GET /courses, id-keyed (builtinKey marks the
+// read-only built-ins, which the device just shows like any other).
+static void courseFetchOnce(const String& url)
 {
     if (WiFi.status() != WL_CONNECTED) return;
     ServerLink link;
@@ -122,34 +123,25 @@ static void tplFetchOnce(const String& url, bool preset)
     if (body.length() == 0 || body.length() > 16384) return;
     DynamicJsonDocument doc(12288);
     if (deserializeJson(doc, body)) return;
-    if (preset) {
-        JsonArray arr = doc.as<JsonArray>();
-        for (JsonObject o : arr) {
-            const char* key = o["key"] | "";
-            tplFill(o, 0, key);
-        }
-    } else {
-        JsonArray arr = doc.as<JsonArray>();
-        for (JsonObject o : arr) {
-            const long id = o["id"] | 0L;
-            if (id <= 0) continue;
-            tplFill(o, id, nullptr);
-        }
+    JsonArray arr = doc.as<JsonArray>();
+    for (JsonObject o : arr) {
+        const long id = o["id"] | 0L;
+        if (id <= 0) continue;
+        courseFill(o, id);
     }
 }
 
-void tplFetch()
+void courseFetch()
 {
-    tplClear();
-    tplFetchOnce(serverBaseUrl() + "/templates/presets", true);
-    tplFetchOnce(serverBaseUrl() + "/templates", false);
-    tplHave = true;
-    bufferedSerialPrintln("[TPL] library ready");
+    courseClear();
+    courseFetchOnce(serverBaseUrl() + "/courses");
+    courseHave = true;
+    bufferedSerialPrintln("[CRS] library ready");
 }
 
 // Wind-frame resolve (mirror of the backend/js math, scale 1 — builder
 // bakes scale into the model). Lines always square to the wind.
-static void tplResolvePt(double originLat, double originLon, int windDir,
+static void courseResolvePt(double originLat, double originLon, int windDir,
                          double x, double y, double& lat, double& lon)
 {
     const double t = windDir * M_PI / 180.0;
@@ -160,8 +152,8 @@ static void tplResolvePt(double originLat, double originLon, int windDir,
     lon = originLon + E / (111320.0 * cosLat);
 }
 
-static void tplResolveSeg(double originLat, double originLon, int windDir,
-                          const TplSeg& s, double& latA, double& lonA,
+static void courseResolveSeg(double originLat, double originLon, int windDir,
+                          const CourseSeg& s, double& latA, double& lonA,
                           double& latB, double& lonB)
 {
     const double cx = (s.ax + s.bx) / 2.0, cy = (s.ay + s.by) / 2.0;
@@ -169,7 +161,7 @@ static void tplResolveSeg(double originLat, double originLon, int windDir,
     const double bdeg = fmod(windDir + 90.0 + 360.0, 360.0);
     const double brad = bdeg * M_PI / 180.0;
     double clat, clon;
-    tplResolvePt(originLat, originLon, windDir, cx, cy, clat, clon);
+    courseResolvePt(originLat, originLon, windDir, cx, cy, clat, clon);
     const double cosLat = cos(originLat * M_PI / 180.0);
     const double half = len / 2.0;
     const double dLa = (half * cos(brad)) / 111320.0;
@@ -180,9 +172,9 @@ static void tplResolveSeg(double originLat, double originLon, int windDir,
     lonB = clon + dLo;
 }
 
-bool tplStartSession(uint8_t i, double boatLat, double boatLon, long nowEpoch)
+bool courseStartSession(uint8_t i, double boatLat, double boatLon, long nowEpoch)
 {
-    const Tpl* t = tplGet(i);
+    const Course* t = courseGet(i);
     if (!t || nowEpoch <= 0) return false;
     const int wind = raceSession.valid ? raceSession.windDir
                     : (raceSession.envWindSpeed > 0 ? raceSession.envWindDir : 0);
@@ -214,9 +206,9 @@ bool tplStartSession(uint8_t i, double boatLat, double boatLon, long nowEpoch)
     next.courseVersion = raceSession.valid ? raceSession.courseVersion + 1 : 1;
     next.markCount = 0;
     for (uint8_t k = 0; k < t->markCount && k < 10; k++) {
-        const TplMark& s = t->marks[k];
+        const CourseMark& s = t->marks[k];
         RaceMark& d = next.marks[k];
-        tplResolvePt(originLat, originLon, wind, s.x, s.y, d.lat, d.lon);
+        courseResolvePt(originLat, originLon, wind, s.x, s.y, d.lat, d.lon);
         d.r = s.r;
         d.side = s.side;
         d.type = (RaceMarkType)s.type;
@@ -224,7 +216,7 @@ bool tplStartSession(uint8_t i, double boatLat, double boatLon, long nowEpoch)
         next.markCount++;
     }
     if (t->startLine.valid) {
-        tplResolveSeg(originLat, originLon, wind, t->startLine,
+        courseResolveSeg(originLat, originLon, wind, t->startLine,
                       next.startLine.latA, next.startLine.lonA,
                       next.startLine.latB, next.startLine.lonB);
         next.startLine.valid = true;
@@ -234,7 +226,7 @@ bool tplStartSession(uint8_t i, double boatLat, double boatLon, long nowEpoch)
         next.finishLine = next.startLine;
     } else if (t->finishLine.valid) {
         next.finishSameAsStart = false;
-        tplResolveSeg(originLat, originLon, wind, t->finishLine,
+        courseResolveSeg(originLat, originLon, wind, t->finishLine,
                       next.finishLine.latA, next.finishLine.lonA,
                       next.finishLine.latB, next.finishLine.lonB);
         next.finishLine.valid = true;
@@ -244,11 +236,11 @@ bool tplStartSession(uint8_t i, double boatLat, double boatLon, long nowEpoch)
     raceSession = next;
     raceRunReset();
     racePracticeStart(nowEpoch + 10); // 10-second start, immediately
-    bufferedSerialPrintln("[TPL] local session started");
+    bufferedSerialPrintln("[CRS] local session started");
     return true;
 }
 
-bool tplRepeatSession(double boatLat, double boatLon, long nowEpoch)
+bool courseRepeatSession(double boatLat, double boatLon, long nowEpoch)
 {
     // Repeat = same absolute course rigid-shifted so the start reference
     // (line center, else mark #1) sits 20m upwind of the boat, fresh +10s
@@ -294,6 +286,6 @@ bool tplRepeatSession(double boatLat, double boatLon, long nowEpoch)
     raceSession = next;
     raceRunReset();
     racePracticeStart(nowEpoch + 10);
-    bufferedSerialPrintln("[TPL] session repeated at boat");
+    bufferedSerialPrintln("[CRS] session repeated at boat");
     return true;
 }
