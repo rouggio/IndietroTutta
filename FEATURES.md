@@ -28,7 +28,7 @@ Two modes, one engine:
 3. **Minimal cost:** wireframe as `int32 lat/lon*1e5` (~300B for 8 marks), lines + circles only, no tiles, no fleet.
 4. **Push early, count locally:** course + `startTime` dispatched well before `5:00`; device counts down locally.
 5. **Offline resilient:** course cached in NVS/LittleFS, points queued when no WiFi.
-6. **Template parity:** same 5 course templates exist on web and on device; same JSON, same engine.
+6. **Course parity:** same 5 course courses exist on web and on device; same JSON, same engine.
 
 ---
 
@@ -49,11 +49,11 @@ Two modes, one engine:
 
 ---
 
-## 4. Course Templates — Both Entry Points
+## 4. Course Courses — Both Entry Points
 
 Same JSON library, two UIs. See `FEATURES_courses.svg` for diagrams.
 
-| # | Template | Order | Use |
+| # | Course | Order | Use |
 |---|----------|-------|-----|
 | 1 | **Windward-Leeward (W/L)** | `Start → 1 → 2 → 1 → Finish` | Training stick, default solo |
 | 2 | **W/L with Gate** | `Start → 1 → Gate (2 buoys) → 1 → Finish` | Fleet gate practice |
@@ -61,8 +61,8 @@ Same JSON library, two UIs. See `FEATURES_courses.svg` for diagrams.
 | 4 | **WLT Olympic** | `Start → 1 → 2 → 3 → 1 → Finish` | Triangle + beat |
 | 5 | **Trapezoid** | `Start → 1 → 2 → 3 → 4 → Finish` | Two-fleet |
 
-- **Browser:** Course builder → `Templates` dropdown → drops marks centered on venue, square to wind, draggable.
-- **Device:** `WAYPOINTS → Make Training Course → Templates` → generates marks around current GPS position oriented to current `COG` (wind proxy). `<10` marks. Sail to refine with `LL Flag`.
+- **Browser:** Course builder → `Courses` dropdown → drops marks centered on venue, square to wind, draggable.
+- **Device:** `WAYPOINTS → Make Training Course → Courses` → generates marks around current GPS position oriented to current `COG` (wind proxy). `<10` marks. Sail to refine with `LL Flag`.
 - **Rounding default:** single mark `P` (to port), gate `G` = either side valid; per-mark toggle `P/S/G` in builder.
 
 ---
@@ -70,13 +70,13 @@ Same JSON library, two UIs. See `FEATURES_courses.svg` for diagrams.
 ## 5. Modes
 
 ### A. Regatta Mode (web-defined)
-1. Organizer draws or picks template, sets order/radius/side, saves `courses` → attaches to `race`, assigns devices.
+1. Organizer draws or picks course, sets order/radius/side, saves `courses` → attaches to `race`, assigns devices.
 2. Sets `startTime` (e.g. `now+5:00`) → backend creates `prec5/4/1/start`.
 3. Devices on next health poll cache `course v` + `startTime`, render thumbnail + main asides.
 
 ### B. Solo / Training Mode — Sail-to-Build
 1. **Sail & flag:** `WAYPOINTS` `LL Flag` — sail intended track, flag 3-8 marks.
-2. **Make course:** `TRAINING` subscreen lists flagged marks → order, pick `start`/`finish`, set `radius` (30m default), choose template or keep sailed order, save as `training_course v1` in NVS + `POST /courses` as personal course if WiFi.
+2. **Make course:** `TRAINING` subscreen lists flagged marks → order, pick `start`/`finish`, set `radius` (30m default), choose course or keep sailed order, save as `training_course v1` in NVS + `POST /courses` as personal course if WiFi.
 3. **Race it:** trigger `1:00` countdown locally → same engine as Regatta: countdown, next mark, rounding detection, splits, total. `RR` to reset and re-run.
 
 > After step 2 the device state is *identical* to a Regatta course — only the source differs.
@@ -122,7 +122,7 @@ Same JSON library, two UIs. See `FEATURES_courses.svg` for diagrams.
 
 ### Regatta Management
 - CRUD `regattas` (venue, dates, banner, public/private) → `sessions` (date, location) → `races` (startTime, course, participants, DNS/DNF/DSQ)
-- Course builder: click/drag posts, order + radius + side `P/S/G`, distance auto-calc, GPX import/export, clone, **templates**
+- Course builder: click/drag posts, order + radius + side `P/S/G`, distance auto-calc, GPX import/export, clone, **courses**
 
 ### Live Tracking & Safety
 - Live map per regatta/session/race — filter by device, flagged-only toggle
@@ -150,7 +150,7 @@ Same JSON library, two UIs. See `FEATURES_courses.svg` for diagrams.
 users(id, email, name, role, sailNo, boatClass)
 regattas(id, name, venue, startDate, endDate, visibility)
 sessions(id, regattaId, date, location, notes)
-courses(id, name, ownerId, marks JSON, version) -- templates are seed rows
+courses(id, name, ownerId, marks JSON, version) -- built-in courses are seed rows
 races(id, sessionId, courseId, startTime, status)
 participants(raceId, deviceId, userId, boat)
 signals(id, raceId, type, at, payload)
@@ -158,7 +158,7 @@ signals(id, raceId, type, at, payload)
 ```
 
 **API (additive):**
-- `GET /courses/templates` → 5 presets
+- `GET /courses/courses` → 5 built-in courses
 - `POST /courses` + `GET /courses/:id`
 - `GET /race/active?deviceId=MAC` → `{race, course, startTime, signals}`
 - `GET /health` now also returns `race/course` if assigned; `POST /races/:id/signal`
@@ -169,9 +169,9 @@ signals(id, raceId, type, at, payload)
 
 Each increment is shippable and testable on device + web + Turso. No increment breaks the previous.
 
-### Step 0 — Templates Library (no behavior)
-- **Do:** Add `courses/templates.json` (5 presets) + `GET /courses/templates`. No DB yet.
-- **Test:** `curl /courses/templates` returns 5; frontend dropdown renders SVG.
+### Step 0 — Courses Library (no behavior)
+- **Do:** Add `courses/courses.json` (5 built-in courses) + `GET /courses/courses`. No DB yet.
+- **Test:** `curl /courses/courses` returns 5; frontend dropdown renders SVG.
 
 ### Step 1 — Course Cache + Wireframe Stub + POS (foundation)
 - **Do:** Device: `course` struct, NVS cache `courseVersion`, `getSyncedTime()` (GPS > server+millis), 40×40 wireframe `drawWireframe()` (equirectangular, lines+circles), main `POS` line.
@@ -189,7 +189,7 @@ Each increment is shippable and testable on device + web + Turso. No increment b
 - **Do:** Device: `TRAINING` screen (flagged → ordered course), start-line fallback (`course` vs `p1→p2`), `halfLength 40m`, line-cross detection.
 - **Test:** Flag start while drifting (fallback) and while moving (course), both produce valid line; run a training race and get splits.
 
-### Step 5 — Web Builder with Templates → Push
+### Step 5 — Web Builder with Courses → Push
 - **Do:** Frontend: Leaflet course builder with draggable marks, side toggle `P/S/G`, save `POST /courses`, attach to race, assign devices.
 - **Test:** Draw W/L Gate on web, push, device wireframe matches map within 5m.
 
