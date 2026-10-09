@@ -224,8 +224,8 @@ void drawTopBar(TinyGPSPlus &gps)
   tft.drawFastHLine(0, 30, tft.width(), GRAY);
 }
 
-// Right-column cache: values redrawn only on change (no flicker),
-// space-padded to overwrite narrower predecessors. Reset in initScreen().
+// Cell caches: values redrawn only on change (no flicker), space-padded
+// to overwrite narrower predecessors. Reset in initScreen().
 static String lastMaxStr = "";
 static String lastSesStr = "";
 static String lastWndStr = "";
@@ -234,60 +234,65 @@ static String lastBrgStr = "";
 // -2 = cell not rendered yet (sentinel — forces ring+N+arrows on first pass).
 static int prevBrgDeg = -2;
 static int prevWndDeg = -2;
+// Instant speed: last string + font (width changes get a one-off wipe).
+static String lastSpdStr = "";
+static uint8_t lastSpdFont = 8;
 
-static void drawRightValue(const String& padded, int y, uint8_t font, String& last)
+static void drawRightValue(const String& padded, int rightEdge, int y,
+                           uint8_t font, String& last)
 {
   if (padded == last) return;
   last = padded;
   tft.setTextColor(WHITE, BG);
   tft.setTextDatum(TR_DATUM);
-  tft.drawString(padded, tft.width() - 4, y, font);
+  tft.drawString(padded, rightEdge, y, font);
 }
 
-static void drawRightLabel(const char* label, int y)
+static void drawRightLabel(const char* label, int rightEdge, int y)
 {
   tft.setTextColor(GRAY, BG);
   tft.setTextDatum(TR_DATUM);
-  tft.drawString(label, tft.width() - 8, y, 2);
+  tft.drawString(label, rightEdge, y, 2);
 }
 
-// Grid: same 1px GRAY as the top separator (drawTopBar).
-// Redrawn every frame over the same pixels — no flicker, no clear needed.
-static const int GRID_X = 222;
-static const int GRID_TOP = 30;
-static const int GRID_BOTTOM = 210;
-// East column: 3 equal cells between top and bottom line
-// East column: compressed Max/Session cells (50px each) around a tall
-// compass cell (80px) that replaced the old Course label/value readout.
-static const int GRID_ROW1 = 80;
-static const int GRID_ROW2 = 160;
+// ====== LAYOUT ======
+// Body = 2 rows x 3 cols under the top bar (1px GRAY lines, same as the
+// top separator): row1 cols1-2 = instant speed; row2 col1 = max speed;
+// row2 col2 = session time; col3 (rows 1-2) = wind/bearing ring cell.
+static const int BODY_TOP = 31;     // below the top-bar separator (y=30)
+static const int SPEED_W = 184;     // v-line: speed/max/session | ring cell
+static const int MAX_W = 92;        // v-line: max | session (row 2 only)
+static const int ROW_MID = 128;     // h-line across cols 1-2
+static const int BODY_BOTTOM = 214; // bottom line, full width
 
 static void drawMainGrid()
 {
-  tft.drawFastVLine(GRID_X, GRID_TOP, GRID_BOTTOM - GRID_TOP, GRAY);
-  tft.drawFastHLine(0, GRID_BOTTOM, tft.width(), GRAY);
-  tft.drawFastHLine(GRID_X, GRID_ROW1, tft.width() - GRID_X, GRAY);
-  tft.drawFastHLine(GRID_X, GRID_ROW2, tft.width() - GRID_X, GRAY);
+  tft.drawFastVLine(SPEED_W, BODY_TOP, BODY_BOTTOM - BODY_TOP, GRAY);
+  tft.drawFastVLine(MAX_W, ROW_MID, BODY_BOTTOM - ROW_MID, GRAY);
+  tft.drawFastHLine(0, ROW_MID, SPEED_W, GRAY);
+  tft.drawFastHLine(0, BODY_BOTTOM, tft.width(), GRAY);
 }
 
-// ---- Compass cell (middle) --------------------------------------------
-// N-up ring with an "N" glyph just inside the top (GLCD renderer —
-// capture-safe). Drawn before the arrows so the solid triangles cover it
-// when they overlay; the erase pass may clip it, hence it lives in the
-// same repaint step as the ring redraw.
+// ---- Ring cell (col 3, spans both rows) --------------------------------
+// N-up ring, top-aligned in the cell (4px margins); "N" glyph just inside
+// the top (GLCD renderer — capture-safe). Wind speed + bearing sit below
+// the ring. The N is drawn before the arrows so the solid triangles cover
+// it when they overlay; the erase pass may clip ring/N, hence the ring
+// lives in the same repaint step as the triangles.
 static void drawCompassRing(int cx, int cy, int r)
 {
   tft.drawCircle(cx, cy, r, GRAY);
   drawLabel1C(cx, cy - r + 8, "N", GRAY);
 }
 
-// Solid triangle pointing at `deg` (0 = up, clockwise): tip at `r` from
-// the center, base on the center, no stick. Also used to erase (BG).
+// Solid EQUILATERAL triangle pointing at `deg` (0 = up, clockwise): tip at
+// `r` from the center, base centered on (cx,cy) with half-width r/√3, no
+// stick. Also used to erase (color = BG).
 static void drawNupTriangle(int cx, int cy, int r, int deg, uint16_t color)
 {
   const double a = deg * M_PI / 180.0;
   const double sx = sin(a), cz = cos(a);
-  const int w = r * 0.32;
+  const int w = (int)(r / sqrt(3.0));
   const int tx = cx + (int)(r * sx), ty = cy - (int)(r * cz);
   const int p1x = cx + (int)(w * cz), p1y = cy + (int)(w * sx);
   const int p2x = cx - (int)(w * cz), p2y = cy - (int)(w * sx);
@@ -313,81 +318,93 @@ void drawSpeed(TinyGPSPlus &gps)
   if (config.speedUnit == 1) { value *= 1.852; maxValue *= 1.852; }         // km/h
   else if (config.speedUnit == 2) { value *= 1.15078; maxValue *= 1.15078; } // mph
 
-  // Instant speed centered in the west grid slot
-  const int cx = GRID_X / 2;
-  tft.setTextDatum(MC_DATUM);
-
+  // Instant speed cell (row 1, cols 1-2): unit label top-center, value
+  // centered below — the cell is sized so "88.8" fits with small margins.
+  // A 5-char value ("123.4" in km/h) drops to the narrower font 7.
+  const int cx = SPEED_W / 2;
   tft.setTextColor(GRAY, BG);
+  tft.setTextDatum(TC_DATUM);
   String label = "SPEED (" + String(unitLabels[config.speedUnit]) + ")";
-  tft.drawString(label, cx, 78, 2);
+  tft.drawString(label, cx, 34, 2);
 
-  tft.setTextColor(TFT_YELLOW, BG);
-  if (gps.speed.isValid()) {
-    String spd = " " + String(value, 1) + " ";
-    tft.drawString(spd, cx, 128, 8);
-  } else {
-    String spd = "  ---  ";
-    tft.drawString(spd, cx, 128, 8);
+  String spd = gps.speed.isValid() ? String(value, 1) : String("---");
+  const uint8_t spdFont = spd.length() >= 5 ? 7 : 8;
+  if (spd != lastSpdStr || spdFont != lastSpdFont) {
+    if (spd.length() != lastSpdStr.length() || spdFont != lastSpdFont) {
+      // One-off wipe on a width change (rare: decade cross / unit toggle);
+      // constant-width overwrites never reach this path. Stays clear of
+      // the grid lines (x<184, y<128) — no flicker on them.
+      tft.fillRect(2, 51, 181, 77, BG);
+    }
+    tft.setTextColor(TFT_YELLOW, BG);
+    tft.setTextDatum(MC_DATUM);
+    tft.drawString(spd, cx, 90, spdFont);
+    lastSpdStr = spd;
+    lastSpdFont = spdFont;
   }
 
-  // Right column: Max speed / compass / Session. Labels gray, values white.
-  // No fillRect/clear on the refresh path — stale pixels are overwritten.
-  drawRightLabel("Max speed", 34);
+  // Max speed (row 2, col 1) + session time (row 2, col 2). Labels gray,
+  // values white, redrawn only on change (no flicker).
   String maxPadded;
   if (hasSessionMax) {
     maxPadded = "  " + String(maxValue, 1) + " ";
   } else {
     maxPadded = "  ---  ";
   }
-  drawRightValue(maxPadded, 52, 4, lastMaxStr);
+  drawRightLabel("Max speed", MAX_W - 8, 148);
+  drawRightValue(maxPadded, MAX_W - 4, 168, 4, lastMaxStr);
 
-  // Compass cell: ring left-aligned in the column, "N" inside its top,
-  // wind speed top-right, boat bearing bottom-right. Boat = solid GREEN
-  // triangle, tip tangent to the ring (N-up bearing); wind = solid RED
-  // triangle internal to it (tip downwind). Triangles repaint ONLY when an
-  // angle actually changed: old ones erased in BG, ring+N restored, then
-  // both redrawn (wind under the boat). Unchanged frames draw nothing —
-  // that is what keeps the ring/cell edges from shimmering.
-  const int cmpCx = GRID_X + 6 + 22;
-  const int cmpCy = (GRID_ROW1 + GRID_ROW2) / 2;
-  const int cmpR = 22;
-
-  const int brgDeg = gps.course.isValid() ? (int)(gps.course.deg() + 0.5) % 360 : -1;
-  const bool wndValid = raceSession.valid && raceSession.windSpeed > 0;
-  const int wndDeg = wndValid ? (raceSession.windDir + 180) % 360 : -1;
-
-  if (brgDeg != prevBrgDeg || wndDeg != prevWndDeg) {
-    if (prevBrgDeg >= 0) drawNupTriangle(cmpCx, cmpCy, cmpR - 1, prevBrgDeg, BG);
-    if (prevWndDeg >= 0) drawNupTriangle(cmpCx, cmpCy, cmpR - 9, prevWndDeg, BG);
-    drawCompassRing(cmpCx, cmpCy, cmpR); // restore ring + N under the arrows
-    if (wndDeg >= 0) drawNupTriangle(cmpCx, cmpCy, cmpR - 9, wndDeg, RED);
-    if (brgDeg >= 0) drawNupTriangle(cmpCx, cmpCy, cmpR - 1, brgDeg, GREEN);
-    prevBrgDeg = brgDeg;
-    prevWndDeg = wndDeg;
-  }
-
-  // Wind speed, top right of the cell (font-2 bbox stays above the ring).
-  String wndTxt = " ---   ";
-  if (wndValid) wndTxt = " " + String(raceSession.windSpeed) + " kn ";
-  drawRightValue(wndTxt, GRID_ROW1 + 1, 2, lastWndStr);
-
-  // Boat bearing, bottom right: zero-padded 3 chars (constant width, no
-  // ghosting) ending at the anchor; degree ring drawn right of it.
-  String degTxt = "---";
-  if (brgDeg >= 0) {
-    degTxt = String(brgDeg);
-    while (degTxt.length() < 3) degTxt = "0" + degTxt;
-  }
-  drawRightValue(degTxt, cmpCy + 8, 4, lastBrgStr);
-  tft.drawCircle(tft.width() - 2, cmpCy + 14, 2, brgDeg >= 0 ? WHITE : BG);
-
-  drawRightLabel("Session", 163);
+  drawRightLabel("Session", SPEED_W - 8, 148);
   unsigned long totalSec = millis() / 1000UL;
   unsigned long sesMm = totalSec / 60UL;
   unsigned long sesSs = totalSec % 60UL;
   char sesBuf[16];
   snprintf(sesBuf, sizeof(sesBuf), "%02lu'%02lu\"", sesMm, sesSs);
-  drawRightValue("  " + String(sesBuf) + " ", 181, 4, lastSesStr);
+  drawRightValue("  " + String(sesBuf) + " ", SPEED_W - 4, 168, 4, lastSesStr);
+
+  // Ring cell (col 3, rows 1-2): N-up ring — green boat triangle, tip
+  // tangent to the ring (bearing); red wind triangle, internal (tip
+  // downwind); wind speed + bearing below the ring. Triangles repaint
+  // ONLY when an angle actually changed: old ones erased in BG, ring+N
+  // restored, both redrawn (wind under the boat). Unchanged frames draw
+  // nothing — that keeps the ring/cell edges from shimmering.
+  const int cmpL = SPEED_W + 2;               // ring cell inner edges
+  const int cmpR = (tft.width() - 2 - cmpL - 8) / 2; // dia = width - 4px/side
+  const int cmpCx = cmpL + 4 + cmpR;
+  const int cmpCy = BODY_TOP + 4 + cmpR;      // top-aligned
+  const int wndR = cmpR * 6 / 10;             // wind triangle, internal
+
+  const int brgDeg = gps.course.isValid() ? (int)(gps.course.deg() + 0.5) % 360 : -1;
+  const bool sesWind = raceSession.valid && raceSession.windSpeed > 0;
+  const bool wndValid = sesWind || raceSession.envWindSpeed > 0;
+  const int wndKn = sesWind ? raceSession.windSpeed : raceSession.envWindSpeed;
+  const int wndDeg = wndValid ? ((sesWind ? raceSession.windDir : raceSession.envWindDir) + 180) % 360 : -1;
+
+  if (brgDeg != prevBrgDeg || wndDeg != prevWndDeg) {
+    if (prevBrgDeg >= 0) drawNupTriangle(cmpCx, cmpCy, cmpR - 1, prevBrgDeg, BG);
+    if (prevWndDeg >= 0) drawNupTriangle(cmpCx, cmpCy, wndR, prevWndDeg, BG);
+    drawCompassRing(cmpCx, cmpCy, cmpR); // restore ring + N under the arrows
+    if (wndDeg >= 0) drawNupTriangle(cmpCx, cmpCy, wndR, wndDeg, RED);
+    if (brgDeg >= 0) drawNupTriangle(cmpCx, cmpCy, cmpR - 1, brgDeg, GREEN);
+    prevBrgDeg = brgDeg;
+    prevWndDeg = wndDeg;
+  }
+
+  // Wind speed (centered) + zero-padded bearing (right, degree ring drawn
+  // after the digits) below the ring.
+  String wndTxt = "--- kn";
+  if (wndValid) wndTxt = String(wndKn) + " kn";
+  tft.setTextColor(WHITE, BG);
+  tft.setTextDatum(MC_DATUM);
+  tft.drawString(wndTxt, cmpCx, 170, 2);
+
+  String degTxt = "---";
+  if (brgDeg >= 0) {
+    degTxt = String(brgDeg);
+    while (degTxt.length() < 3) degTxt = "0" + degTxt;
+  }
+  drawRightValue(degTxt, cmpCx + 12, 186, 4, lastBrgStr);
+  tft.drawCircle(cmpCx + 16, 192, 2, brgDeg >= 0 ? WHITE : BG);
 }
 
 void initScreen() {
@@ -400,6 +417,8 @@ void initScreen() {
   lastSesStr = "";
   lastWndStr = "";
   lastBrgStr = "";
+  lastSpdStr = "";
+  lastSpdFont = 8;
   prevBrgDeg = -2;
   prevWndDeg = -2;
 }

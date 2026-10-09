@@ -1,8 +1,9 @@
 # AGENTS.md — IndietroTutta device firmware (ESP32)
 
 Portable marine GPS instrument: ST7789 240×320, 2 buttons, GPS UART2, WiFi AP+STA,
-OTA self-update. Main screen is always big `speed` + right column
-(Max speed / compass / Session grid).
+OTA self-update. Main screen body = 2 rows × 3 cols: instant speed (row 1,
+cols 1-2), max speed + session time (row 2), wind/bearing ring cell (col 3,
+spans both rows). Top bar (icons) + bottom hints untouched.
 
 ## Hardware / toolchain
 
@@ -35,11 +36,15 @@ Two FreeRTOS tasks in `backend.cpp` (12288 stack each, core 0): feed task
 - `serial_buffer.cpp`: 200-line mutex-guarded log for `/serial`.
 
 Key modules: `screens.*` router + 200ms throttle, `screen_speed.*` main
-(big speed nudged right of center; right column = compressed Max speed +
-Session cells around a compass cell — N-up ring + COG arrow (white) + wind
-arrow (cyan, tip downwind, from raceSession windDir/windSpeed) + wind speed
-in knots; gray font-2 labels, white font-4 values, values redrawn only on
-change, arrows erase+redraw over BG each frame, width-capped; POS line removed),
+(body grid 2×3 under the top bar: instant speed cell = row1 cols1-2 —
+"SPEED (kn)" label + font-8 value, font 7 when 5 chars ("123.4"); row2 col1
+Max speed, col2 Session; col3 ring cell spans both rows — N-up ring
+top-aligned (diameter = cell width − 8px), "N" inside the top, solid
+EQUILATERAL triangles (green boat, tip tangent to ring = bearing; red wind,
+internal, tip downwind = windDir+180), wind speed + bearing (zero-padded,
+degree ring drawn) below the ring; values redrawn only on change, arrows
+repaint only when an angle changed (prev -1/-2 sentinels), one-off fillRect
+wipe only on speed-width change; POS line removed),
 `screen_race.*` shared RACE/PRAC screen (map viewport = left 4/5; wireframe +
 boat triangle/edge-dot + ~1 cm dashed yellow stub toward the next mark; right pane =
 6 equal rows from the very top, labels via `drawLabel1`, values font-2 right-aligned,
@@ -49,7 +54,9 @@ map ≤1Hz, text padded),
 `gps_mock.*` scripted GPS for indoor testing (synthetic RMC+GGA from `GET /sim/next`
 into `gps.encode()`; NVS flag; uploads suppressed; MOCK banner; portal `/mock`),
 `race_session.*` health-pulled session cache (marks/lines/windDir+windSpeed/startTime+offset,
-NVS `race` ns, ArduinoJson heap doc; explicit unassigned clears it, offline keeps cache),
+NVS `race` ns, ArduinoJson heap doc; explicit unassigned clears it, offline keeps cache;
+health top-level `wind` → envWindDir/envWindSpeed RAM-only fallback: UI compass +
+practice Start/Repeat placement use it when the session carries no wind),
 `screen_waypoints.*` (LL flag, max 10 FIFO RAM-only),
 `screen_diagnostics.*` (RR from main), `screen_config.*` (LL from main),
 `wifi_manager.*` non-blocking AP+STA (scan prefers visible strongest, park/retry),
@@ -88,7 +95,9 @@ so capture uses font 2 for the race pane labels),
 ## Network / portal / OTA
 
 - `GET /health` headers `DeviceId:<MAC>` + `Username:`; response body parsed for
-  `session` push (course + startTime + offset, cached in NVS); `POST /gps` JSON lat/lon/speed/course/alt/sats/flagged/username. `setInsecure()` everywhere, no auth.
+  `session` push (course + startTime + offset, cached in NVS) and top-level `wind`
+  (venue wind at the boat's last stored position, env fallback, RAM); `POST /gps`
+  JSON lat/lon/speed/course/alt/sats/flagged/username. `setInsecure()` everywhere, no auth.
 - `server_link.*`: dev/prod switch (NVS `srv` mode/host, portal `/server`); dev+host = plain HTTP to LAN backend, else TLS prod. All fetchers (`health/gps/sim/templates/OTA`) go through `ServerLink`.
 - Portal always up: open AP `IndietroTutta`, DNS → `192.168.4.1` → `/config`.
   Routes: `/config /save /wifi/remove /reset (wipe all!) /reboot /status /health /serial /mock?on=1|0 /ota (POST immediate check vs current server) /server?mode=prod|dev&host=<ip:port> (GET=current) /btn?b=L|R&e=R|RR (remote button) /screen (RGB565 BE 320x240 grab: re-renders the current page into an off-screen 8bpp sprite and streams it, since the ST7789 can't be read back; `scripts/grab_screen.py` → PNG)`. All unauthenticated.

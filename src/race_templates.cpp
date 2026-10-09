@@ -184,7 +184,8 @@ bool tplStartSession(uint8_t i, double boatLat, double boatLon, long nowEpoch)
 {
     const Tpl* t = tplGet(i);
     if (!t || nowEpoch <= 0) return false;
-    const int wind = raceSession.valid ? raceSession.windDir : 0;
+    const int wind = raceSession.valid ? raceSession.windDir
+                    : (raceSession.envWindSpeed > 0 ? raceSession.envWindDir : 0);
     // Reference: start-line center in wind-frame (origin for OOTB lines),
     // else the origin itself.
     double refX = 0.0, refY = 0.0;
@@ -238,6 +239,8 @@ bool tplStartSession(uint8_t i, double boatLat, double boatLon, long nowEpoch)
                       next.finishLine.latB, next.finishLine.lonB);
         next.finishLine.valid = true;
     }
+    next.envWindDir = raceSession.envWindDir;   // struct starts zeroed here
+    next.envWindSpeed = raceSession.envWindSpeed;
     raceSession = next;
     raceRunReset();
     racePracticeStart(nowEpoch + 10); // 10-second start, immediately
@@ -251,7 +254,8 @@ bool tplRepeatSession(double boatLat, double boatLon, long nowEpoch)
     // (line center, else mark #1) sits 20m upwind of the boat, fresh +10s
     // gun. No wind-frame needed: translation preserves the shape.
     if (!raceSession.valid || raceSession.markCount == 0 || nowEpoch <= 0) return false;
-    const int wind = raceSession.windDir;
+    const int wind = raceSession.windDir != 0 ? raceSession.windDir
+                     : (raceSession.envWindSpeed > 0 ? raceSession.envWindDir : 0);
     const double wb = wind * M_PI / 180.0;
     const double scLat = boatLat + (20.0 * cos(wb)) / 111320.0;
     const double scLon = boatLon + (20.0 * sin(wb)) / (111320.0 * cos(boatLat * M_PI / 180.0));

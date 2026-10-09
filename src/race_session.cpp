@@ -165,6 +165,24 @@ static bool sameGeometry(const RaceSession& a, const RaceSession& b)
            a.courseVersion == b.courseVersion;
 }
 
+// Venue wind piggyback: health top-level "wind" object (dir = FROM
+// degrees, speed = knots). RAM only, refreshed every poll; an absent key
+// (offline body, old backend) keeps the last value.
+static void applyEnvWind(JsonObject w)
+{
+    if (w.isNull()) {
+        return;
+    }
+    const int d = w["dir"] | 0;
+    const int s = w["speed"] | 0;
+    if (d == raceSession.envWindDir && s == raceSession.envWindSpeed) {
+        return;
+    }
+    raceSession.envWindDir = ((d % 360) + 360) % 360;
+    raceSession.envWindSpeed = s;
+    bufferedSerialPrintln(String("[RACE] env wind ") + raceSession.envWindDir + "° " + raceSession.envWindSpeed + " kn");
+}
+
 bool raceSessionParse(const char* healthBody)
 {
     if (!healthBody || !healthBody[0]) {
@@ -176,6 +194,7 @@ bool raceSessionParse(const char* healthBody)
     if (deserializeJson(doc, healthBody)) {
         return false;
     }
+    applyEnvWind(doc["wind"]);
     JsonObject sess = doc["session"];
     if (sess.isNull()) {
         // Explicitly unassigned (backend reachable, body parsed): drop a
@@ -204,6 +223,10 @@ bool raceSessionParse(const char* healthBody)
                                   raceSession.startOffsetSec != next.startOffsetSec ||
                                   strcmp(raceSession.mode, next.mode) != 0 ||
                                   strcmp(raceSession.status, next.status) != 0);
+    // Env wind lives in raceSession (applyEnvWind may have just refreshed
+    // it) — sessionFromJson starts from a zeroed struct, so carry it over.
+    next.envWindDir = raceSession.envWindDir;
+    next.envWindSpeed = raceSession.envWindSpeed;
     raceSession = next;
     if (geometryChanged || volatileChanged || !raceSession.valid) {
         raceSessionSave();

@@ -47,6 +47,12 @@ struct RaceSession {
     long startOffsetSec = 0;
     int windDir = 0;
     int windSpeed = 0; // knots (0 = unknown)
+    // Venue wind from the health top-level "wind" piggyback (backend
+    // computes it at the boat's last stored position). RAM only — never
+    // persisted; the UI and practice placement fall back to it when the
+    // assigned session carries no wind of its own. 0 speed = unknown.
+    int envWindDir = 0;
+    int envWindSpeed = 0;
     int courseVersion = 0;
     uint8_t markCount = 0;
     RaceMark marks[10];
