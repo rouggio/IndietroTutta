@@ -230,10 +230,18 @@ static String lastMaxStr = "";
 static String lastSesStr = "";
 static String lastWndStr = "";
 static String lastBrgStr = "";
-// Compass cell: angles of the triangles last drawn. -1 = nothing drawn,
-// -2 = cell not rendered yet (sentinel — forces ring+N+arrows on first pass).
-static int prevBrgDeg = -2;
-static int prevWndDeg = -2;
+// Compass cell: angles of the triangles last drawn (mode-relative: in
+// bearing-up view the boat is 0 and the wind is bearing-relative).
+// -1 = nothing drawn, -2 = cell not rendered yet (sentinel — forces
+// ring+N+arrows on first pass). prevRingUp/prevNDeg track the view mode
+// and the angle where the N glyph was last painted (stale-N clear).
+static int prevBoatDeg = -2;
+static int prevWindDeg = -2;
+static int prevRingUp = -1;
+static int prevNDeg = -1;
+// Ring view: true = bearing-up (boat triangle points to the top, ring
+// rotates), false = N-up (compass). R short toggles; RAM only.
+static bool ringBrgUp = false;
 // Instant speed: last string + font (width changes get a one-off wipe).
 static String lastSpdStr = "";
 static uint8_t lastSpdFont = 8;
@@ -275,14 +283,16 @@ static void drawMainGrid()
 
 // ---- Ring cell (col 3, spans both rows) --------------------------------
 // N-up ring, top-aligned in the cell (4px margins); "N" glyph just inside
-// the top (GLCD renderer — capture-safe). Wind speed + bearing sit below
-// the ring. The N is drawn before the arrows so the solid triangles cover
+// the top — or, in bearing-up view, at the angle where true north sits
+// (`nDeg`, 0 = top). Drawn BEFORE the arrows so the solid triangles cover
 // it when they overlay; the erase pass may clip ring/N, hence the ring
 // lives in the same repaint step as the triangles.
-static void drawCompassRing(int cx, int cy, int r)
+static void drawCompassRing(int cx, int cy, int r, int nDeg)
 {
   tft.drawCircle(cx, cy, r, GRAY);
-  drawLabel1C(cx, cy - r + 8, "N", GRAY);
+  const double a = nDeg * M_PI / 180.0;
+  const int nr = r - 8;
+  drawLabel1C(cx + (int)(nr * sin(a)), cy - (int)(nr * cos(a)), "N", GRAY);
 }
 
 // Solid EQUILATERAL triangle pointing at `deg` (0 = up, clockwise): tip at
@@ -368,9 +378,11 @@ void drawSpeed(TinyGPSPlus &gps)
   // green triangle, tip tangent to the ring border (bearing, base pushed
   // out along it); wind = same size red triangle, tip tangent to the
   // boat's base (no overlap: the two stack radially), tip downwind.
-  // Triangles repaint ONLY when an angle actually changed: old ones
-  // erased in BG, ring+N restored, both redrawn (wind under the boat).
-  // Unchanged frames draw nothing — that keeps ring/cell edges stable.
+  // View mode (R toggle): N-up = true north at the top; bearing-up = the
+  // boat triangle always at the top, wind shifts bearing-relative and the
+  // N glyph sits where true north is. Triangles repaint ONLY when an
+  // angle, the mode or nothing-yet changed: old ones erased in BG, stale
+  // N cleared, ring+N restored, both redrawn (wind under the boat).
   const int cmpL = SPEED_W + 2;               // ring cell inner edges
   const int cmpR = (tft.width() - 2 - cmpL - 8) / 2; // dia = width - 4px/side
   const int cmpCx = cmpL + 4 + cmpR;
@@ -385,16 +397,27 @@ void drawSpeed(TinyGPSPlus &gps)
   const bool sesWind = raceSession.valid && raceSession.windSpeed > 0;
   const bool wndValid = sesWind || raceSession.envWindSpeed > 0;
   const int wndKn = sesWind ? raceSession.windSpeed : raceSession.envWindSpeed;
-  const int wndDeg = wndValid ? ((sesWind ? raceSession.windDir : raceSession.envWindDir) + 180) % 360 : -1;
+  const int wndAbs = wndValid ? ((sesWind ? raceSession.windDir : raceSession.envWindDir) + 180) % 360 : -1;
+  const bool brgUp = ringBrgUp && brgDeg >= 0;  // no bearing → stay N-up
+  const int boatDeg = brgDeg >= 0 ? (brgUp ? 0 : brgDeg) : -1;
+  const int windRel = wndAbs >= 0 ? (brgUp ? (wndAbs - brgDeg + 360) % 360 : wndAbs) : -1;
+  const int nDeg = brgUp ? (360 - brgDeg) % 360 : 0;
 
-  if (brgDeg != prevBrgDeg || wndDeg != prevWndDeg) {
-    if (prevBrgDeg >= 0) drawNupTriangle(cmpCx, cmpCy, boatTip, boatBase, prevBrgDeg, BG);
-    if (prevWndDeg >= 0) drawNupTriangle(cmpCx, cmpCy, windTip, windBase, prevWndDeg, BG);
-    drawCompassRing(cmpCx, cmpCy, cmpR); // restore ring + N under the arrows
-    if (wndDeg >= 0) drawNupTriangle(cmpCx, cmpCy, windTip, windBase, wndDeg, RED);
-    if (brgDeg >= 0) drawNupTriangle(cmpCx, cmpCy, boatTip, boatBase, brgDeg, GREEN);
-    prevBrgDeg = brgDeg;
-    prevWndDeg = wndDeg;
+  if (boatDeg != prevBoatDeg || windRel != prevWindDeg ||
+      (int)brgUp != prevRingUp) {
+    if (prevBoatDeg >= 0) drawNupTriangle(cmpCx, cmpCy, boatTip, boatBase, prevBoatDeg, BG);
+    if (prevWindDeg >= 0) drawNupTriangle(cmpCx, cmpCy, windTip, windBase, prevWindDeg, BG);
+    if (prevNDeg >= 0 && prevNDeg != nDeg) {   // stale N from an old angle
+      const double pa = prevNDeg * M_PI / 180.0;
+      drawLabel1C(cmpCx + (int)((cmpR - 8) * sin(pa)), cmpCy - (int)((cmpR - 8) * cos(pa)), "N", BG);
+    }
+    drawCompassRing(cmpCx, cmpCy, cmpR, nDeg); // restore ring + N under the arrows
+    if (windRel >= 0) drawNupTriangle(cmpCx, cmpCy, windTip, windBase, windRel, RED);
+    if (boatDeg >= 0) drawNupTriangle(cmpCx, cmpCy, boatTip, boatBase, boatDeg, GREEN);
+    prevBoatDeg = boatDeg;
+    prevWindDeg = windRel;
+    prevRingUp = (int)brgUp;
+    prevNDeg = nDeg;
   }
 
   // Ring values: WND (left) and BRG (right), gray font-2 labels, GLCD
@@ -442,8 +465,10 @@ void initScreen() {
   lastBrgStr = "";
   lastSpdStr = "";
   lastSpdFont = 8;
-  prevBrgDeg = -2;
-  prevWndDeg = -2;
+  prevBoatDeg = -2;
+  prevWindDeg = -2;
+  prevRingUp = -1;
+  prevNDeg = -1;
 }
 
 void drawScreenSpeed(TinyGPSPlus &gps, bool requiresInit)
@@ -461,7 +486,7 @@ void drawScreenSpeed(TinyGPSPlus &gps, bool requiresInit)
   tft.setTextDatum(BL_DATUM);
   tft.drawString("L Next  LL Cfg", 8, 235, 2);
   tft.setTextDatum(BR_DATUM);
-  tft.drawString("RR Diag", tft.width() - 8, 235, 2);
+  tft.drawString("R Ring  RR Diag", tft.width() - 8, 235, 2);
 }
 
 void screenSpeedButton(
@@ -477,6 +502,12 @@ void screenSpeedButton(
     // Left long: jump to the config screen
     if (button == Button::Left && event == ButtonEvent::LongPress) {
         setCurrentPage(PageConfig);
+        return;
+    }
+
+    // Right short: toggle the ring view N-up <-> bearing-up
+    if (button == Button::Right && event == ButtonEvent::ShortPress) {
+        ringBrgUp = !ringBrgUp;
         return;
     }
 

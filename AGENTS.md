@@ -74,7 +74,9 @@ so capture uses font 2 for the race pane labels),
 ## UI navigation (hints: L/LL left, R/RR right)
 
 - L-cycle = MAIN → WAYPOINTS → RACE → MAIN (`PAGE_CYCLE=3`). DIAGNOSTICS + CONFIG excluded.
-- MAIN: `L` next, `LL`→CONFIG, `RR`→DIAGNOSTICS. RACE: `L` next, `LL` menu (practice: Start→template browse / Repeat→re-anchor+gun / Abandon; race: Resync/Abandon; `R` cycles, `RR` picks, `L` backs out), browse: `R` next template, `RR` pick (+10s gun, line 20m upwind), `L` back. `RR` cycles N-UP → BRG → FIT. DIAGNOSTICS/CONFIG: `L` back to MAIN.
+- MAIN: `L` next, `LL`→CONFIG, `R` toggles the ring view N-up ↔ bearing-up
+  (RAM; boat triangle to the top, wind bearing-relative, N at true north),
+  `RR`→DIAGNOSTICS. RACE: `L` next, `LL` menu (practice: Start→template browse / Repeat→re-anchor+gun / Abandon; race: Resync/Abandon; `R` cycles, `RR` picks, `L` backs out), browse: `R` next template, `RR` pick (+10s gun, line 20m upwind), `L` back. `RR` cycles N-UP → BRG → FIT. DIAGNOSTICS/CONFIG: `L` back to MAIN.
 - WAYPOINTS: `R` cycle, `LL` flag (also `POST /gps flagged:true`), `RR` delete.
 - CONFIG: `R` select row, `RR` apply, `LL` force OTA now.
 - Every page switch full-black clear; ghost-clear readouts in speed.
