@@ -18,7 +18,10 @@ void backendFetchCourses();
 void backendCreateSession(long courseId, long startEpoch, double originLat,
                           double originLon, int windDir, int windSpeed);
 bool backendSessionCreated(long* sessionId); // false while in flight
-void backendAbandonSession(long sessionId);   // raises the ABANDON signal
+void backendAbandonSession(long sessionId);   // raises the ABANDON signal (retries)
+// True ONCE when the ABANDON could not be delivered after its retries: the
+// backend still has the session live, so the boat stays blocked on the web.
+bool backendAbandonFailed();
 
 // True while the last successful health poll is recent enough (<60s) to
 // trust the network. Gates the race screen entry.

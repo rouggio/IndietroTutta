@@ -69,6 +69,15 @@ static int createWindDir = 0, createWindSpeed = 0;
 static volatile bool abandonWant = false;
 static volatile long abandonSessionId = 0;
 static volatile long createdSessionId = -2; // -2 = nothing pending
+static uint8_t createTries = 0;             // transient-failure retries
+static unsigned long createRetryAt = 0;     // backoff gate (feed task clock)
+static constexpr uint8_t CREATE_TRIES_MAX = 4;
+static constexpr unsigned long CREATE_RETRY_MS = 4000;
+static uint8_t abandonTries = 0;
+static unsigned long abandonRetryAt = 0;
+static volatile bool abandonFailed = false; // exhausted: the web still thinks live
+static constexpr uint8_t ABANDON_TRIES_MAX = 4;
+static constexpr unsigned long ABANDON_RETRY_MS = 4000;
 static volatile unsigned long lastHealthOkMs = 0;
 static TinyGPSPlus* mainGps = nullptr;
 
@@ -280,7 +289,15 @@ static void doCreateSession()
     memcpy(date, startIso, 10); // session day = the gun's day (UTC)
 
     ServerLink link;
-    if (!link.begin(serverBaseUrl() + "/sessions")) { createdSessionId = -1; return; }
+    if (!link.begin(serverBaseUrl() + "/sessions")) {
+        // begin() failed (no socket / TLS handshake): transient, so retry.
+        createTries++;
+        bufferedSerialPrintln(String("[BACKEND] session create link failed, try ") +
+                              createTries + "/" + CREATE_TRIES_MAX);
+        if (createTries >= CREATE_TRIES_MAX) { createTries = 0; createdSessionId = -1; return; }
+        createRetryAt = millis() + CREATE_RETRY_MS;
+        return;
+    }
     link.http.addHeader("Content-Type", "application/json");
     link.http.addHeader("DeviceId", String(WiFi.macAddress()));
 
@@ -306,28 +323,86 @@ static void doCreateSession()
         DynamicJsonDocument doc(2048);
         if (!deserializeJson(doc, resp)) id = (long)(doc["id"] | -1L);
     }
-    createdSessionId = id;
     if (id > 0) {
+        createTries = 0;
+        createdSessionId = id;
         bufferedSerialPrintln(String("[BACKEND] session ") + id + " created");
-    } else {
-        bufferedSerialPrintln("[BACKEND] session create failed");
+        return;
     }
+
+    // Retry the transient failures. Without this the create was one-shot, and a
+    // single blip (prod is a Render FREE instance: it sleeps, and a cold wake
+    // blows past the client timeout) silently lost the race-program row while
+    // the device sailed on with its local copy — the web just never saw it.
+    // 4xx is a poison payload (bad course, boat busy): only 408/429 get retried.
+    const bool transient = (code <= 0) || (code >= 500) ||
+                           code == HTTP_CODE_REQUEST_TIMEOUT || code == 429;
+    createTries++;
+    bufferedSerialPrintln(String("[BACKEND] session create failed (http ") + code +
+                          ") try " + createTries + "/" + CREATE_TRIES_MAX);
+    if (!transient || createTries >= CREATE_TRIES_MAX) {
+        createTries = 0;
+        createdSessionId = -1; // give up: the screen shows OFFLINE
+        return;
+    }
+    // Backoff, then the loop calls us again. createdSessionId stays -2, so the
+    // UI keeps waiting instead of reporting a failure mid-retry.
+    createRetryAt = millis() + CREATE_RETRY_MS;
 }
 
 static void doAbandonSession(long sessionId)
 {
-    if (WiFi.status() != WL_CONNECTED) return;
+    if (WiFi.status() != WL_CONNECTED) {
+        abandonTries++;
+        bufferedSerialPrintln(String("[BACKEND] abandon offline, try ") +
+                              abandonTries + "/" + ABANDON_TRIES_MAX);
+        if (abandonTries >= ABANDON_TRIES_MAX) { abandonTries = 0; abandonFailed = true; return; }
+        abandonRetryAt = millis() + ABANDON_RETRY_MS;
+        return;
+    }
     ServerLink link;
     String url = serverBaseUrl() + "/sessions/" + String(sessionId) + "/signals";
-    if (!link.begin(url)) return;
+    if (!link.begin(url)) {
+        abandonTries++;
+        bufferedSerialPrintln(String("[BACKEND] abandon link failed, try ") +
+                              abandonTries + "/" + ABANDON_TRIES_MAX);
+        if (abandonTries >= ABANDON_TRIES_MAX) { abandonTries = 0; abandonFailed = true; return; }
+        abandonRetryAt = millis() + ABANDON_RETRY_MS;
+        return;
+    }
     link.http.addHeader("Content-Type", "application/json");
     link.http.addHeader("DeviceId", String(WiFi.macAddress()));
     String body = "{\"kind\":\"ABANDON\"}";
     const int code = link.http.POST(body);
     link.http.end();
-    bufferedSerialPrintln(code == HTTP_CODE_CREATED || code == HTTP_CODE_OK
-        ? "[BACKEND] session abandoned"
-        : "[BACKEND] abandon failed");
+
+    if (code == HTTP_CODE_CREATED || code == HTTP_CODE_OK) {
+        abandonTries = 0;
+        bufferedSerialPrintln("[BACKEND] session abandoned");
+        return;
+    }
+    // Same rule as the create: transport/5xx/timeout are worth riding out, a
+    // 4xx payload is not. This one matters more than it looks — an abandon
+    // that never lands leaves the session live on the web AND keeps the boat
+    // blocked from starting a new one (the 409 guard).
+    const bool transient = (code <= 0) || (code >= 500) ||
+                           code == HTTP_CODE_REQUEST_TIMEOUT || code == 429;
+    abandonTries++;
+    bufferedSerialPrintln(String("[BACKEND] abandon failed (http ") + code +
+                          ") try " + abandonTries + "/" + ABANDON_TRIES_MAX);
+    if (!transient || abandonTries >= ABANDON_TRIES_MAX) {
+        abandonTries = 0;
+        abandonFailed = true; // the screen banners it: the web disagrees
+        return;
+    }
+    abandonRetryAt = millis() + ABANDON_RETRY_MS;
+}
+
+bool backendAbandonFailed()
+{
+    if (!abandonFailed) return false;
+    abandonFailed = false; // consume
+    return true;
 }
 
 static void backendTask(void *param){
@@ -355,9 +430,14 @@ static void backendTask(void *param){
         if (abandonWant) {
             abandonWant = false;
             doAbandonSession(abandonSessionId);
+        } else if (abandonTries > 0 && (long)(now - abandonRetryAt) >= 0) {
+            doAbandonSession(abandonSessionId); // backoff elapsed
         }
         if (createWant) {
             createWant = false;
+            doCreateSession();
+        } else if (createTries > 0 && (long)(now - createRetryAt) >= 0) {
+            // Backoff elapsed on a failed create: try again.
             doCreateSession();
         }
 

@@ -1289,6 +1289,12 @@ void drawScreenRace(TinyGPSPlus &gps, bool requiresInit)
             showTransient("OFFLINE ");
         }
     }
+    // An abandon that never reached the backend leaves the web thinking the
+    // session is still live, with this boat committed to it — say so, loudly
+    // enough that the sailor doesn't sail on assuming the web agrees.
+    if (backendAbandonFailed()) {
+        showSignal("ABANDON ERR");
+    }
     if (courseOpen && (courseDirty || mapFull)) {
         if (courseView == 0) drawCourseList();
         else drawCourseOptions();
