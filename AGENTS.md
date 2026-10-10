@@ -30,7 +30,10 @@ Two FreeRTOS tasks in `backend.cpp` (12288 stack each, core 0): feed task
   `/gps?flagged=true` + `DELETE /gps/flagged` stay for the builder's waypoint adopter),
 - Task drains queue → `POST /gps`, plus `GET /health` every 30s.
 - `backendLoop()` adaptive GPS throttle: `30s@0kn → 2s@5kn` linear (`gpsIntervalForSpeed`).
-- `backend.h: backendOnline()`, `backendSendFlaggedPosition()`, `backendInit/Loop`.
+- `backend.h: backendOnline()`, `backendOnlineFresh()` (health <60s old — gates
+  the race screen), `backendFetchCourses()`, `backendCreateSession()` +
+  `backendSessionCreated()` (async POST /sessions, id adopted by the screen),
+  `backendAbandonSession()` (POST signals ABANDON), `backendSendFlaggedPosition()`, `backendInit/Loop`.
   Telemetry uploads carry `simulated:true` when mock GPS is active (map shows
   sim tracks),
 - `serial_buffer.cpp`: 200-line mutex-guarded log for `/serial`.
@@ -86,7 +89,30 @@ so capture uses font 2 for the race pane labels),
   DIAGNOSTICS + CONFIG excluded.
 - MAIN: `L` next, `LL`→CONFIG, `R` toggles the ring view N-up ↔ bearing-up
   (RAM; boat triangle to the top, wind bearing-relative, N at true north),
-  `RR`→DIAGNOSTICS. RACE: `L` next, `LL` menu (practice: Start→course browse / Repeat→re-anchor+gun / Abandon; race: Resync/Abandon; `R` cycles, `RR` picks, `L` backs out), browse: `R` next course, `RR` pick (+10s gun, line 20m upwind), `L` back. `RR` cycles N-UP → BRG → FIT. DIAGNOSTICS/CONFIG: `L` back to MAIN.
+  `RR`→DIAGNOSTICS. RACE: `L` next, `RR` cycles N-UP → BRG → FIT,
+  `LL`→MENU. DIAGNOSTICS/CONFIG: `L` back to MAIN.
+- RACE MENU `RACE/PRACTICE MENU` — rows are BUILT from live state
+  (`buildMenuRows`), so you can never be offered an action that makes no
+  sense: **Start** only with no session, **Repeat** only when a course is
+  remembered and the session is not a committee race, **Resync** only in a
+  race, **Abandon** only with a session. `R` cycles, `RR` picks, `L` backs out.
+- PRACTICE SETUP: Start → course picker (`R` next, `RR` choose, `L` back;
+  pre-selected on the remembered course, else Windward-Leeward) → **Options**
+  (`R` cycles the highlighted row's value, `L` moves between the two rows,
+  `LL` back to the list, `RR` start). Gun 10/30/60/120/300s, line 10/20/30m;
+  the line sits `distM` metres UPWIND of the boat. Values + course are
+  remembered in NVS (`race` ns `prefCourse`/`prefGun`/`prefDist`) and are
+  written **only on confirm**, so browsing never changes a default.
+- Confirming a practice start does BOTH: builds the local session (countdown
+  to `startTime = now + gun`) and `POST /sessions` on the backend task with
+  `courseId` + placement + `startTime` + this boat, so the session is real on
+  the web; the returned id is adopted when it lands. A failed POST keeps the
+  local session (transient `OFFLINE`). **Repeat** raises ABANDON on the
+  current session then re-creates the remembered one re-anchored at the boat
+  (it re-fetches the library first when the RAM pool was wiped by a reboot).
+- The race screen only OPENS when `/health` succeeded in the last 60s
+  (`backendOnlineFresh()`, `sys.onlineFresh` in `/status`); otherwise `L` shows
+  a `NO NETWORK` note and stays put. Losing the link MID-session never ejects.
 - CONFIG: `R` select row, `RR` apply, `LL` force OTA now.
 - Every page switch full-black clear; ghost-clear readouts in speed.
 - NO fillRect/fillScreen/clear on the 200ms refresh path — it flickers. Overwrite
@@ -97,12 +123,22 @@ so capture uses font 2 for the race pane labels),
   missing grid/labels) — verify that class of bug on the PANEL, not the grab. Font 1
   (GLCD) drawn into a `TFT_eSprite` faults intermittently → small labels use
   `drawLabel1()`/`drawLabel1C()` in `canvas.h` (manual GLCD via `drawPixel`).
-- Race screen: full-screen overlays (menu, course browse) are removed via
-  `redrawCurrentPage()`; a course change that closes them forces it too, and
+- Race screen: full-screen overlays (menu, course browse/options) are removed via
+  `redrawCurrentPage()`; a REAL session change closes them too, and
   `resetRaceText()` runs on `courseChanged` so the pane (grid+labels) always repaints.
   `gGrabbing` (set during a `/screen` capture) skips side effects (race-run reset,
   menu auto-close).
-- `src/config.h`: `BASE_URL`, `OTA_BASE_URL` (both prod Render), `BUILD_VERSION` (local-dev 1.0.189).
+- **`courseChanged` must mean "the session changed", never "a repaint was
+  forced".** `lastRaceCourseKey` used to be reset to a `-2` sentinel inside
+  `if (requiresInit)` to force a map redraw, so the very next pass read as a
+  course change and closed the menu/picker on the pass it was opened — the
+  course picker never appeared at all. Map-redraw (`mapDirty`) and
+  session-change (`courseChanged`) are separate flags now.
+- Anything an overlay needs must be sampled OUTSIDE the branches that overlays
+  short-circuit: `drawRaceText` is skipped while a menu/picker is open, so the
+  live-fix snapshot moved to `raceSampleFix()` at the top of `drawScreenRace`
+  (otherwise "is my fix fresh?" failed after 15s of looking at the menu).
+- **`src/config.h`: `BASE_URL`, `OTA_BASE_URL` (both prod Render), `BUILD_VERSION` (local-dev 1.0.189).**
 - Device reports fw: `Firmware-Version: BUILD_VERSION` header on `GET /health` +
   `POST /gps`, plus `"fw"` in gps JSON body.
 
@@ -118,3 +154,15 @@ so capture uses font 2 for the race pane labels),
 - OTA: `GET ota/latest.txt` → semver compare → `HTTPUpdate firmware.bin` + progress bar + `redrawCurrentPage()`. `rebootOnUpdate(false)`: on success the panel gets a clean `fillScreen` before `ESP.restart()` so the boot splash shows neatly (no stale progress-overlay pixels). Boot check if `otaCheckOnStart`, 60s WiFi timeout. `make ota-local` stages a dev build into LAN `public/ota/` with no commit/push/hook (cloud untouched; `config.h` + `public/ota/*` stay dirty by design); `make dl` = ota-local + immediate pull + verify.
 - Bruno in `bruno/` covers portal routes (`access-point` + `local-network` envs).
 - Quirks: empty portal name keeps stored username; username regex both sides; WiFi rotate-on-5s-fail never blocks UI; OTA download blocks loop; laps RAM-only.
+- **Never edit a UTF-8 source with PowerShell** (`Get-Content -Raw` + `Set-Content
+  -Encoding UTF8`): it reads with the ANSI code page and writes back double
+  encoded, plus a BOM. That silently mangled `src/screen_race.cpp` (every `—`,
+  `°`, `→` in a comment). Use the edit tool, or Node. If it happens, `node
+  tools/fix_cp1252.js <file>` reverses the cp1252 double encode and refuses to
+  write anything still dirty.
+- **The device's IP is DHCP and it roams between Wi-Fi networks.** Before any
+  remote test, `GET /status` for the current IP/SSID; if it joined another
+  subnet it cannot reach the LAN DEV backend, and `POST /ota` then fails
+  *silently* (the pull just never lands) — check `sys.server` in `/status` and
+  re-point it with `POST /server?mode=dev&host=<laptop-ip>:3000` (that route is
+  **POST-only** for writes; GET only reports).
