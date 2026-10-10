@@ -35,6 +35,7 @@ long raceSplit(uint8_t i); // seconds since start at pass i, -1 when unset
 
 // --- Step 5: events, upload ---------------------------------------------
 bool raceWrongPoll();           // true once per wrong-side call (consumed)
+bool raceGunEdge(bool* ocsOut); // true once per gun edge (consumed)
 
 void raceLogEvent(const char* code, long t, const char* v); // e.g. SIG
 uint8_t raceEventCount();

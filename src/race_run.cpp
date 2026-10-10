@@ -33,6 +33,11 @@ static uint8_t evCount = 0; // saturates at 32 (oldest dropped)
 // Wrong-side flag (consumed by the screen for the banner).
 static bool wrongFlag = false;
 
+// Gun-edge flag (consumed by the screen for the GO/OCS banner, once per
+// start — edge, not state, so reconnects and mode toggles never re-fire).
+static bool gunEdge = false;
+static bool gunEdgeOcs = false;
+
 // Run upload handshake with the backend task.
 static bool uploadPending = false;
 
@@ -96,6 +101,8 @@ void raceRunReset()
     scpSec = 0;
     evCount = 0;
     wrongFlag = false;
+    gunEdge = false;
+    gunEdgeOcs = false;
     uploadPending = false;
     for (uint8_t i = 0; i < 10; i++) {
         splits[i] = 0;
@@ -304,6 +311,14 @@ void raceRunUpdate(TinyGPSPlus& gps)
 
     if (gun <= 0) return; // practice not started / race gun unknown
 
+    const bool wasStarted = started;
+    auto noteGunEdge = [&]() {
+        if (started && !wasStarted) {
+            gunEdge = true;
+            gunEdgeOcs = ocs;
+        }
+    };
+
     if (!started) {
         if (!raceSession.startLine.valid) {
             // Point start: the gun starts the clock.
@@ -313,6 +328,7 @@ void raceRunUpdate(TinyGPSPlus& gps)
                 logEvent("START", gun, "point");
                 logPass("[RACE] started (point gun)", now);
             }
+            noteGunEdge();
             return;
         }
         const int side = startSegSide(lat, lon);
@@ -355,6 +371,7 @@ void raceRunUpdate(TinyGPSPlus& gps)
             }
         }
         if (side != 0) lastSide = side;
+        noteGunEdge();
         return;
     }
 
@@ -467,6 +484,17 @@ bool raceWrongPoll()
     const bool w = wrongFlag;
     wrongFlag = false;
     return w;
+}
+
+// Gun-edge poll for the GO/OCS banner: true once per start, with whether
+// the boat was OCS at the edge. Edge, not state — consuming it here means
+// reconnects and mode toggles never re-fire the banner.
+bool raceGunEdge(bool* ocsOut)
+{
+    if (!gunEdge) return false;
+    gunEdge = false;
+    if (ocsOut) *ocsOut = gunEdgeOcs;
+    return true;
 }
 
 // --- Step 5: run upload ---------------------------------------------------
