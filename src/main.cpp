@@ -41,6 +41,10 @@ void loop() {
   serialBufferLoop();
   buttonsUpdate();
   gpsLoop(gps);
+  // Keep the wall clock calibrated on every pass, whatever screen is up:
+  // raceGpsEpoch() was previously only reached from race-screen paths, so
+  // the clock (and log timestamps) never calibrated on the main screen.
+  raceGpsEpoch(gps);
   screenLoop(gps);
   wifiLoop();
   backendLoop(gps);
