@@ -3,7 +3,8 @@
 Portable marine GPS instrument: ST7789 240×320, 2 buttons, GPS UART2, WiFi AP+STA,
 OTA self-update. Main screen body = 2 rows × 3 cols: instant speed (row 1,
 cols 1-2), max speed + session time (row 2), wind/bearing ring cell (col 3,
-spans both rows). Top bar (icons) + bottom hints untouched.
+spans both rows). Top bar (WiFi/data/FX icons + DEV tile when server mode is DEV) +
+bottom hints untouched.
 
 ## Hardware / toolchain
 

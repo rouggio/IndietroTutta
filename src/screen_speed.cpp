@@ -9,6 +9,7 @@
 #include "screens.h"
 #include "gps_mock.h"
 #include "race_session.h"
+#include "server_link.h"
 
 #include "screen_speed.h"
 
@@ -131,6 +132,7 @@ TriState prevWifiConnected = TriState::Unknown;
 TriState prevDataConnected = TriState::Unknown;
 TriState prevFix = TriState::Unknown; // legacy (fix tile now uses prevFixTile)
 static int prevFixTile = -1; // 0 nofix, 1 fix, 2 mock; -1 forces repaint
+TriState prevDevMode = TriState::Unknown; // server-mode tile: DEV only in dev
 
 // ====== LAYOUT ======
 void drawTopBar(TinyGPSPlus &gps)
@@ -207,6 +209,28 @@ void drawTopBar(TinyGPSPlus &gps)
       tft.setTextDatum(TL_DATUM);
       tft.drawString("FX", icon_x + icont_offset_x, 6, 2);
     }
+  }
+
+
+  // DEV tile (server mode from CONFIG): painted only when serverMode()==1,
+  // cleared when leaving dev mode. Wider than the icon tiles so font-2 "DEV"
+  // fits; state-gated like the other tiles, no per-pass clear.
+  icon_x += tile_width + tile_spacing;
+  const int dev_w = 40;
+  const bool devMode = serverMode() == 1;
+  if (devMode && prevDevMode != TriState::True)
+  {
+    tft.fillRoundRect(icon_x, 2, dev_w, tile_height, 4, TFT_DARKCYAN);
+    tft.drawRoundRect(icon_x, 2, dev_w, tile_height, 4, CYAN);
+    tft.setTextColor(WHITE, TFT_DARKCYAN);
+    tft.setTextDatum(TC_DATUM);
+    tft.drawString("DEV", icon_x + dev_w / 2, 7, 2);
+    prevDevMode = TriState::True;
+  }
+  else if (!devMode && prevDevMode != TriState::False)
+  {
+    tft.fillRect(icon_x, 2, dev_w, tile_height, BG);
+    prevDevMode = TriState::False;
   }
 
 
@@ -559,6 +583,7 @@ void initScreen() {
   prevDataConnected = TriState::Unknown;
   prevFix = TriState::Unknown;
   prevFixTile = -1;
+  prevDevMode = TriState::Unknown;
   lastMaxStr = "";
   lastSesStr = "";
   lastWndStr = "";
