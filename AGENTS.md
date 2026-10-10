@@ -13,8 +13,10 @@ spans both rows). Top bar (icons) + bottom hints untouched.
 - Buttons GPIO21=Left GPIO22=Right, active-low, 50ms debounce, 500ms long-press.
 - GPS UART2 RX16 TX17 @9600, parsed by TinyGPSPlus in `gps.cpp`.
 - Build: `make compile` (must be SUCCESS before commit), `make upload PORT=COM5`,
-  `make monitor`, `make dist` (bump + OTA publish), `make dl` (local deploy:
-  ota-local + device pulls immediately, `DEVICE_IP ?= 192.168.0.106`). Toolchain: `.venv` PlatformIO.
+  `make monitor`, `make dist` (= shorthand `dc`: bump + publish OTA), `make dl`
+  (= shorthand `dl`: ota-local + device pulls immediately, `DEVICE_IP ?= 192.168.0.106`
+  but the IP is DHCP — pass `DEVICE_IP=...`). Toolchain: `.venv` PlatformIO.
+  Shorthands `sl`/`sc`/`dl`/`dc` are defined in the root `AGENTS.md`.
 
 ## Architecture — superloop + backend task
 
@@ -160,7 +162,7 @@ so capture uses font 2 for the race pane labels),
   the page in 320×40 bands (12.8 KB per sprite) instead of one big sprite.
 - Portal always up: open AP `IndietroTutta`, DNS → `192.168.4.1` → `/config`.
   Routes: `/config /save /wifi/remove /reset (wipe all!) /reboot /status /health /serial /mock?on=1|0 /nogo (GET current; POST /nogo?deg=<total width 10..180> — no-go arc width, own NVS key, shown in /status) /ota (POST immediate check vs current server) /server?mode=prod|dev&host=<ip:port> (GET=current) /btn?b=L|R&e=R|RR (remote button) /screen (RGB565 BE 320x240 grab: re-renders the current page into an off-screen 8bpp sprite and streams it, since the ST7789 can't be read back; `scripts/grab_screen.py` → PNG)`. All unauthenticated.
-- OTA: `GET ota/latest.txt` → semver compare → `HTTPUpdate firmware.bin` + progress bar + `redrawCurrentPage()`. `rebootOnUpdate(false)`: on success the panel gets a clean `fillScreen` before `ESP.restart()` so the boot splash shows neatly (no stale progress-overlay pixels). Boot check if `otaCheckOnStart`, 60s WiFi timeout. `make ota-local` stages a dev build into LAN `public/ota/` with no commit/push/hook (cloud untouched; `config.h` + `public/ota/*` stay dirty by design); `make dl` = ota-local + immediate pull + verify.
+- OTA: `GET ota/latest.txt` → semver compare → `HTTPUpdate firmware.bin` + progress bar + `redrawCurrentPage()`. `rebootOnUpdate(false)`: on success the panel gets a clean `fillScreen` before `ESP.restart()` so the boot splash shows neatly (no stale progress-overlay pixels). Boot check if `otaCheckOnStart`, 60s WiFi timeout. `make ota-local` stages a dev build into LAN `public/ota/` with no commit/push/hook (cloud untouched; `config.h` + `public/ota/*` stay dirty by design); `make dl` (= `dl`) = ota-local + immediate pull + verify, and `make dist` (= `dc`) is the cloud publish that commits the bin into the backend repo.
 - Bruno in `bruno/` covers portal routes (`access-point` + `local-network` envs).
 - Quirks: empty portal name keeps stored username; username regex both sides; WiFi rotate-on-5s-fail never blocks UI; OTA download blocks loop; laps RAM-only.
 - **Never edit a UTF-8 source with PowerShell** (`Get-Content -Raw` + `Set-Content
