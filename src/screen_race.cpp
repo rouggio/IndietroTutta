@@ -885,12 +885,20 @@ static void drawRaceText(TinyGPSPlus& gps)
     drawSmart(vx, paneRowY(3) + 16, 2, TR_DATUM, RFG, cell, pNxt, sizeof(pNxt), pNxtW);
     // Row 4: time.
     drawSmart(vx, paneRowY(4) + 16, 2, TR_DATUM, RFG, tim, pTim, sizeof(pTim), pTimW);
-    // Row 5: wind — arrow (source direction) + speed (whole knots, no decimals).
-    if (raceSession.valid) {
-        drawWindArrow(PANE_X + 16, paneRowY(5) + 24, raceSession.windDir, 9, RFG);
-        if (raceSession.windSpeed > 0) snprintf(cell, sizeof(cell), "%2d", raceSession.windSpeed);
+    // Row 5: wind — session wind first, env fallback like the main screen.
+    // Arrow only when wind is known; a zero session wind parks at N, dead.
+    const bool sesWnd = raceSession.valid && raceSession.windSpeed > 0;
+    const bool envWnd = raceEnvWindSeen();
+    if (raceSession.valid && (sesWnd || envWnd)) {
+        const int wDir = sesWnd ? raceSession.windDir : raceSession.envWindDir;
+        const int wSpd = sesWnd ? raceSession.windSpeed : raceSession.envWindSpeed;
+        drawWindArrow(PANE_X + 16, paneRowY(5) + 24, wDir, 9, RFG);
+        if (wSpd > 0) snprintf(cell, sizeof(cell), "%2d", wSpd);
         else snprintf(cell, sizeof(cell), "--");
     } else {
+        // No wind known: wipe the arrow zone (same-bg repaint, invisible)
+        // so a stale arrow never survives the transition.
+        tft.fillRect(PANE_X + 1, paneRowY(5) + 9, 30, 30, RBG);
         snprintf(cell, sizeof(cell), "--");
     }
     drawSmart(vx, paneRowY(5) + 16, 2, TR_DATUM, RFG, cell, pWnd, sizeof(pWnd), pWndW);
