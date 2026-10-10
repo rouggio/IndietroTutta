@@ -476,7 +476,10 @@ void drawSpeed(TinyGPSPlus &gps)
 
   const int brgDeg = gps.course.isValid() ? (int)(gps.course.deg() + 0.5) % 360 : -1;
   const bool sesWind = raceSession.valid && raceSession.windSpeed > 0;
-  const bool wndValid = sesWind || raceSession.envWindSpeed > 0;
+  // Env wind is valid once seen — even a calm 0kn report paints the arrow.
+  // (Session wind keeps the >0 gate: frozen 0 there means unknown.)
+  const bool envWind = raceEnvWindSeen();
+  const bool wndValid = sesWind || envWind;
   const int wndKn = sesWind ? raceSession.windSpeed : raceSession.envWindSpeed;
   const int wndAbs = wndValid ? ((sesWind ? raceSession.windDir : raceSession.envWindDir) + 180) % 360 : -1;
   const bool brgUp = ringBrgUp && brgDeg >= 0;  // no bearing → stay N-up
@@ -485,7 +488,7 @@ void drawSpeed(TinyGPSPlus &gps)
   // width (total degrees) is the /nogo setting.
   const int noGoHalf = noGoArcDeg / 2;
   const int upwRaw = sesWind ? raceSession.windDir
-                   : (raceSession.envWindSpeed > 0 ? raceSession.envWindDir : -1);
+                   : (envWind ? raceSession.envWindDir : -1);
   int arcDeg = -1;
   if (upwRaw >= 0) {
     arcDeg = (brgUp && brgDeg >= 0) ? (upwRaw - brgDeg + 360) % 360 : upwRaw % 360;

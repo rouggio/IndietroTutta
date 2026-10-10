@@ -168,11 +168,14 @@ static bool sameGeometry(const RaceSession& a, const RaceSession& b)
 // Venue wind piggyback: health top-level "wind" object (dir = FROM
 // degrees, speed = knots). RAM only, refreshed every poll; an absent key
 // (offline body, old backend) keeps the last value.
+static bool envWindSeen = false; // a wind object has arrived at least once
+bool raceEnvWindSeen() { return envWindSeen; }
 static void applyEnvWind(JsonObject w)
 {
     if (w.isNull()) {
         return;
     }
+    envWindSeen = true;
     const int d = w["dir"] | 0;
     const int s = w["speed"] | 0;
     if (d == raceSession.envWindDir && s == raceSession.envWindSpeed) {

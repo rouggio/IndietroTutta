@@ -90,5 +90,10 @@ long raceWallEpoch();
 // UTC epoch from "YYYY-MM-DDTHH:MM:SS[.mmm]Z". -1 on parse failure.
 long raceIsoEpoch(const char* iso);
 
+// True once a health wind object has arrived (even a calm 0kn one).
+// Calm is data: dir-valid beats speed>0, so near-calm stations still paint
+// the arrow instead of vanishing.
+bool raceEnvWindSeen();
+
 // True when the committee has this session live (fast health poll).
 bool raceSessionLive();
