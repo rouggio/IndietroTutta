@@ -529,7 +529,7 @@ void drawSpeed(TinyGPSPlus &gps)
     tft.setTextDatum(MC_DATUM);
     tft.drawString(cenTxt, cmpCx, cmpCy + 3, 2);
     const int cenHalf = tft.textWidth(cenTxt, 2) / 2;
-    tft.drawCircle(cmpCx + cenHalf + 5, cmpCy - 8, 2, windAngleDeg >= 0 ? WHITE : BG);
+    tft.drawCircle(cmpCx + cenHalf + 3, cmpCy - 3, 2, windAngleDeg >= 0 ? WHITE : BG);
     lastCenStr = cenTxt;
     prevBoatDeg = boatDeg;
     prevWindDeg = windRel;
@@ -577,7 +577,7 @@ tft.drawString("Wind (kn)", valMidL, 166, 2);
     tft.setTextDatum(TR_DATUM);
     tft.drawString(degTxt, valMidR + 20, 187, 4);
   }
-  tft.drawCircle(valMidR + 26, 187, 2, brgDeg >= 0 ? WHITE : BG);
+  tft.drawCircle(valMidR + 24, 192, 2, brgDeg >= 0 ? WHITE : BG);
 }
 
 void initScreen() {
