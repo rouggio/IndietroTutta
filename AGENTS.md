@@ -149,6 +149,15 @@ so capture uses font 2 for the race pane labels),
   (venue wind at the boat's last stored position, env fallback, RAM); `POST /gps`
   JSON lat/lon/speed/course/alt/sats/flagged/username. `setInsecure()` everywhere, no auth.
 - `server_link.*`: dev/prod switch (NVS `srv` mode/host, portal `/server`); dev+host = plain HTTP to LAN backend, else TLS prod. All fetchers (`health/gps/sim/courses/OTA`) go through `ServerLink`.
+- **`/screen` capture needs ~77 KB of CONTIGUOUS heap and starves on prod.** A 320×240
+  8bpp sprite is one 76,801-byte `calloc`; when it fails the route answers
+  `503 no memory for capture`. Right after boot `maxAllocHeap` is ~77,812 and it works,
+  but TLS churn from talking to **Render** fragments the heap down to ~40,948 and every
+  grab then fails until a reboot. Symptom to recognise: `GET /status` fine, `/screen` 503,
+  and the serial full of `[BACKEND] slow pass 3000ms+` (each mock fix + `POST /gps` to a
+  cold free instance takes seconds). On the local DEV backend it works all session. Reboot
+  before a UI-debugging stretch, or point the device at DEV; a real fix would be streaming
+  the page in 320×40 bands (12.8 KB per sprite) instead of one big sprite.
 - Portal always up: open AP `IndietroTutta`, DNS → `192.168.4.1` → `/config`.
   Routes: `/config /save /wifi/remove /reset (wipe all!) /reboot /status /health /serial /mock?on=1|0 /nogo (GET current; POST /nogo?deg=<total width 10..180> — no-go arc width, own NVS key, shown in /status) /ota (POST immediate check vs current server) /server?mode=prod|dev&host=<ip:port> (GET=current) /btn?b=L|R&e=R|RR (remote button) /screen (RGB565 BE 320x240 grab: re-renders the current page into an off-screen 8bpp sprite and streams it, since the ST7789 can't be read back; `scripts/grab_screen.py` → PNG)`. All unauthenticated.
 - OTA: `GET ota/latest.txt` → semver compare → `HTTPUpdate firmware.bin` + progress bar + `redrawCurrentPage()`. `rebootOnUpdate(false)`: on success the panel gets a clean `fillScreen` before `ESP.restart()` so the boot splash shows neatly (no stale progress-overlay pixels). Boot check if `otaCheckOnStart`, 60s WiFi timeout. `make ota-local` stages a dev build into LAN `public/ota/` with no commit/push/hook (cloud untouched; `config.h` + `public/ota/*` stay dirty by design); `make dl` = ota-local + immediate pull + verify.
