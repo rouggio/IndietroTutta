@@ -1,4 +1,5 @@
 #include "serial_buffer.h"
+#include "race_session.h"
 
 #include <freertos/FreeRTOS.h>
 
@@ -77,32 +78,66 @@ void serialBufferPush(const String &s) {
     pushLine(copy);
 }
 
+// Log timestamp: wall clock as [DD/MM/YYYY HH:MM:SSZ] when the GPS-side
+// clock is calibrated — the Z is the point: device time is always UTC, so
+// a stamped line can never be mistaken for local time again. Before
+// calibration, boot uptime ([+SSS s], no zone by design).
+static bool atLineStart = true;
+
+// Howard Hinnant's civil_from_days: days since 1970-01-01 → y/m/d.
+static void civilFromDays(long z, int &y, unsigned &mo, unsigned &d)
+{
+    z += 719468;
+    const long era = (z >= 0 ? z : z - 146096) / 146097;
+    const unsigned doe = (unsigned)(z - era * 146097);
+    const unsigned yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    y = (int)yoe + (int)(era * 400);
+    const unsigned doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    const unsigned mp = (5 * doy + 2) / 153;
+    d = doy - (153 * mp + 2) / 5 + 1;
+    mo = mp + (mp < 10 ? 3 : 9 - 12);
+    y += (mo <= 2);
+}
+
+static String logStamp()
+{
+    char b[32];
+    const long wall = raceWallEpoch();
+    if (wall > 0) {
+        const long days = wall / 86400L;
+        const long tod = wall % 86400L;
+        int y;
+        unsigned mo, d;
+        civilFromDays(days, y, mo, d);
+        snprintf(b, sizeof(b), "[%02u/%02u/%04d %02ld:%02ld:%02ldZ] ",
+                 d, mo, y, tod / 3600, (tod % 3600) / 60, tod % 60);
+    } else {
+        snprintf(b, sizeof(b), "[+%lus] ", (unsigned long)(millis() / 1000));
+    }
+    return String(b);
+}
+
 // Helper that prints and also captures
 void bufferedSerialPrintln(const String &s) {
-    Serial.println(s);
-    serialBufferPush(s);
+    const String line = atLineStart ? logStamp() + s : s;
+    atLineStart = true;
+    Serial.println(line);
+    serialBufferPush(line);
 }
 
 void bufferedSerialPrintln(const char *s) {
-    if (s) {
-        Serial.println(s);
-        serialBufferPush(String(s));
-    } else {
-        Serial.println();
-        serialBufferPush(String());
-    }
+    bufferedSerialPrintln(s ? String(s) : String());
 }
 
 void bufferedSerialPrint(const String &s) {
-    Serial.print(s);
-    serialBufferPush(s);
+    const String chunk = atLineStart ? logStamp() + s : s;
+    atLineStart = false;
+    Serial.print(chunk);
+    serialBufferPush(chunk);
 }
 
 void bufferedSerialPrint(const char *s) {
-    if (s) {
-        Serial.print(s);
-        serialBufferPush(String(s));
-    }
+    bufferedSerialPrint(s ? String(s) : String());
 }
 
 #include <stdarg.h>
