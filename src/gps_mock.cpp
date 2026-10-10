@@ -150,6 +150,7 @@ void gpsMockPoll(TinyGPSPlus& gps)
     if (!feedServerFix(gps, lat, lon, speed, course, st)) return;
     const bool wander = doc["wander"] | false;
     const char* runId = wander ? "" : (doc["runId"] | "");
+    bufferedSerialPrintln(String("[MOCK] srv ") + st);
     bufferedSerialPrintln(wander ? "[MOCK] wander fix (server)" : "[MOCK] fix injected");
 
     // Echo every 5th fix back (~15s): pipeline proof without touching tracks.

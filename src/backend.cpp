@@ -280,7 +280,10 @@ static void doCreateSession()
     // with a real epoch (the practice start needs wall time anyway); without
     // one there is no date to file the session under, so don't create a
     // 1970-dated orphan.
-    char startIso[24] = {0};
+    // NOTE: "YYYY-MM-DDTHH:MM:SS.000Z" is 24 chars + NUL = 25 bytes. A
+    // 24-byte buffer silently eats the Z, the backend then parses the
+    // zoneless stamp as *local* time, and the gun lands hours off.
+    char startIso[32] = {0};
     time_t tt = (time_t)createStartEpoch;
     struct tm tmv;
     if (createStartEpoch <= 0 || !gmtime_r(&tt, &tmv)) { createdSessionId = -1; return; }
@@ -313,6 +316,7 @@ static void doCreateSession()
     body += ",\"startTime\":\"" + String(startIso) + "\"";
     body += ",\"boats\":[{\"deviceId\":\"" + String(WiFi.macAddress()) + "\"}]";
     body += "}";
+    bufferedSerialPrintln(String("[BACKEND] session create payload: ") + body);
 
     const int code = link.http.POST(body);
     String resp = (code > 0 && code < 400) ? link.http.getString() : String();
