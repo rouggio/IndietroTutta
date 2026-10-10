@@ -798,6 +798,10 @@ static void drawRaceText(TinyGPSPlus& gps)
     char ban[12];
     if (millis() < sigUntil && sigMsg[0]) {
         snprintf(ban, sizeof(ban), "%-8.8s", sigMsg);
+    } else if (raceSession.valid && gun > 0 && now > 0 && now < gun && gun - now <= 10) {
+        // Final-ten countdown takes the banner (below signals, above
+        // transients): the eyes are on the header, not the pane, at the gun.
+        snprintf(ban, sizeof(ban), "GUN %-4ld", gun - now);
     } else if (millis() < transientUntil && transientMsg[0]) {
         snprintf(ban, sizeof(ban), "%-8.8s", transientMsg);
     } else {
@@ -1218,6 +1222,12 @@ void drawScreenRace(TinyGPSPlus &gps, bool requiresInit)
     // Wrong-side calls surface as a short header banner.
     if (raceWrongPoll()) {
         showTransient("WRONG!  ");
+    }
+    // Gun edge banner: GO, or OCS when over early — once per start, never
+    // re-fired by reconnects (edge consumed above); skipped during grabs.
+    if (!gGrabbing) {
+        bool edgeOcs = false;
+        if (raceGunEdge(&edgeOcs)) showSignal(edgeOcs ? "OCS" : "GO");
     }
     if (courseChanged && (menuOpen || courseOpen) && !gGrabbing) {
         // A full-screen menu / course list sat over the page; force a clean
