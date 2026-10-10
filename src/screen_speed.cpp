@@ -232,6 +232,7 @@ static String lastMaxStr = "";
 static String lastSesStr = "";
 static String lastWndStr = "";
 static String lastBrgStr = "";
+static String lastCenStr = "";
 // Compass cell: angles of the triangles last drawn (mode-relative: in
 // bearing-up view the boat is 0 and the wind is bearing-relative).
 // -1 = nothing drawn, -2 = cell not rendered yet (sentinel — forces
@@ -428,10 +429,11 @@ void drawSpeed(TinyGPSPlus &gps)
   }
 
   // Ring cell (col 3, rows 1-2): N-up ring, top-aligned. Boat = green
-  // equilateral triangle, tip tangent to the ring border (bearing, base
-  // pushed out along it); wind = same size red triangle, tip tangent to
-  // the boat's base (no overlap: the two stack radially), tip downwind.
-  // The 60° no-go arc (3px, dark red) hugs the ring opposite the wind
+  // triangle and wind = same-size red triangle; BOTH tips are tangent to
+  // the ring border (experimental: the two arrows share the same radial
+  // span, so they can overlap at close angles). The center shows the
+  // smallest angular separation between the two displayed markers (not a
+  // sailing wind angle off the bow). The 60° no-go arc (3px, dark red) hugs the ring opposite the wind
   // triangle — where the wind comes FROM. / View mode (R toggle): N-up =
   // true north at the top; bearing-up = the boat always at the top, wind
   // + arc shift bearing-relative and the N glyph sits where north is.
@@ -445,8 +447,8 @@ void drawSpeed(TinyGPSPlus &gps)
   const int triR = cmpR * 35 / 100;           // shared triangle altitude
   const int boatTip = cmpR - 1;               // tangent (1px in: no ring flicker)
   const int boatBase = boatTip - triR;
-  const int windTip = boatBase;               // tangent to the boat base
-  const int windBase = boatBase - triR;
+  const int windTip = boatTip;                // experimental shared tangent
+  const int windBase = boatBase;
 
   const int brgDeg = gps.course.isValid() ? (int)(gps.course.deg() + 0.5) % 360 : -1;
   const bool sesWind = raceSession.valid && raceSession.windSpeed > 0;
@@ -467,10 +469,20 @@ void drawSpeed(TinyGPSPlus &gps)
   const int boatDeg = brgDeg >= 0 ? (brgUp ? 0 : brgDeg) : -1;
   const int windRel = wndAbs >= 0 ? (brgUp ? (wndAbs - brgDeg + 360) % 360 : wndAbs) : -1;
   const int nDeg = brgUp ? (360 - brgDeg) % 360 : 0;
+  int markSepDeg = -1;
+  if (boatDeg >= 0 && windRel >= 0) {
+    const int rawSep = abs(windRel - boatDeg) % 360;
+    markSepDeg = rawSep > 180 ? 360 - rawSep : rawSep;
+  }
+  String cenTxt = "---";
+  if (markSepDeg >= 0) {
+    cenTxt = String(markSepDeg);
+    while (cenTxt.length() < 3) cenTxt = "0" + cenTxt;
+  }
 
   if (boatDeg != prevBoatDeg || windRel != prevWindDeg ||
       arcDeg != prevArcDeg || noGoHalf != prevNoGoHalf ||
-      (int)brgUp != prevRingUp) {
+      (int)brgUp != prevRingUp || cenTxt != lastCenStr) {
     if (prevBoatDeg >= 0) drawNupTriangle(cmpCx, cmpCy, boatTip, boatBase, prevBoatDeg, BG);
     if (prevWindDeg >= 0) drawNupTriangle(cmpCx, cmpCy, windTip, windBase, prevWindDeg, BG);
     if (prevArcDeg >= 0) drawNoGoArc(cmpCx, cmpCy, cmpR, prevArcDeg, prevNoGoHalf, BG);
@@ -482,6 +494,14 @@ void drawSpeed(TinyGPSPlus &gps)
     if (arcDeg >= 0) drawNoGoArc(cmpCx, cmpCy, cmpR, arcDeg, noGoHalf, ARC_RED);
     if (windRel >= 0) drawNupTriangle(cmpCx, cmpCy, windTip, windBase, windRel, RED);
     if (boatDeg >= 0) drawNupTriangle(cmpCx, cmpCy, boatTip, boatBase, boatDeg, GREEN);
+    // Center marker separation, same font as the BRG value. The selected
+    // font has no degree glyph, so use the same drawn degree ring as BRG.
+    tft.setTextColor(WHITE, BG);
+    tft.setTextDatum(MC_DATUM);
+    tft.drawString(cenTxt, cmpCx, cmpCy, 4);
+    const int cenHalf = tft.textWidth(cenTxt, 4) / 2;
+    tft.drawCircle(cmpCx + cenHalf + 5, cmpCy, 2, markSepDeg >= 0 ? WHITE : BG);
+    lastCenStr = cenTxt;
     prevBoatDeg = boatDeg;
     prevWindDeg = windRel;
     prevArcDeg = arcDeg;
@@ -541,6 +561,7 @@ void initScreen() {
   lastSesStr = "";
   lastWndStr = "";
   lastBrgStr = "";
+  lastCenStr = "";
   lastSpdStr = "";
   lastSpdFont = 8;
   prevBoatDeg = -2;
