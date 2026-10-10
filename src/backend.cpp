@@ -463,7 +463,7 @@ static void backendTask(void *param){
             const int code = sendPosition(w);
             sendMs = millis() - t0;
             if (code == HTTP_CODE_OK) {
-                bufferedSerialPrintln("[BACKEND] Position sent");
+                // Delivered: quiet by design, failures log below.
             } else if (code <= 0 || code >= 500) {
                 bufferedSerialPrintln("[BACKEND] Position send failed, retrying");
                 xQueueSendToFront(workQueue, &w, 0);
