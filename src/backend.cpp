@@ -316,8 +316,6 @@ static void doCreateSession()
     body += ",\"startTime\":\"" + String(startIso) + "\"";
     body += ",\"boats\":[{\"deviceId\":\"" + String(WiFi.macAddress()) + "\"}]";
     body += "}";
-    bufferedSerialPrintln(String("[BACKEND] session create payload: ") + body);
-
     const int code = link.http.POST(body);
     String resp = (code > 0 && code < 400) ? link.http.getString() : String();
     link.http.end();
