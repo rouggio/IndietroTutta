@@ -1,3 +1,14 @@
+// Ciccio's on-device portal (open AP "IndietroTutta", or the LAN when joined).
+// The device is on DHCP and roams between the APs around the house, so this
+// address changes without warning. Don't guess it and don't try to reach the
+// old one: if it moved to another subnet, its portal is unreachable and you
+// have nothing to query. Ask the DEV BACKEND instead — it records the LAN IP
+// of every heartbeat, and the device is already talking to it in devl mode:
+//
+//   curl http://localhost:3000/devices | jq -r '.[]|"\(.ip) \(.status)"'
+//
+// then put the `ip` value below. `ssid`/`password` are only used by the
+// Wi-Fi setup routes; the device joins a saved network on boot.
 vars {
   baseUrl: http://192.168.0.106
   ssid: MyNetwork

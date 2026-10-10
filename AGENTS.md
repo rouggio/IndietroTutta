@@ -172,9 +172,14 @@ so capture uses font 2 for the race pane labels),
   `°`, `→` in a comment). Use the edit tool, or Node. If it happens, `node
   tools/fix_cp1252.js <file>` reverses the cp1252 double encode and refuses to
   write anything still dirty.
-- **The device's IP is DHCP and it roams between Wi-Fi networks.** Before any
-  remote test, `GET /status` for the current IP/SSID; if it joined another
-  subnet it cannot reach the LAN DEV backend, and `POST /ota` then fails
-  *silently* (the pull just never lands) — check `sys.server` in `/status` and
-  re-point it with `POST /server?mode=dev&host=<laptop-ip>:3000` (that route is
-  **POST-only** for writes; GET only reports).
+- **The device's IP is DHCP and it roams between Wi-Fi networks** — moving between APs
+  around the house changes it without warning. Before any remote test, **do not guess the
+  address by trying candidates: if the device landed on another subnet its portal is
+  unreachable and you have nothing to query.** Ask the dev backend, which records the LAN
+  IP of every heartbeat (`curl localhost:3000/devices` → `ip`); the device is already
+  heartbeating there in `devl` mode. Keep
+  `bruno/environments/access-point.bru` in step with whatever `ip` comes back, and if the
+  **laptop** moved too, re-point the device with
+  `POST /server?mode=dev&host=<laptop-ip>:3000` (that route is **POST-only** for writes).
+  Same-subnet moves can land on the same leases, so re-checking is cheap and often a
+  no-op — but the failure is silent when it isn't.
