@@ -103,19 +103,10 @@ static bool beginNextNetwork()
         return false;
     }
 
-    bufferedSerialPrintln(String("[WiFi] Trying: ") + ssid + " (idx " + String(retryIndex) + ", attempt " + String(attemptCount+1) + "/" + String(WIFI_MAX_ATTEMPTS) + ")");
-
-    // channel-change diag: clear stale BSSID/channel cache (AP may have changed channel/BSSID on reboot)
-    WiFi.disconnect(false, true);
-    delay(20);
-
     // Non-blocking: returns immediately (forces fresh scan)
     WiFi.begin(ssid, password);
 
     attemptStartedAt = millis();
-
-    // diag: log status right after begin (single line, no garble)
-    bufferedSerialPrintln(String("[WiFi] -> status after begin: ") + wifiStatusToString(WiFi.status()) + " (" + String((int)WiFi.status()) + ")");
 
     return true;
 }
@@ -157,9 +148,6 @@ static void loadSavedNetworks()
 {
     int count = wifiNetworkCount();
 
-    bufferedSerialPrint("[WiFi] Saved networks: ");
-    bufferedSerialPrintln(String(count));
-
     for (int i = 0; i < count; i++)
     {
         char ssid[33];
@@ -176,9 +164,6 @@ static void loadSavedNetworks()
             bufferedSerialPrintln(String(i));
             continue;
         }
-
-        bufferedSerialPrint("[WiFi] Adding network: ");
-        bufferedSerialPrintln(ssid);
     }
 }
 
@@ -270,9 +255,6 @@ bool wifiAddNetwork(
 
         return false;
     }
-
-    bufferedSerialPrint("[WiFi] Adding network: ");
-    bufferedSerialPrintln(ssid);
 
     if (!saveWiFiNetwork(
             count,
@@ -403,10 +385,6 @@ void wifiInit(TinyGPSPlus& gps)
 
     if (wifiNetworkCount() > 0)
     {
-        bufferedSerialPrintln(
-            "[WiFi] Attempting connection..."
-        );
-
         // Non-blocking: association continues while the
         // splash screen and main loop run
         beginNextNetwork();
