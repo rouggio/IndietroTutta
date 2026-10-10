@@ -430,10 +430,10 @@ void drawSpeed(TinyGPSPlus &gps)
 
   // Ring cell (col 3, rows 1-2): N-up ring, top-aligned. Boat = green
   // triangle and wind = same-size red triangle; BOTH tips are tangent to
-  // the ring border (experimental: the two arrows share the same radial
-  // span, so they can overlap at close angles). The center shows the
-  // smallest angular separation between the two displayed markers (not a
-  // sailing wind angle off the bow). The 60° no-go arc (3px, dark red) hugs the ring opposite the wind
+  // the ring border and share the same radial span, so they can overlap at
+  // close angles. The center shows the
+  // boat/wind angle: 0 when the boat points directly into the wind source
+  // and 180 when it sails dead downwind. The 60° no-go arc (3px, dark red) hugs the ring opposite the wind
   // triangle — where the wind comes FROM. / View mode (R toggle): N-up =
   // true north at the top; bearing-up = the boat always at the top, wind
   // + arc shift bearing-relative and the N glyph sits where north is.
@@ -447,7 +447,7 @@ void drawSpeed(TinyGPSPlus &gps)
   const int triR = cmpR * 35 / 100;           // shared triangle altitude
   const int boatTip = cmpR - 1;               // tangent (1px in: no ring flicker)
   const int boatBase = boatTip - triR;
-  const int windTip = boatTip;                // experimental shared tangent
+  const int windTip = boatTip;                // shared ring tangent
   const int windBase = boatBase;
 
   const int brgDeg = gps.course.isValid() ? (int)(gps.course.deg() + 0.5) % 360 : -1;
@@ -469,14 +469,14 @@ void drawSpeed(TinyGPSPlus &gps)
   const int boatDeg = brgDeg >= 0 ? (brgUp ? 0 : brgDeg) : -1;
   const int windRel = wndAbs >= 0 ? (brgUp ? (wndAbs - brgDeg + 360) % 360 : wndAbs) : -1;
   const int nDeg = brgUp ? (360 - brgDeg) % 360 : 0;
-  int markSepDeg = -1;
-  if (boatDeg >= 0 && windRel >= 0) {
-    const int rawSep = abs(windRel - boatDeg) % 360;
-    markSepDeg = rawSep > 180 ? 360 - rawSep : rawSep;
+  int windAngleDeg = -1;
+  if (brgDeg >= 0 && upwRaw >= 0) {
+    const int rawAngle = (brgDeg - upwRaw + 360) % 360;
+    windAngleDeg = rawAngle > 180 ? 360 - rawAngle : rawAngle;
   }
   String cenTxt = "---";
-  if (markSepDeg >= 0) {
-    cenTxt = String(markSepDeg);
+  if (windAngleDeg >= 0) {
+    cenTxt = String(windAngleDeg);
     while (cenTxt.length() < 3) cenTxt = "0" + cenTxt;
   }
 
@@ -494,13 +494,15 @@ void drawSpeed(TinyGPSPlus &gps)
     if (arcDeg >= 0) drawNoGoArc(cmpCx, cmpCy, cmpR, arcDeg, noGoHalf, ARC_RED);
     if (windRel >= 0) drawNupTriangle(cmpCx, cmpCy, windTip, windBase, windRel, RED);
     if (boatDeg >= 0) drawNupTriangle(cmpCx, cmpCy, boatTip, boatBase, boatDeg, GREEN);
-    // Center marker separation, same font as the BRG value. The selected
-    // font has no degree glyph, so use the same drawn degree ring as BRG.
+    // Center boat/wind angle, using the next smaller loaded font.
+    // TFT_eSPI has no font 3; the loaded classic fonts are 1, 2, 4, 6,
+    // 7, and 8. The selected font has no degree glyph, so use the same
+    // drawn degree ring as BRG.
     tft.setTextColor(WHITE, BG);
     tft.setTextDatum(MC_DATUM);
-    tft.drawString(cenTxt, cmpCx, cmpCy, 4);
-    const int cenHalf = tft.textWidth(cenTxt, 4) / 2;
-    tft.drawCircle(cmpCx + cenHalf + 5, cmpCy, 2, markSepDeg >= 0 ? WHITE : BG);
+    tft.drawString(cenTxt, cmpCx, cmpCy + 3, 2);
+    const int cenHalf = tft.textWidth(cenTxt, 2) / 2;
+    tft.drawCircle(cmpCx + cenHalf + 5, cmpCy - 8, 2, windAngleDeg >= 0 ? WHITE : BG);
     lastCenStr = cenTxt;
     prevBoatDeg = boatDeg;
     prevWindDeg = windRel;

@@ -52,10 +52,13 @@ top-aligned (diameter = cell width − 8px), RING_GRAY (0xC618) ring + 30° radi
 ticks inside (twice
 as long at 90/180/270, top skipped for the font-2 "N" which moves to the
 true-north angle in bearing-up view), two solid equilateral-shape minus-5px
-triangles stacked radially without overlap (green boat: tip tangent to the
-ring border, base pushed out along the bearing; red wind: same size, tip
-tangent to the boat base, tip downwind = windDir+180; each with a 4px-thick
-15px color-matched tail; session wind wins, else env wind), plus the no-go
+triangles sharing the ring tangent (green boat: tip tangent to the
+ring border, base pushed inward along the bearing; red wind: same size and
+same radial span, tip downwind = windDir+180, so the arrows can overlap at
+close angles; each with a 4px-thick
+15px color-matched tail; session wind wins, else env wind), center boat/wind
+angle (font 2 + drawn degree ring: 0 dead-on upwind, 180 dead downwind),
+plus the no-go
 arc (9px radial band, pure TFT_RED, width via /nogo, centered on the upwind
 direction opposite the red tip, moves bearing-relative);
 below the ring "Wind (kn)" (x=221) and "BRG" (x=290) gray font-2 labels at
