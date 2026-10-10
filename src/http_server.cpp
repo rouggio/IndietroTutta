@@ -493,6 +493,26 @@ static void handleNoGo()
                 String("{\"nogo\":") + noGoArcDeg + "}");
 }
 
+// OTA-on-boot (GET /otabooth → current; POST /otabooth?on=0|1).
+// Same shape as /nogo: read-or-set, persisted through the config blob, so the
+// behaviour can be changed without walking to the boat (the CONFIG screen is
+// the only other way). With it off, firmware only ever arrives when someone
+// asks for it via POST /ota (`make dl` / `make dist`).
+static void handleOtaOnBoot()
+{
+    if (server.method() == HTTP_POST && server.hasArg("on")) {
+        config.otaCheckOnStart = (server.arg("on") == "1" || server.arg("on") == "true");
+        saveConfig(config);
+        redrawCurrentPage();
+        bufferedSerialPrintln(config.otaCheckOnStart
+            ? "[HTTP] OTA on boot ENABLED"
+            : "[HTTP] OTA on boot disabled");
+    }
+    server.send(200, "application/json",
+                String("{\"otaCheckOnStart\":") +
+                (config.otaCheckOnStart ? "true" : "false") + "}");
+}
+
 // Server select (GET /server → current; POST /server?mode=prod|dev&host=<ip:port>).
 // Dev mode with a host talks plain HTTP to the LAN backend (local :3000 serves
 // public/ota/, so OTA follows the same switch). Prod (or dev with no host)
@@ -740,6 +760,8 @@ void httpServerInit(TinyGPSPlus &gps)
     server.on("/nogo", HTTP_POST, handleNoGo);
     server.on("/nogo", HTTP_GET, handleNoGo);
     server.on("/ota", HTTP_POST, handleOta);
+server.on("/otabooth", HTTP_GET, handleOtaOnBoot);
+server.on("/otabooth", HTTP_POST, handleOtaOnBoot);
     server.on("/server", HTTP_GET, handleServer);
     server.on("/server", HTTP_POST, handleServer);
     server.on("/btn", HTTP_POST, handleBtn);
