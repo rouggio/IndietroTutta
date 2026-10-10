@@ -6,9 +6,12 @@
 #include "screen_config.h"
 #include "splash_screen.h"
 #include "buttons.h"
+#include "backend.h"
+#include "serial_buffer.h"
 
 #include <TFT_eSPI.h>
 #include <SPI.h>
+#include <string.h>
 
 static UIState uiState = UIState::Screens;
 
@@ -78,6 +81,39 @@ void drawScreen(TinyGPSPlus &gps, bool requiresInit, ScreenPage page) {
   }
 }
 
+// Entry gate: the race screen lives on server state (session geometry,
+// signals, the course library), so it is only opened when the network is
+// really there — a recent successful health, not just "AP up". Losing the
+// link MID-session is fine: the cached session keeps the screen alive, the
+// gate only guards entry.
+// The refusal is a short overlay on whatever page is showing; when it
+// expires the page is repainted in full so no pixels are left behind.
+static char noteMsg[16] = {0};
+static unsigned long noteUntil = 0;
+
+static void showNote(const char* msg)
+{
+    strncpy(noteMsg, msg, sizeof(noteMsg) - 1);
+    noteMsg[sizeof(noteMsg) - 1] = '\0';
+    noteUntil = millis() + 2000;
+}
+
+static void drawNote()
+{
+    if (!noteUntil) return;
+    if ((long)(millis() - noteUntil) >= 0) {
+        noteUntil = 0;
+        noteMsg[0] = '\0';
+        // Force a full repaint to wipe the overlay band.
+        prevPage = (page == PageMain) ? PageDiagnostics : PageMain;
+        return;
+    }
+    tft.fillRect(0, 0, tft.width(), 28, TFT_BLACK);
+    tft.setTextDatum(TC_DATUM);
+    tft.setTextColor(TFT_RED);
+    tft.drawString(noteMsg, tft.width() / 2, 14, 2);
+}
+
 void nextScreen() {
   // Cycle between the top-level pages. DIAGNOSTICS and CONFIG are
   // reachable only via speed-screen gestures (RR and LL) and are not
@@ -85,6 +121,15 @@ void nextScreen() {
   do {
     page = (ScreenPage)(((int)page + 1) % ((int)PageConfig + 1));
   } while (page == PageDiagnostics || page == PageConfig);
+  if (page == PageRace && !backendOnlineFresh()) {
+    static unsigned long lastRefusal = 0;
+    if (millis() - lastRefusal > 5000) { // don't spam the ring buffer
+        lastRefusal = millis();
+        bufferedSerialPrintln("[RACE] entry blocked: health not fresh");
+    }
+    showNote("NO NETWORK");
+    return; // stay put: the race screen needs a live backend
+  }
   tft.fillScreen(TFT_BLACK);
 }
 
@@ -138,5 +183,6 @@ void screenLoop(TinyGPSPlus &gps) {
             page
         );
         prevPage = page;
+        drawNote();
     }
 }

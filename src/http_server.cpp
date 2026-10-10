@@ -14,6 +14,7 @@
 #include "buttons.h"
 #include "server_link.h"
 #include "ota.h"
+#include "backend.h"
 
 #include <TFT_eSPI.h>
 #include "canvas.h"
@@ -574,6 +575,9 @@ static void handleStatus()
     sys["mock"] = gpsMockActive();
     sys["server"] = serverBaseUrl();
     sys["nogo"] = noGoArcDeg;
+    // Race-screen entry gate: false means /health has not succeeded in the
+    // last 60s, so the race screen refuses to open.
+    sys["onlineFresh"] = backendOnlineFresh();
 
     String json;
     serializeJson(doc, json);

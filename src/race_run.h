@@ -12,14 +12,13 @@
 //   IDLE/PRE-START → RACING (start line crossed, or gun for point starts)
 //   → marks advance by radius pass with required-side check (gates: either
 //   buoy, no side check) → FINISHED (line cross or last-mark pass).
-// Practice countdown is local (LL arms now+duration, R cycles 1/3/5 min,
-// NVS-backed) unless a pushed session gun exists — then the session gun
-// counts (coach-driven practice) until LL overrides locally;
-// race guns come from the session. The run (splits +
-// event log) uploads once at finish; committee signals apply idempotently.
+// The gun comes from the session itself: a race session's startTime, or a
+// practice session's startTime (the device creates it with now+gun when the
+// sailor starts a practice race from the menu). The run (splits + event log)
+// uploads once at finish; committee signals apply idempotently.
 
-void raceRunInit();   // load practice duration + signal cursor (NVS); call once at boot
-void raceRunReset();  // course change / reset: clears run, keeps duration
+void raceRunInit();   // load the signal cursor (NVS); call once at boot
+void raceRunReset();  // course change / reset: clears run state
 
 void raceRunUpdate(TinyGPSPlus& gps); // call every pass with a fix
 
@@ -33,10 +32,6 @@ long raceGunEpoch();      // effective gun (race session or practice), 0 if none
 uint8_t raceProgIdx();   // current target mark index
 uint8_t racePassCount();
 long raceSplit(uint8_t i); // seconds since start at pass i, -1 when unset
-
-void racePracticeStart(long gunEpoch); // LL in practice: gun = now + duration
-void racePracticeCycleDur();           // R in practice: 60 → 180 → 300
-long racePracticeDur();                // seconds
 
 // --- Step 5: events, upload ---------------------------------------------
 bool raceWrongPoll();           // true once per wrong-side call (consumed)

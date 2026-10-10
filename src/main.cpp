@@ -11,6 +11,7 @@
 #include "serial_buffer.h"
 #include "race_session.h"
 #include "race_run.h"
+#include "race_courses.h"
 
 TinyGPSPlus gps;
 
@@ -22,7 +23,8 @@ void setup(void) {
   delay(1000); // Wait for Serial to initialize
   loadConfig(config);
   raceSessionLoad(); // reboot-safe course (updated by health polls)
-  raceRunInit(); // practice duration (NVS)
+  raceRunInit(); // live-session run state (laps/times)
+  practicePrefsLoad(); // remembered practice course/gun/distance (NVS)
   
   bufferedSerialPrintln("Indietro Tutta");
   gpsInit();

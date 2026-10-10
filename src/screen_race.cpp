@@ -5,6 +5,7 @@
 #include "race_courses.h"
 #include "backend.h"
 #include "gps_mock.h"
+#include "serial_buffer.h"
 
 #include <TFT_eSPI.h>
 #include <TinyGPSPlus.h>
@@ -49,7 +50,8 @@ static const double DEG_M = 111320.0;
 // destination up), 2 best-fit (0°/90° whichever fills the screen).
 static uint8_t viewMode = 0;
 
-static int lastRaceCourseKey = -2; // sessionId+version fingerprint, -2 = none
+static int lastRaceCourseKey = -1; // sessionId+version fingerprint
+static bool mapDirty = true;       // a full clear is waiting for a map redraw
 static unsigned long lastMapDraw = 0;
 
 static int raceCourseKey()
@@ -680,6 +682,7 @@ static char lastHintR[16] = {0};
 static long lastGpsNow = 0;
 // Last fix for course placement (Repeat/Start need position + freshness).
 static double lastGpsLat = 0.0, lastGpsLon = 0.0;
+static int lastGpsCourse = -1;
 static unsigned long lastFixAt = 0;
 // Transient header message (duration cycling), 2s.
 static char transientMsg[12] = {0};
@@ -735,9 +738,12 @@ static uint8_t menuSel = 0;
 static uint8_t menuN = 0;
 static bool menuDirty = false;
 static bool menuFull = false; // set on open: full clear + title, like CONFIG
-// Course browse state (instant practice setup; map frozen while open).
+// Course browse state (practice setup; map frozen while open). courseView:
+// 0 = course list, 1 = session options.
 static bool courseOpen = false;
+static uint8_t courseView = 0;
 static uint8_t courseSel = 0;
+static bool coursePreselected = false; // picker already jumped to the default
 static bool courseDirty = false;
 static bool courseAsked = false;
 static bool courseWasReady = false;
@@ -763,6 +769,22 @@ static void resetRaceText()
     paneClean = false;
 }
 
+// Live fix snapshot used for course placement (Start/Repeat). Sampled on
+// EVERY pass, overlays included: drawRaceText is skipped while the menu or the
+// picker is open, and a snapshot frozen when the overlay opened made "is my
+// fix fresh?" fail after 15s of staring at the menu.
+static void raceSampleFix(TinyGPSPlus& gps)
+{
+    if (!gps.location.isValid()) return;
+    lastGpsLat = gps.location.lat();
+    lastGpsLon = gps.location.lng();
+    // Boat bearing: the fallback wind source when no station reports (the boat
+    // sits in the no-go angle, so its heading points at where the wind comes
+    // FROM).
+    lastGpsCourse = gps.course.isValid() ? (int)(gps.course.deg() + 0.5) % 360 : -1;
+    lastFixAt = millis();
+}
+
 static void drawRaceText(TinyGPSPlus& gps)
 {
     // Wall clock (GPS-calibrated, ticks through fix gaps) so the countdown
@@ -770,11 +792,6 @@ static void drawRaceText(TinyGPSPlus& gps)
     long now = raceWallEpoch();
     if (now <= 0) now = raceGpsEpoch(gps);
     lastGpsNow = now;
-    if (gps.location.isValid()) {
-        lastGpsLat = gps.location.lat();
-        lastGpsLon = gps.location.lng();
-        lastFixAt = millis();
-    }
     const long gun = raceGunEpoch();
 
     // Header: committee banners only (the countdown lives in the pane now).
@@ -825,10 +842,6 @@ static void drawRaceText(TinyGPSPlus& gps)
         }
     } else if (raceSession.valid && gun > 0) {
         snprintf(tim, sizeof(tim), "WAIT");
-    } else if (raceSession.valid && now > 0 &&
-               strcmp(raceSession.mode, "race") != 0) {
-        const long d = racePracticeDur();
-        snprintf(tim, sizeof(tim), "D%1ld:%02ld", d / 60, d % 60);
     } else {
         snprintf(tim, sizeof(tim), "--:--");
     }
@@ -881,8 +894,16 @@ static void drawRaceText(TinyGPSPlus& gps)
     // Hint bar: texts change length across modes now, so repaint on change
     // (band clear once, then both sides).
     char hintL[16], hintR[16];
-    snprintf(hintL, sizeof(hintL), "%s", (courseOpen || menuOpen) ? "L Back" : "L Next  LL Menu");
-    snprintf(hintR, sizeof(hintR), "%s", (courseOpen || menuOpen) ? "R Sel RR Pick" : "RR Switch View");
+    if (courseOpen && courseView == 1) {
+        snprintf(hintL, sizeof(hintL), "L Row  LL Back");
+        snprintf(hintR, sizeof(hintR), "R Set  RR Start");
+    } else if (courseOpen || menuOpen) {
+        snprintf(hintL, sizeof(hintL), "L Back");
+        snprintf(hintR, sizeof(hintR), "R Sel RR Pick");
+    } else {
+        snprintf(hintL, sizeof(hintL), "L Next  LL Menu");
+        snprintf(hintR, sizeof(hintR), "RR Switch View");
+    }
     if (strcmp(hintL, lastHintL) != 0 || strcmp(hintR, lastHintR) != 0) {
         tft.fillRect(0, 219, 320, 21, RBG);
         strncpy(lastHintL, hintL, sizeof(lastHintL) - 1);
@@ -896,43 +917,57 @@ static void drawRaceText(TinyGPSPlus& gps)
 }
 
 // LL menu: explicit race actions (map frozen while open, box repainted on
-// open/selection only; close does a full repaint). Practice: start /
-// repeat / abandon. Race: resync / abandon (the gun belongs to committee).
-static uint8_t menuCount(bool isPractice)
+// open/selection only; close does a full repaint). The rows depend on
+// what is going on — you cannot start over a running session, cannot
+// repeat a committee race, cannot abandon nothing.
+enum MenuRow : uint8_t {
+    MenuStart = 0,  // start a practice session (no session running)
+    MenuRepeat,     // re-create the last practice session at the boat
+    MenuResync,     // pull the committee session now (race mode)
+    MenuAbandon,    // end the running session
+};
+
+static MenuRow menuRows[4];
+
+static uint8_t buildMenuRows()
 {
-    return isPractice ? 3 : 2;
+    const bool has = raceSession.valid;
+    const bool race = has && strcmp(raceSession.mode, "race") == 0;
+    uint8_t n = 0;
+    if (!has) menuRows[n++] = MenuStart;
+    if (!race && practicePrefsValid()) menuRows[n++] = MenuRepeat;
+    if (race) menuRows[n++] = MenuResync;
+    if (has) menuRows[n++] = MenuAbandon;
+    return n;
 }
 
-static void menuText(bool isPractice, uint8_t i, char* buf, size_t n)
+static const char* menuRowText(MenuRow r)
 {
-    if (isPractice) {
-        if (i == 0) snprintf(buf, n, "Start practice session");
-        else if (i == 1) snprintf(buf, n, "Repeat last session");
-        else snprintf(buf, n, "Abandon session");
-    } else {
-        if (i == 0) snprintf(buf, n, "Resync now");
-        else snprintf(buf, n, "Abandon session");
+    switch (r) {
+        case MenuStart: return "Start practice session";
+        case MenuRepeat: return "Repeat last session";
+        case MenuResync: return "Resync now";
+        case MenuAbandon: return "Abandon session";
     }
+    return "";
 }
 
 static void drawRaceMenu(bool full)
 {
     // CONFIG is the menu reference: centered title + rule, `>` rows with
     // yellow selection, hint bar with rule. Same geometry, same grays.
-    const bool isPractice = !(raceSession.valid && strcmp(raceSession.mode, "race") == 0);
     if (full) {
         tft.fillScreen(TFT_BLACK);
         tft.setTextColor(TFT_WHITE, TFT_BLACK);
         tft.setTextDatum(MC_DATUM);
-        tft.drawString(isPractice ? "PRAC MENU" : "RACE MENU", tft.width() / 2, 20, 4);
+        tft.drawString("RACE/PRACTICE MENU", tft.width() / 2, 20, 2);
         tft.drawFastHLine(0, 44, tft.width(), MENU_GRAY);
     } else {
         tft.fillRect(0, 60, tft.width(), 70, TFT_BLACK);
     }
-    char buf[32], row[40];
+    char row[40];
     for (uint8_t i = 0; i < menuN; i++) {
-        menuText(isPractice, i, buf, sizeof(buf));
-        snprintf(row, sizeof(row), "%s %s", i == menuSel ? ">" : " ", buf);
+        snprintf(row, sizeof(row), "%s %s", i == menuSel ? ">" : " ", menuRowText(menuRows[i]));
         tft.setTextDatum(TL_DATUM);
         tft.setTextColor(i == menuSel ? TFT_YELLOW : TFT_WHITE, TFT_BLACK);
         tft.drawString(row, 12, 68 + i * 30, 2);
@@ -954,7 +989,62 @@ static void menuClose()
 static void courseClose()
 {
     courseOpen = false;
+    courseView = 0;
     redrawCurrentPage();
+}
+
+// ---- Session options (right after picking a course) ----------------------
+// Two rows; R cycles the highlighted row's value, RR starts the session.
+static uint8_t optRow = 0;
+
+static void gunCycle(int dir)
+{
+    const unsigned n = sizeof(PRACTICE_GUNS) / sizeof(PRACTICE_GUNS[0]);
+    int cur = 0;
+    while (cur < (int)n && PRACTICE_GUNS[cur] != practicePrefs().gunSec) cur++;
+    if (cur >= (int)n) cur = 1; // 30s
+    cur = (cur + (dir > 0 ? 1 : n - 1)) % (int)n;
+    practicePrefsSetGun(PRACTICE_GUNS[cur]);
+}
+
+static void distCycle(int dir)
+{
+    const unsigned n = sizeof(PRACTICE_DISTS) / sizeof(PRACTICE_DISTS[0]);
+    int cur = 0;
+    while (cur < (int)n && PRACTICE_DISTS[cur] != practicePrefs().distM) cur++;
+    if (cur >= (int)n) cur = 1; // 20m
+    cur = (cur + (dir > 0 ? 1 : n - 1)) % (int)n;
+    practicePrefsSetDist(PRACTICE_DISTS[cur]);
+}
+
+static void drawCourseOptions()
+{
+    const int bx = 8, bw = 304, by = 34, bh = 172;
+    tft.fillRect(bx, by, bw, bh, RBG);
+    tft.drawRect(bx, by, bw, bh, RFG);
+    tft.setTextDatum(TC_DATUM);
+    tft.setTextColor(RFG, RBG);
+    char head[20];
+    const Course* c = courseGet(courseSel);
+    snprintf(head, sizeof(head), "%s", c && c->name[0] ? c->name : "OPTIONS");
+    tft.drawString(head, bx + bw / 2, by + 5, 2);
+    tft.drawFastHLine(bx + 8, by + 26, bw - 16, RDIM);
+
+    const int g = practicePrefs().gunSec;
+    const int d = practicePrefs().distM;
+    char rowG[28], rowD[28];
+    snprintf(rowG, sizeof(rowG), "%s Gun      %d:%02d", optRow == 0 ? ">" : " ", g / 60, g % 60);
+    snprintf(rowD, sizeof(rowD), "%s Distance %3d m", optRow == 1 ? ">" : " ", d);
+
+    tft.setTextDatum(TL_DATUM);
+    tft.setTextColor(optRow == 0 ? TFT_YELLOW : RFG, RBG);
+    tft.drawString(rowG, bx + 12, by + 46, 2);
+    tft.setTextColor(optRow == 1 ? TFT_YELLOW : RFG, RBG);
+    tft.drawString(rowD, bx + 12, by + 76, 2);
+
+    tft.setTextColor(RDIM, RBG);
+    tft.drawString("R change   RR start", bx + 12, by + 116, 2);
+    tft.drawString("course placed upwind of you", bx + 12, by + 140, 2);
 }
 
 // Course browse list (below header; map frozen behind it). Repainted on
@@ -1001,59 +1091,122 @@ static void drawCourseList()
     tft.setTextColor(RDIM, RBG);
 }
 
+// Open the course picker, pre-selected on the remembered course.
+static void openCoursePicker()
+{
+    menuOpen = false;
+    courseOpen = true;
+    courseView = 0;
+    courseSel = 0;
+    coursePreselected = false;
+    if (courseReady()) {
+        courseSel = coursePreselectIndex(); // library already in RAM
+        coursePreselected = true;
+    }
+    courseDirty = true;
+    courseAsked = false;
+    courseWasReady = courseReady();
+    redrawCurrentPage();
+}
+
+// Start the practice session the user just configured. Needs a fix and the
+// clock; the course goes to the backend in the background.
+static bool startPickedCourse()
+{
+    long now = raceWallEpoch();
+    if (now <= 0) now = lastGpsNow;
+    if (now <= 0 || millis() - lastFixAt > 15000) return false;
+    return courseStartSession(courseSel, lastGpsLat, lastGpsLon, now, lastGpsCourse);
+}
+
+// Repeat needs the remembered course SHAPE, which lives in the RAM pool —
+// wiped by every reboot. So Repeat is a two-phase action: ask the backend for
+// the library, then build the session when it lands. One button press, no
+// screens in between: the sailor stays on the race screen meanwhile.
+static bool pendingRepeat = false;
+static unsigned long pendingRepeatAt = 0;
+
+static void repeatCourseLoaded()
+{
+    pendingRepeat = false;
+    long now = raceWallEpoch();
+    if (now <= 0) now = lastGpsNow;
+    if (now <= 0 || millis() - lastFixAt > 15000) {
+        showTransient("NO FIX ");
+        return;
+    }
+    if (!courseRepeatSession(lastGpsLat, lastGpsLon, now, lastGpsCourse)) {
+        showTransient("NO COURSE ");
+        bufferedSerialPrintln("[MENU] repeat: course missing after fetch");
+    }
+}
+
 static void menuConfirm()
 {
-    const bool isPractice = !(raceSession.valid && strcmp(raceSession.mode, "race") == 0);
-    if (isPractice) {
-        if (menuSel == 0) {
-            // Start practice → browse courses (pick fires the +10s gun).
-            menuOpen = false;
-            courseOpen = true;
-            courseSel = 0;
-            courseDirty = true;
-            courseAsked = false;
-            courseWasReady = false;
-            redrawCurrentPage();
-        } else if (menuSel == 1) {
-            // Repeat last → same course re-anchored at the boat, fresh gun.
+    if (menuSel >= menuN) { menuClose(); return; }
+    switch (menuRows[menuSel]) {
+        case MenuStart:
+            openCoursePicker();
+            return;
+        case MenuRepeat: {
+            // Re-create the remembered practice at the boat, fresh gun.
             long now = raceWallEpoch();
             if (now <= 0) now = lastGpsNow;
-            if (!raceSession.valid || raceSession.markCount == 0) {
+            if (!practicePrefsValid()) {
                 showTransient("NO COURSE ");
-            } else if (now <= 0 || millis() - lastFixAt > 15000) {
+                bufferedSerialPrintln("[MENU] repeat: nothing remembered");
+            } else if (now <= 0) {
                 showTransient("NO FIX ");
-            } else if (courseRepeatSession(lastGpsLat, lastGpsLon, now)) {
+                bufferedSerialPrintln("[MENU] repeat: no wall clock");
+            } else if (millis() - lastFixAt > 15000) {
+                showTransient("NO FIX ");
+                bufferedSerialPrintln("[MENU] repeat: fix stale");
+            } else if (!courseHaveId(practicePrefs().courseId)) {
+                // Shape not in RAM (first repeat since boot): fetch, then run.
+                pendingRepeat = true;
+                pendingRepeatAt = millis();
+                backendFetchCourses();
+                menuClose();
+                showTransient("LOADING ");
+                bufferedSerialPrintln("[MENU] repeat: fetching course library");
+            } else if (courseRepeatSession(lastGpsLat, lastGpsLon, now, lastGpsCourse)) {
                 menuClose();
             } else {
-                showTransient("NO FIX ");
+                showTransient("NO COURSE ");
+                bufferedSerialPrintln("[MENU] repeat: start refused");
             }
-        } else {
-            raceRunReset();
-            showSignal("ABANDON ");
+            break;
         }
-    } else {
-        if (menuSel == 0) {
+        case MenuResync:
             backendPollHealthNow();
-        } else {
-            raceRunReset();
+            break;
+        case MenuAbandon:
+            courseAbandonSession();
             showSignal("ABANDON ");
-        }
+            break;
     }
     menuClose();
 }
 
 void drawScreenRace(TinyGPSPlus &gps, bool requiresInit)
 {
+    raceSampleFix(gps);
     if (requiresInit) {
         tft.fillScreen(RBG);
-        lastRaceCourseKey = -2; // force map redraw
+        mapDirty = true; // force a full map redraw after the clear
         resetRaceText();
         if (!gGrabbing) raceRunReset(); // capture must not wipe a live run
     }
+    // courseChanged means the SESSION changed under us — that is what closes
+    // an open overlay. It must NOT be triggered by a forced repaint: a full
+    // redraw happens whenever an overlay opens, and treating that as a course
+    // change closed the menu/picker on the very pass it was opened.
     const int key = raceCourseKey();
     const bool courseChanged = (key != lastRaceCourseKey);
+    lastRaceCourseKey = key;
+    const bool mapFull = mapDirty || courseChanged;
+    mapDirty = false;
     if (courseChanged) {
-        lastRaceCourseKey = key;
         if (!gGrabbing) raceRunReset();
         // A course change can follow an overlay or the empty state that wiped
         // the pane without resetting its caches — force the text/pane repaint
@@ -1082,48 +1235,107 @@ void drawScreenRace(TinyGPSPlus &gps, bool requiresInit)
             drawRaceMenu(true);
             menuFull = false;
             menuDirty = false;
-        } else if (menuDirty || requiresInit || courseChanged) {
-            drawRaceMenu(requiresInit || courseChanged);
+        } else if (menuDirty || mapFull) {
+            drawRaceMenu(mapFull);
             menuDirty = false;
         }
         return;
     }
     if (courseOpen) {
         // Course browse: fetch once, fail loud after 8s, freeze the map.
-        if (!courseAsked) {
-            courseAsked = true;
-            courseT0 = millis();
-            backendFetchCourses();
-        }
-        if (courseReady() != courseWasReady) {
-            courseWasReady = courseReady();
-            courseDirty = true;
-        }
-        if (!courseReady() && millis() - courseT0 > 8000) {
-            courseOpen = false;
-            showTransient("OFFLINE ");
-            redrawCurrentPage();
+        if (courseView == 0) {
+            if (!courseAsked) {
+                courseAsked = true;
+                courseT0 = millis();
+                backendFetchCourses();
+            }
+            if (courseReady() != courseWasReady) {
+                courseWasReady = courseReady();
+                // First time the library lands: jump to the remembered
+                // course (or the Windward-Leeward default) instead of row 1.
+                if (courseWasReady && !coursePreselected) {
+                    courseSel = coursePreselectIndex();
+                    coursePreselected = true;
+                }
+                courseDirty = true;
+            }
+            if (!courseReady() && millis() - courseT0 > 8000) {
+                courseOpen = false;
+                showTransient("OFFLINE ");
+                redrawCurrentPage();
+            }
         }
     }
-    if (!courseOpen) drawRaceMap(gps, requiresInit || courseChanged);
+    if (!courseOpen) drawRaceMap(gps, mapFull);
+    // Deferred repeat: the library landed (or never did), act on it now.
+    if (pendingRepeat) {
+        if (courseReady()) {
+            repeatCourseLoaded();
+        } else if (millis() - pendingRepeatAt > 8000) {
+            pendingRepeat = false;
+            showTransient("OFFLINE ");
+            bufferedSerialPrintln("[MENU] repeat: course library unreachable");
+        }
+    }
     drawRaceText(gps);
-    if (courseOpen && (courseDirty || requiresInit || courseChanged)) {
-        drawCourseList();
+    // The backend answers a device-started create asynchronously: adopt the
+    // real session id as soon as it lands (until then the local copy runs).
+    long createdId = 0;
+    if (backendSessionCreated(&createdId)) {
+        if (createdId > 0 && raceSession.valid) {
+            raceSession.sessionId = createdId;
+            raceSessionSave();
+        } else if (createdId < 0) {
+            showTransient("OFFLINE ");
+        }
+    }
+    if (courseOpen && (courseDirty || mapFull)) {
+        if (courseView == 0) drawCourseList();
+        else drawCourseOptions();
         courseDirty = false;
     }
 }
-
-// Transient duration banner for LL cycling ("SET 3:00", 2s).
-static unsigned long durMsgUntil = 0;
 
 void screenRaceButton(Button button, ButtonEvent event)
 {
     // Course browse owns Short/Long while open (raw Press/Release pass
     // through, same release-after-open reason as the menu).
     if (courseOpen) {
-        if (button == Button::Left &&
-            (event == ButtonEvent::ShortPress || event == ButtonEvent::LongPress)) {
-            courseClose();
+        if (button == Button::Left && event == ButtonEvent::ShortPress) {
+            if (courseView == 1) {
+                // Options: L moves between the two rows, LL backs out.
+                optRow = (uint8_t)((optRow + 1) % 2);
+                courseDirty = true;
+            } else {
+                courseClose();
+            }
+            return;
+        }
+        if (button == Button::Left && event == ButtonEvent::LongPress) {
+            if (courseView == 1) {
+                courseView = 0; // options -> back to the list
+                courseDirty = true;
+            } else {
+                courseClose();
+            }
+            return;
+        }
+        if (courseView == 1) {
+            // Options: R cycles the highlighted row, RR starts.
+            if (button == Button::Right && event == ButtonEvent::ShortPress) {
+                if (optRow == 0) gunCycle(1);
+                else distCycle(1);
+                courseDirty = true;
+                return;
+            }
+            if (button == Button::Right && event == ButtonEvent::LongPress) {
+                if (startPickedCourse()) {
+                    courseClose(); // courseVersion bump redraws the new course
+                } else {
+                    showTransient("NO FIX ");
+                }
+                return;
+            }
             return;
         }
         if (button == Button::Right && event == ButtonEvent::ShortPress) {
@@ -1135,14 +1347,13 @@ void screenRaceButton(Button button, ButtonEvent event)
             return;
         }
         if (button == Button::Right && event == ButtonEvent::LongPress) {
-            long now = raceWallEpoch();
-            if (now <= 0) now = lastGpsNow;
-            if (now > 0 && millis() - lastFixAt <= 15000 &&
-                courseStartSession(courseSel, lastGpsLat, lastGpsLon, now)) {
-                courseClose(); // courseVersion bump redraws the new course
-            } else {
-                showTransient("NO FIX ");
+            if (!courseCount()) {
+                showTransient("NO COURSE ");
+                return;
             }
+            courseView = 1; // pick -> options
+            optRow = 0;
+            courseDirty = true;
             return;
         }
         return;
@@ -1169,12 +1380,11 @@ void screenRaceButton(Button button, ButtonEvent event)
         nextScreen();
         return;
     }
-    const bool isPractice = !(raceSession.valid && strcmp(raceSession.mode, "race") == 0);
     // Left long opens the menu (explicit actions beat hidden gestures).
     if (button == Button::Left && event == ButtonEvent::LongPress) {
         menuOpen = true;
         menuSel = 0;
-        menuN = menuCount(isPractice);
+        menuN = buildMenuRows();
         menuDirty = true;
         menuFull = true;
         return;

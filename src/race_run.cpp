@@ -9,7 +9,6 @@
 
 static const float PASS_HYST_M = 5.0f;   // exit radius = r + hyst
 static const float CROSS_RANGE_M = 150.0f; // line flips count inside this band
-static const long PRACTICE_DURS[] = {60, 180, 300};
 
 static uint8_t progIdx = 0;
 static bool started = false;
@@ -19,8 +18,6 @@ static long startEpoch = 0;
 static long endEpoch = 0;
 static long splits[10] = {0};
 static bool splitSet[10] = {false};
-static long practiceGun = 0;
-static long practiceDurSec = 300;
 static char runResult[9] = "FINISHED"; // FINISHED|DSQ|DNF|RET (committee)
 static long scpSec = 0;                // SCP time add (seconds)
 
@@ -54,8 +51,8 @@ static bool wasInside = false;
 // Circle-entry point + COG at entry. Side is judged at arrival (mark vs
 // heading on the way in — the rounding's side is established there;
 // departure with the mark astern is free). This replaces the old
-// entry→exit chord, which inverted on lapping passes. Dead-ahead/astern
-// arrivals (within 20°) are unjudged.
+// entry->exit chord, which inverted on lapping passes. Dead-ahead/astern
+// arrivals (within 20 deg) are unjudged.
 static double entryLat = 0.0, entryLon = 0.0;
 static double entryCog = -1.0;
 static bool entryValid = false;
@@ -64,16 +61,9 @@ void raceRunInit()
 {
     Preferences prefs;
     if (prefs.begin("race", true)) {
-        const long d = (long)prefs.getInt("pdur", 300);
         sigLastId = prefs.getInt("siglast", 0);
         sigLastSes = prefs.getInt("sigses", 0);
         prefs.end();
-        for (unsigned i = 0; i < sizeof(PRACTICE_DURS) / sizeof(PRACTICE_DURS[0]); i++) {
-            if (d == PRACTICE_DURS[i]) {
-                practiceDurSec = d;
-                break;
-            }
-        }
     }
 }
 
@@ -102,7 +92,6 @@ void raceRunReset()
     wasInside = false;
     entryValid = false;
     entryCog = -1.0;
-    practiceGun = 0;
     strncpy(runResult, "FINISHED", sizeof(runResult) - 1);
     scpSec = 0;
     evCount = 0;
@@ -132,51 +121,14 @@ long raceSplit(uint8_t i)
     return splits[i];
 }
 
-static bool isPractice()
-{
-    return !(raceSession.valid && strcmp(raceSession.mode, "race") == 0);
-}
-
 long raceGunEpoch()
 {
     if (!raceSession.valid) return 0;
-    if (!isPractice()) {
-        if (raceSession.startTime <= 0) return 0;
-        return raceSession.startTime + raceSession.startOffsetSec;
-    }
-    // Practice: a locally armed gun (LL) wins; otherwise a pushed session
-    // gun counts down like a race gun (coach-driven practice). No pushed
-    // startTime → 0, same as solo unarmed.
-    if (practiceGun > 0) return practiceGun;
     if (raceSession.startTime <= 0) return 0;
     return raceSession.startTime + raceSession.startOffsetSec;
 }
 
-void racePracticeStart(long gunEpoch)
-{
-    if (!isPractice()) return;
-    practiceGun = gunEpoch;
-}
-
-void racePracticeCycleDur()
-{
-    if (!isPractice()) return;
-    unsigned n = sizeof(PRACTICE_DURS) / sizeof(PRACTICE_DURS[0]);
-    unsigned i = 0;
-    for (; i < n; i++) {
-        if (practiceDurSec == PRACTICE_DURS[i]) break;
-    }
-    practiceDurSec = PRACTICE_DURS[(i + 1) % n];
-    Preferences prefs;
-    if (prefs.begin("race", false)) {
-        prefs.putInt("pdur", (int)practiceDurSec);
-        prefs.end();
-    }
-}
-
-long racePracticeDur() { return practiceDurSec; }
-
-// Signed side of directed segment A→B for point P (ENU meters, boat frame).
+// Signed side of directed segment A->B for point P (ENU meters, boat frame).
 static int segSide(double ax, double ay, double bx, double by)
 {
     // P is the origin here (boat-relative coords).
@@ -451,7 +403,7 @@ void raceRunUpdate(TinyGPSPlus& gps)
         wasInside = false;
         // Strict side check on single marks (gates stay lenient: either
         // buoy, no side judgment). Judged at arrival: mark bearing vs
-        // heading at circle entry. Dead-ahead/astern (within 20°) and
+        // heading at circle entry. Dead-ahead/astern (within 20 deg) and
         // missing COG pass unjudged.
         const RaceMark& cur = raceSession.marks[progIdx];
         if (cur.type == RaceMarkSingle && (cur.side == 'P' || cur.side == 'S') && entryValid) {

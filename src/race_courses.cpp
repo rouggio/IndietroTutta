@@ -1,6 +1,7 @@
 #include "race_courses.h"
 #include "race_session.h"
 #include "race_run.h"
+#include "backend.h"
 #include "config.h"
 #include "serial_buffer.h"
 #include "server_link.h"
@@ -8,6 +9,7 @@
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
+#include <Preferences.h>
 #include <math.h>
 #include <string.h>
 
@@ -33,6 +35,30 @@ const Course* courseGet(uint8_t i)
         n++;
     }
     return nullptr;
+}
+
+bool courseHaveId(long id)
+{
+    for (uint8_t k = 0; k < COURSE_MAX; k++) {
+        if (coursePool[k].used && coursePool[k].id == id) return true;
+    }
+    return false;
+}
+
+// Remembered course wins; first boot falls back to Windward-Leeward.
+uint8_t coursePreselectIndex()
+{
+    if (practicePrefsValid()) {
+        for (uint8_t i = 0; i < COURSE_MAX; i++) {
+            const Course* c = courseGet(i);
+            if (c && c->id == practicePrefs().courseId) return i;
+        }
+    }
+    for (uint8_t i = 0; i < COURSE_MAX; i++) {
+        const Course* c = courseGet(i);
+        if (c && strcmp(c->key, "wl") == 0) return i;
+    }
+    return 0;
 }
 
 static uint8_t markTypeFromCourse(const char* t)
@@ -66,6 +92,8 @@ static bool courseFill(JsonObject o, long id)
     dst->id = id;
     const char* name = o["name"] | "Course";
     strncpy(dst->name, name, sizeof(dst->name) - 1);
+    const char* key = o["builtinKey"] | "";
+    strncpy(dst->key, key, sizeof(dst->key) - 1);
     dst->markCount = 0;
     JsonArray marks = o["marks"].as<JsonArray>();
     for (JsonObject m : marks) {
@@ -104,7 +132,7 @@ static bool courseFill(JsonObject o, long id)
 }
 
 // Backend-task context: pull the course library (heap JSON docs,
-// ~2KB each — safe off the task stack). One fetch: built-in and user
+// ~2KB each -> safe off the task stack). One fetch: built-in and user
 // courses are all rows of GET /courses, id-keyed (builtinKey marks the
 // read-only built-ins, which the device just shows like any other).
 static void courseFetchOnce(const String& url)
@@ -139,7 +167,7 @@ void courseFetch()
     bufferedSerialPrintln("[CRS] library ready");
 }
 
-// Wind-frame resolve (mirror of the backend/js math, scale 1 — builder
+// Wind-frame resolve (mirror of the backend/js math, scale 1 -> the builder
 // bakes scale into the model). Lines always square to the wind.
 static void courseResolvePt(double originLat, double originLon, int windDir,
                          double x, double y, double& lat, double& lon)
@@ -172,23 +200,83 @@ static void courseResolveSeg(double originLat, double originLon, int windDir,
     lonB = clon + dLo;
 }
 
-bool courseStartSession(uint8_t i, double boatLat, double boatLon, long nowEpoch)
+// ---- Practice options (remembered across reboots) ------------------------
+const int PRACTICE_GUNS[PRACTICE_GUN_N] = {10, 30, 60, 120, 300};
+const int PRACTICE_DISTS[PRACTICE_DIST_N] = {10, 20, 30};
+
+static PracticePrefs sPrefs;   // defaults: course -1, gun 30s, distance 20m
+
+void practicePrefsLoad()
+{
+    Preferences prefs;
+    if (!prefs.begin("race", true)) return;
+    sPrefs.courseId = (long)prefs.getInt("prefCourse", -1);
+    sPrefs.gunSec = prefs.getInt("prefGun", 30);
+    sPrefs.distM = prefs.getInt("prefDist", 20);
+    prefs.end();
+    // Snap a stale/hand-edited value back to the offered set.
+    unsigned gi = 0, di = 0;
+    while (gi + 1 < sizeof(PRACTICE_GUNS) / sizeof(PRACTICE_GUNS[0]) && PRACTICE_GUNS[gi] != sPrefs.gunSec) gi++;
+    unsigned dj = 0;
+    while (dj + 1 < sizeof(PRACTICE_DISTS) / sizeof(PRACTICE_DISTS[0]) && PRACTICE_DISTS[dj] != sPrefs.distM) dj++;
+    sPrefs.gunSec = PRACTICE_GUNS[gi];
+    sPrefs.distM = PRACTICE_DISTS[dj];
+}
+
+const PracticePrefs& practicePrefs() { return sPrefs; }
+
+void practicePrefsSave(long courseId)
+{
+    sPrefs.courseId = courseId;
+    Preferences prefs;
+    if (prefs.begin("race", false)) {
+        prefs.putInt("prefCourse", (int)sPrefs.courseId);
+        prefs.putInt("prefGun", sPrefs.gunSec);
+        prefs.putInt("prefDist", sPrefs.distM);
+        prefs.end();
+    }
+}
+
+bool practicePrefsValid() { return sPrefs.courseId > 0; }
+
+// Cycling the options does not persist: the values become the new default
+// only when a session is actually started (practicePrefsSave).
+void practicePrefsSetGun(int sec) { sPrefs.gunSec = sec; }
+void practicePrefsSetDist(int m) { sPrefs.distM = m; }
+
+// Wind for placement: session wind wins, then the venue wind carried by the
+// health piggyback, then the boat's own bearing (no wind known => assume the
+// boat lies in the no-go angle, so its heading points at the wind source).
+int practiceWindDir(int boatCourse)
+{
+    if (raceSession.valid && raceSession.windSpeed > 0) return raceSession.windDir;
+    if (raceSession.envWindSpeed > 0) return raceSession.envWindDir;
+    return boatCourse >= 0 ? boatCourse : 0;
+}
+
+int practiceWindSpeed()
+{
+    if (raceSession.valid && raceSession.windSpeed > 0) return raceSession.windSpeed;
+    return raceSession.envWindSpeed > 0 ? raceSession.envWindSpeed : 0;
+}
+
+bool courseStartSession(uint8_t i, double boatLat, double boatLon, long nowEpoch, int boatCourse)
 {
     const Course* t = courseGet(i);
     if (!t || nowEpoch <= 0) return false;
-    const int wind = raceSession.valid ? raceSession.windDir
-                    : (raceSession.envWindSpeed > 0 ? raceSession.envWindDir : 0);
-    // Reference: start-line center in wind-frame (origin for OOTB lines),
-    // else the origin itself.
+    const PracticePrefs& p = practicePrefs();
+    const int wind = practiceWindDir(boatCourse);
+    // Reference: start-line center in wind-frame (the course origin sits at
+    // the leeward edge), else the origin itself.
     double refX = 0.0, refY = 0.0;
     if (t->startLine.valid) {
         refX = (t->startLine.ax + t->startLine.bx) / 2.0;
         refY = (t->startLine.ay + t->startLine.by) / 2.0;
     }
-    // Desired start center: 20m upwind of the boat (toward windDir).
+    // Desired start center: p.distM metres upwind of the boat (toward windDir).
     const double wb = wind * M_PI / 180.0;
-    const double scLat = boatLat + (20.0 * cos(wb)) / 111320.0;
-    const double scLon = boatLon + (20.0 * sin(wb)) / (111320.0 * cos(boatLat * M_PI / 180.0));
+    const double scLat = boatLat + ((double)p.distM * cos(wb)) / 111320.0;
+    const double scLon = boatLon + ((double)p.distM * sin(wb)) / (111320.0 * cos(boatLat * M_PI / 180.0));
     // Origin = start center minus the rotated reference offset.
     const double wt = wind * M_PI / 180.0;
     const double Eoff = refX * cos(wt) + refY * sin(wt);
@@ -198,11 +286,13 @@ bool courseStartSession(uint8_t i, double boatLat, double boatLon, long nowEpoch
 
     RaceSession next;
     next.valid = true;
-    next.sessionId = -1; // local only: uploads ack-drop, NVS untouched
+    next.sessionId = -1; // until the backend hands back a real id
     strncpy(next.mode, "practice", sizeof(next.mode) - 1);
-    next.startTime = 0;
+    strncpy(next.status, "scheduled", sizeof(next.status) - 1);
+    next.startTime = nowEpoch + p.gunSec; // the gun the countdown runs to
     next.startOffsetSec = 0;
     next.windDir = wind;
+    next.windSpeed = practiceWindSpeed();
     next.courseVersion = raceSession.valid ? raceSession.courseVersion + 1 : 1;
     next.markCount = 0;
     for (uint8_t k = 0; k < t->markCount && k < 10; k++) {
@@ -235,57 +325,48 @@ bool courseStartSession(uint8_t i, double boatLat, double boatLon, long nowEpoch
     next.envWindSpeed = raceSession.envWindSpeed;
     raceSession = next;
     raceRunReset();
-    racePracticeStart(nowEpoch + 10); // 10-second start, immediately
-    bufferedSerialPrintln("[CRS] local session started");
+    // Real session on the backend: the id comes back asynchronously and is
+    // adopted by the UI thread (courseCreatedPoll). Until then the device
+    // still runs this local copy, so a failed POST never costs the sailor
+    // the start.
+    backendCreateSession(t->id, nowEpoch + p.gunSec, originLat, originLon, wind, next.windSpeed);
+    practicePrefsSave(t->id);
+    bufferedSerialPrintln("[CRS] session started");
     return true;
 }
 
-bool courseRepeatSession(double boatLat, double boatLon, long nowEpoch)
+// Abandon the live session (if any): ask the backend to mark it abandoned so
+// the web agrees with the device, then forget it locally.
+void courseAbandonSession()
 {
-    // Repeat = same absolute course rigid-shifted so the start reference
-    // (line center, else mark #1) sits 20m upwind of the boat, fresh +10s
-    // gun. No wind-frame needed: translation preserves the shape.
-    if (!raceSession.valid || raceSession.markCount == 0 || nowEpoch <= 0) return false;
-    const int wind = raceSession.windDir != 0 ? raceSession.windDir
-                     : (raceSession.envWindSpeed > 0 ? raceSession.envWindDir : 0);
-    const double wb = wind * M_PI / 180.0;
-    const double scLat = boatLat + (20.0 * cos(wb)) / 111320.0;
-    const double scLon = boatLon + (20.0 * sin(wb)) / (111320.0 * cos(boatLat * M_PI / 180.0));
-    double refLat, refLon;
-    if (raceSession.startLine.valid) {
-        refLat = (raceSession.startLine.latA + raceSession.startLine.latB) / 2.0;
-        refLon = (raceSession.startLine.lonA + raceSession.startLine.lonB) / 2.0;
-    } else {
-        refLat = raceSession.marks[0].lat;
-        refLon = raceSession.marks[0].lon;
+    if (raceSession.valid && raceSession.sessionId > 0) {
+        backendAbandonSession(raceSession.sessionId);
     }
-    const double dLat = scLat - refLat, dLon = scLon - refLon;
-    RaceSession next = raceSession; // struct copy, then shift geometry
-    for (uint8_t k = 0; k < next.markCount; k++) {
-        next.marks[k].lat += dLat;
-        next.marks[k].lon += dLon;
-    }
-    if (next.startLine.valid) {
-        next.startLine.latA += dLat;
-        next.startLine.lonA += dLon;
-        next.startLine.latB += dLat;
-        next.startLine.lonB += dLon;
-    }
-    if (next.finishLine.valid && !next.finishSameAsStart) {
-        next.finishLine.latA += dLat;
-        next.finishLine.lonA += dLon;
-        next.finishLine.latB += dLat;
-        next.finishLine.lonB += dLon;
-    }
-    if (next.finishSameAsStart) next.finishLine = next.startLine;
-    next.sessionId = -1; // repeat is local (uploads ack-drop)
-    strncpy(next.mode, "practice", sizeof(next.mode) - 1);
-    next.startTime = 0;
-    next.startOffsetSec = 0;
-    next.courseVersion = raceSession.courseVersion + 1;
-    raceSession = next;
     raceRunReset();
-    racePracticeStart(nowEpoch + 10);
-    bufferedSerialPrintln("[CRS] session repeated at boat");
-    return true;
+    raceSession.valid = false;
+    raceSession.sessionId = -1;
+    raceSession.markCount = 0;
+    bufferedSerialPrintln("[CRS] session abandoned");
+}
+
+// Repeat = abandon whatever is running, then re-create the remembered course
+// with the remembered gun/distance, re-oriented from where the boat is now.
+bool courseRepeatSession(double boatLat, double boatLon, long nowEpoch, int boatCourse)
+{
+    if (nowEpoch <= 0) return false;
+    if (!practicePrefsValid()) return false;
+    const Course* t = nullptr;
+    for (uint8_t i = 0; i < COURSE_MAX && !t; i++) {
+        const Course* c = courseGet(i);
+        if (c && c->id == practicePrefs().courseId) t = c;
+    }
+    if (!t) return false;
+    courseAbandonSession();
+    // courseStartSession takes an index, not a pointer: find it again.
+    uint8_t idx = 0;
+    for (uint8_t i = 0; i < COURSE_MAX; i++) {
+        const Course* c = courseGet(i);
+        if (c && c->id == practicePrefs().courseId) { idx = i; break; }
+    }
+    return courseStartSession(idx, boatLat, boatLon, nowEpoch, boatCourse);
 }

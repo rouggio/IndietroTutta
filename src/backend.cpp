@@ -12,6 +12,7 @@
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 #include <TinyGPSPlus.h>
+#include <ArduinoJson.h>
 
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
@@ -29,6 +30,10 @@
 
 constexpr unsigned long HEALTH_CHECK_INTERVAL = 30000;
 constexpr unsigned long HEALTH_LIVE_INTERVAL = 5000; // session live: signals fast
+// While the network is down, retry briskly: at boot the first check runs
+// before WiFi has associated, and waiting the full 30s would lock the race
+// screen (entry gate) for half a minute after every power-on.
+constexpr unsigned long HEALTH_RETRY_INTERVAL = 5000;
 // GPS throttling: baseline 30s at 0 knots, 2s at >=5 knots, linear in between
 constexpr unsigned long GPS_BASE_INTERVAL_MS = 30000;
 constexpr unsigned long GPS_FAST_INTERVAL_MS = 2000;
@@ -57,11 +62,27 @@ static QueueHandle_t workQueue = nullptr;
 static volatile bool online = false;
 static volatile bool healthNow = false;
 static volatile bool courseWant = false;
+static volatile bool createWant = false;
+static volatile long createCourseId = 0, createStartEpoch = 0;
+static double createLat = 0.0, createLon = 0.0;
+static int createWindDir = 0, createWindSpeed = 0;
+static volatile bool abandonWant = false;
+static volatile long abandonSessionId = 0;
+static volatile long createdSessionId = -2; // -2 = nothing pending
+static volatile unsigned long lastHealthOkMs = 0;
 static TinyGPSPlus* mainGps = nullptr;
 
 bool backendOnline()
 {
     return online;
+}
+
+// Recent health = the network is really there. A single dropped poll must
+// not lock the sailor out, hence the window rather than backendOnline().
+bool backendOnlineFresh()
+{
+    if (lastHealthOkMs == 0) return false;
+    return (millis() - lastHealthOkMs) < 60000UL;
 }
 
 void backendPollHealthNow()
@@ -72,6 +93,33 @@ void backendPollHealthNow()
 void backendFetchCourses()
 {
     courseWant = true; // drained by the task loop (blocking fetch there)
+}
+
+void backendCreateSession(long courseId, long startEpoch, double originLat,
+                          double originLon, int windDir, int windSpeed)
+{
+    createCourseId = courseId;
+    createStartEpoch = startEpoch;
+    createLat = originLat;
+    createLon = originLon;
+    createWindDir = windDir;
+    createWindSpeed = windSpeed;
+    createWant = true; // drained by the task loop (blocking POST there)
+}
+
+bool backendSessionCreated(long* sessionId)
+{
+    const long id = createdSessionId;
+    if (id == -2) return false;      // nothing pending
+    createdSessionId = -2;           // consume
+    if (sessionId) *sessionId = id;  // -1 = the POST failed
+    return true;
+}
+
+void backendAbandonSession(long sessionId)
+{
+    abandonSessionId = sessionId;
+    abandonWant = true;
 }
 
 // ---------------------------------------------------------
@@ -213,6 +261,75 @@ static void sendRunResult()
     }
 }
 
+// Practice setup from the device: create the session (with this boat) in one
+// call, and mark it abandoned when the sailor walks away from it. Both run on
+// the backend task — the UI thread must never block on HTTP.
+static void doCreateSession()
+{
+    if (WiFi.status() != WL_CONNECTED) { createdSessionId = -1; return; }
+    // ISO 8601 UTC: the gun the countdown runs to. The caller only gets here
+    // with a real epoch (the practice start needs wall time anyway); without
+    // one there is no date to file the session under, so don't create a
+    // 1970-dated orphan.
+    char startIso[24] = {0};
+    time_t tt = (time_t)createStartEpoch;
+    struct tm tmv;
+    if (createStartEpoch <= 0 || !gmtime_r(&tt, &tmv)) { createdSessionId = -1; return; }
+    strftime(startIso, sizeof(startIso), "%Y-%m-%dT%H:%M:%S.000Z", &tmv);
+    char date[12] = {0};
+    memcpy(date, startIso, 10); // session day = the gun's day (UTC)
+
+    ServerLink link;
+    if (!link.begin(serverBaseUrl() + "/sessions")) { createdSessionId = -1; return; }
+    link.http.addHeader("Content-Type", "application/json");
+    link.http.addHeader("DeviceId", String(WiFi.macAddress()));
+
+    String body = "{";
+    body += "\"courseId\":" + String(createCourseId);
+    body += ",\"name\":\"Practice\"";
+    body += ",\"date\":\"" + String(date) + "\"";
+    body += ",\"mode\":\"practice\"";
+    body += ",\"originLat\":" + String(createLat, 7);
+    body += ",\"originLon\":" + String(createLon, 7);
+    body += ",\"windDir\":" + String(createWindDir);
+    if (createWindSpeed > 0) body += ",\"windSpeed\":" + String(createWindSpeed);
+    body += ",\"startTime\":\"" + String(startIso) + "\"";
+    body += ",\"boats\":[{\"deviceId\":\"" + String(WiFi.macAddress()) + "\"}]";
+    body += "}";
+
+    const int code = link.http.POST(body);
+    String resp = (code > 0 && code < 400) ? link.http.getString() : String();
+    link.http.end();
+
+    long id = -1;
+    if (code == HTTP_CODE_CREATED && resp.length() > 0 && resp.length() < 8192) {
+        DynamicJsonDocument doc(2048);
+        if (!deserializeJson(doc, resp)) id = (long)(doc["id"] | -1L);
+    }
+    createdSessionId = id;
+    if (id > 0) {
+        bufferedSerialPrintln(String("[BACKEND] session ") + id + " created");
+    } else {
+        bufferedSerialPrintln("[BACKEND] session create failed");
+    }
+}
+
+static void doAbandonSession(long sessionId)
+{
+    if (WiFi.status() != WL_CONNECTED) return;
+    ServerLink link;
+    String url = serverBaseUrl() + "/sessions/" + String(sessionId) + "/signals";
+    if (!link.begin(url)) return;
+    link.http.addHeader("Content-Type", "application/json");
+    link.http.addHeader("DeviceId", String(WiFi.macAddress()));
+    String body = "{\"kind\":\"ABANDON\"}";
+    const int code = link.http.POST(body);
+    link.http.end();
+    bufferedSerialPrintln(code == HTTP_CODE_CREATED || code == HTTP_CODE_OK
+        ? "[BACKEND] session abandoned"
+        : "[BACKEND] abandon failed");
+}
+
 static void backendTask(void *param){
     (void)param;
 
@@ -226,10 +343,22 @@ static void backendTask(void *param){
         const unsigned long passStart = now;
         unsigned long mockMs = 0, sendMs = 0;
 
-        // One-shot course library fetch for instant practice setup.
+        // One-shot course library fetch for practice setup.
         if (courseWant) {
             courseWant = false;
             courseFetch();
+        }
+
+        // Device-started session create / abandon (practice menu). ABANDON FIRST: a
+// repeat arms both in the same pass, and the backend rejects adding a boat
+// that is still in another scheduled/live session (409).
+        if (abandonWant) {
+            abandonWant = false;
+            doAbandonSession(abandonSessionId);
+        }
+        if (createWant) {
+            createWant = false;
+            doCreateSession();
         }
 
         // Mock GPS source (indoor testing): scripted fixes in, tagged out.
@@ -279,14 +408,19 @@ static void healthTask(void *param)
 {
     (void)param;
     unsigned long lastHealthCheck = 0;
+    bool firstCheck = true; // hit the backend at once: the race screen
+                            // entry gate needs a fresh health, not a 30s wait
     for (;;) {
         const unsigned long now = millis();
         const unsigned long healthInterval =
-            raceSessionLive() ? HEALTH_LIVE_INTERVAL : HEALTH_CHECK_INTERVAL;
-        if (healthNow || now - lastHealthCheck >= healthInterval) {
+            raceSessionLive() ? HEALTH_LIVE_INTERVAL
+                              : (online ? HEALTH_CHECK_INTERVAL : HEALTH_RETRY_INTERVAL);
+        if (healthNow || firstCheck || now - lastHealthCheck >= healthInterval) {
             healthNow = false;
+            firstCheck = false;
             lastHealthCheck = now;
             healthCheck();
+            if (online) lastHealthOkMs = now;
             if (online && raceUploadPending()) {
                 sendRunResult();
             }
