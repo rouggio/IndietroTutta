@@ -16,7 +16,8 @@ spans both rows). Top bar (icons) + bottom hints untouched.
   `make monitor`, `make dist` (= shorthand `dc`: bump + publish OTA), `make dl`
   (= shorthand `dl`: ota-local + device pulls immediately, `DEVICE_IP ?= 192.168.0.106`
   but the IP is DHCP — pass `DEVICE_IP=...`). Toolchain: `.venv` PlatformIO.
-  Shorthands `sl`/`sc`/`dl`/`dc` are defined in the root `AGENTS.md`.
+  Shorthands `sl`/`sc`/`dl`/`dc` and the working modes `devl`/`devc` are defined in the
+  root `AGENTS.md`.
 
 ## Architecture — superloop + backend task
 
