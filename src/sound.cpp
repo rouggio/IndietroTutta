@@ -1,4 +1,5 @@
 #include "sound.h"
+#include "config_store.h"
 #include "serial_buffer.h"
 #include <ArduinoJson.h>
 
@@ -90,17 +91,33 @@ bool soundPlaying()
 
 // Boot chime. Pitches rise 880 -> 1760 Hz, then a closing beat and a
 // short silence. Queued, not blocked: the core tone task plays it while
-// setup() carries straight on to the splash, so boot is not held for a
-// second of audio.
+// setup() carries straight on to the splash, so boot is not held for
+// half a second of audio.
 static const uint16_t startupNotes[][2] = {
-    { 880, 150 },
-    { 1109, 150 },
-    { 1319, 150 },
-    { 1760, 400 },
-    { 0, 200 },
+    { 880, 75 },
+    { 1109, 75 },
+    { 1319, 75 },
+    { 1760, 200 },
+    { 0, 100 },
 };
 
 void soundStartup()
 {
+    if (!bootSoundOn) return;
     soundPlay(startupNotes, sizeof(startupNotes) / sizeof(startupNotes[0]));
+}
+
+// Press feedback: one crisp 25ms blip. Short enough not to be heard as
+// a tone, long enough to register as "got it".
+static const uint16_t pressNotes[][2] = {
+    { 2500, 25 },
+};
+
+void soundButtonPress()
+{
+    // Gated here rather than at the call site so every press feedback path
+    // obeys the same setting. Note the remote POST /btn route never reaches
+    // this function — it injects straight into screenButtonEvent.
+    if (!beepOnKeys) return;
+    soundPlay(pressNotes, sizeof(pressNotes) / sizeof(pressNotes[0]));
 }

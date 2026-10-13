@@ -1,0 +1,21 @@
+meta {
+  name: Key beep on (GET current)
+  type: http
+  seq: 25
+}
+
+get {
+  url: {{baseUrl}}/beep
+  body: none
+  auth: none
+}
+
+docs {
+  200 { beepOnKeys: true }
+
+  Reports only. Use POST /beep?on=1 to enable, /beep?on=0 to disable.
+
+  The setting covers the physical button tick only. The remote
+  POST /btn injection bypasses buttons.cpp and never beeps either way;
+  POST /sound scripts are always played regardless of this flag.
+}

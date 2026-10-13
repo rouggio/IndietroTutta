@@ -12,12 +12,14 @@ post {
 
 body:json {
   {
-    "notes": [[880, 150], [1109, 150], [1319, 150], [1760, 400], [0, 200]]
+    "notes": [[880, 75], [1109, 75], [1319, 75], [1760, 200], [0, 100]]
   }
 }
 
 docs {
-  202 { status: playing, notes: 5, totalMs: 1050 }
+  202 { status: playing, notes: 5, totalMs: 525 }
 
-  The trailing [0, 200] is a silence gap, so the tune ends cleanly.
+  Same notes as the boot chime (soundStartup), so auditioning here tells
+  you exactly what the boat does at power-up. Pitches RISE 880 -> 1760
+  Hz; the trailing [0, 100] is a silence gap so it ends cleanly.
 }

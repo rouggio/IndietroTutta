@@ -8,6 +8,7 @@
 #include "serial_buffer.h"
 #include "screen_config.h"
 #include "server_link.h"
+#include "sound.h"
 
 #include "canvas.h"
 
@@ -20,8 +21,17 @@ enum ConfigRow {
     ROW_OTA = 0,
     ROW_SERVER = 1,
     ROW_SPEED = 2,
+    ROW_BEEP = 3,
+    ROW_BOOTSOUND = 4,
     ROW_COUNT
 };
+
+// Five rows at 26px keep the detail line on screen (font 2 is 16px tall):
+// rows occupy 68..188, the detail sits at 192..208, the hint bar at 214.
+static const int ROW_Y0 = 68;
+static const int ROW_DY = 26;
+static const int DETAIL_Y = 192;
+static const int WIPE_HEIGHT = 148;
 
 static int selRow = ROW_OTA;
 static bool needsRedraw = true;
@@ -54,10 +64,12 @@ void drawScreenConfig(bool requiresInit)
 
     // ---- Selectable rows ----
     if (needsRedraw) {
-        tft.fillRect(0, 60, tft.width(), 120, BG);
+        // Wipe the rows AND the detail line, which sits below the last row
+        // at DETAIL_Y. Stops just short of the hint bar at y=214.
+        tft.fillRect(0, 60, tft.width(), WIPE_HEIGHT, BG);
 
         for (int i = 0; i < ROW_COUNT; i++) {
-            int y = 68 + i * 30;
+            int y = ROW_Y0 + i * ROW_DY;
             bool selected = (i == selRow);
 
             tft.setTextColor(selected ? TFT_YELLOW : WHITE, BG);
@@ -69,6 +81,12 @@ void drawScreenConfig(bool requiresInit)
             else if (i == ROW_SERVER)
                 row += String("Server      : ") +
                        (serverMode() == 1 ? "DEV" : "PROD");
+            else if (i == ROW_BEEP)
+                row += String("Key beep    : ") +
+                       (beepOnKeys ? "ON" : "OFF");
+            else if (i == ROW_BOOTSOUND)
+                row += String("Boot sound  : ") +
+                       (bootSoundOn ? "ON" : "OFF");
             else
                 row += String("Speed unit  : ") + speedLabel();
 
@@ -88,7 +106,7 @@ void drawScreenConfig(bool requiresInit)
         }
         tft.setTextColor(GRAY, BG);
         tft.setTextDatum(TL_DATUM);
-        tft.drawString(detail, 12, 162, 2);
+        tft.drawString(detail, 12, DETAIL_Y, 2);
 
         needsRedraw = false;
     }
@@ -139,6 +157,22 @@ void screenConfigButton(Button button, ButtonEvent event)
             serverSetMode(next);
             bufferedSerialPrintln(String("[CONFIG] Server -> ") + serverBaseUrl());
             // server keys persist in their own NVS namespace, not cfg blob
+        } else if (selRow == ROW_BEEP) {
+            const bool next = !beepOnKeys;
+            setBeepOnKeys(next);
+            bufferedSerialPrintln(next ?
+                "[CONFIG] Key beep enabled" :
+                "[CONFIG] Key beep disabled");
+            // own NVS key too — see config_store.h
+            if (next) soundButtonPress();  // audible confirmation
+        } else if (selRow == ROW_BOOTSOUND) {
+            const bool next = !bootSoundOn;
+            setBootSound(next);
+            bufferedSerialPrintln(next ?
+                "[CONFIG] Boot sound enabled (plays at next power-up)" :
+                "[CONFIG] Boot sound disabled (next power-up will be silent)");
+            // Deliberately no audible confirmation here: enabling it must
+            // not chirp now, or it would defeat the point of turning it off.
         } else {
             config.speedUnit = (config.speedUnit + 1) % SPEED_UNITS;
             bufferedSerialPrintln("[CONFIG] Speed unit changed");

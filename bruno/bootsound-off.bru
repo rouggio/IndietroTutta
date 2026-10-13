@@ -1,0 +1,30 @@
+meta {
+  name: Boot sound off
+  type: http
+  seq: 26
+}
+
+post {
+  url: {{baseUrl}}/bootsound?on=0
+  body: none
+  auth: none
+}
+
+docs {
+  200 { bootSound: false }
+
+  Read-or-set, same shape as /beep. GET /bootsound reports the current
+  value; POST /bootsound?on=1 re-enables.
+
+  Separate from /beep on purpose: /beep silences the per-press tick,
+  this one silences the power-up chime. Either can be off alone.
+
+  Stored under its own NVS key ("wifi"/"bootsnd"), NOT in the cfg blob —
+  adding a field to Config changes sizeof(Config) and loadConfig deletes
+  any blob whose size does not match. Default is ON when the key is
+  absent, so a new device plays the chime at power-up.
+
+  Takes effect at the NEXT boot: the setting is read in loadConfig(),
+  which runs before soundStartup(). Turning it off does not make the
+  current boot silent retroactively.
+}

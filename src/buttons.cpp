@@ -1,4 +1,5 @@
 #include "buttons.h"
+#include "sound.h"
 #include <Arduino.h>
 
 struct ButtonState {
@@ -47,6 +48,10 @@ void buttonsUpdate() {
             button.pressed = true;
             button.longPressDetected = false;
             button.pressStart = millis();
+
+            // Press feedback: fires once on the edge, not while held, so
+            // holding for a long press does not repeat the tick.
+            soundButtonPress();
 
             if (callback) {
                 callback(

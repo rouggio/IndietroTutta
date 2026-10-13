@@ -494,6 +494,42 @@ static void handleNoGo()
                 String("{\"nogo\":") + noGoArcDeg + "}");
 }
 
+// Key beep on/off (GET /beep → current; POST /beep?on=0|1). Same shape as
+// /nogo: read-or-set, persisted through its own NVS key rather than the cfg
+// blob, so the setting can be flipped without walking to the boat. The
+// CONFIG screen carries a "Key beep : ON/OFF" row for the same purpose.
+static void handleBeep()
+{
+    if (server.method() == HTTP_POST && server.hasArg("on")) {
+        const bool on = (server.arg("on") == "1" || server.arg("on") == "true");
+        if (!setBeepOnKeys(on)) {
+            server.send(500, "text/plain", "could not persist beepOnKeys");
+            return;
+        }
+        bufferedSerialPrintln(on ? "[HTTP] key beep ON" : "[HTTP] key beep OFF");
+    }
+    server.send(200, "application/json",
+                String("{\"beepOnKeys\":") + (beepOnKeys ? "true" : "false") + "}");
+}
+
+// Boot chime on/off (GET /bootsound → current; POST /bootsound?on=0|1).
+// Separate from /beep (the key-press tick) so either can be silenced alone —
+// turning off the key tick must not also mute power-up, and vice versa.
+// Stored under its own NVS key ("wifi"/"bootsnd"), default ON.
+static void handleBootSound()
+{
+    if (server.method() == HTTP_POST && server.hasArg("on")) {
+        const bool on = (server.arg("on") == "1" || server.arg("on") == "true");
+        if (!setBootSound(on)) {
+            server.send(500, "text/plain", "could not persist bootSound");
+            return;
+        }
+        bufferedSerialPrintln(on ? "[HTTP] boot sound ON" : "[HTTP] boot sound OFF");
+    }
+    server.send(200, "application/json",
+                String("{\"bootSound\":") + (bootSoundOn ? "true" : "false") + "}");
+}
+
 // Play a buzzer sound script (POST /sound, JSON body):
 //   {"notes":[[2500,120],[0,80],[2500,120]]}
 // Each note is [freqHz, durationMs]; freq 0 = silence. A new script
@@ -636,6 +672,10 @@ static void handleStatus()
     sys["mock"] = gpsMockActive();
     sys["server"] = serverBaseUrl();
     sys["nogo"] = noGoArcDeg;
+    // Buzzer key-press feedback; own NVS key ("wifi"/"beepkeys").
+    sys["beepOnKeys"] = beepOnKeys;
+    // Boot chime; own NVS key ("wifi"/"bootsnd").
+    sys["bootSound"] = bootSoundOn;
     // Estimate only: the core tone task owns the real playback timing, so
     // this tracks when we queued a script, not what the buzzer is doing.
     sys["soundPlaying"] = soundPlaying();
@@ -804,6 +844,10 @@ void httpServerInit(TinyGPSPlus &gps)
     server.on("/nogo", HTTP_POST, handleNoGo);
     server.on("/nogo", HTTP_GET, handleNoGo);
     server.on("/sound", HTTP_POST, handleSound);
+    server.on("/beep", HTTP_POST, handleBeep);
+    server.on("/beep", HTTP_GET, handleBeep);
+    server.on("/bootsound", HTTP_POST, handleBootSound);
+    server.on("/bootsound", HTTP_GET, handleBootSound);
     server.on("/ota", HTTP_POST, handleOta);
 server.on("/otabooth", HTTP_GET, handleOtaOnBoot);
 server.on("/otabooth", HTTP_POST, handleOtaOnBoot);

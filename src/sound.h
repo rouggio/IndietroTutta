@@ -50,5 +50,11 @@ bool soundPlay(const uint16_t (*notes)[2], size_t count);
 // so what you audition on the portal is what the boat does at power-up.
 void soundStartup();
 
+// One short tick per physical button press (press edge only, never during
+// a hold). Fired from buttons.cpp, so the remote POST /btn injection —
+// which goes straight to screenButtonEvent — does not tick.
+// Silently does nothing while the beepOnKeys setting is off.
+void soundButtonPress();
+
 // Estimate: true while a script we queued should still be sounding.
 bool soundPlaying();

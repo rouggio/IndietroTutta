@@ -43,12 +43,81 @@ bool setNoGoDeg(int deg)
 }
 
 // ---------------------------------------------------------
+// Beep on button presses
+// ---------------------------------------------------------
+// Separate NVS key for the same reason `nogo` has one: the `cfg` blob is
+// length-checked against sizeof(Config) and deleted on mismatch, so a new
+// struct field is not a safe way to add a setting here.
+bool beepOnKeys = true;
+
+bool getBeepOnKeys()
+{
+    Preferences prefs;
+
+    if (!prefs.begin("wifi", true))
+        return true;
+
+    const bool v = prefs.getBool("beepkeys", true);
+    prefs.end();
+    return v;
+}
+
+bool setBeepOnKeys(bool on)
+{
+    Preferences prefs;
+
+    if (!prefs.begin("wifi", false))
+        return false;
+
+    const bool ok = prefs.putBool("beepkeys", on);
+    prefs.end();
+    if (ok)
+        beepOnKeys = on;
+    return ok;
+}
+
+// ---------------------------------------------------------
+// Boot chime on/off
+// ---------------------------------------------------------
+// Separate NVS key for the same reason `nogo` and `beepkeys` have one.
+// Default true: a device that has never stored this key plays the chime.
+bool bootSoundOn = true;
+
+bool getBootSound()
+{
+    Preferences prefs;
+
+    if (!prefs.begin("wifi", true))
+        return true;
+
+    const bool v = prefs.getBool("bootsnd", true);
+    prefs.end();
+    return v;
+}
+
+bool setBootSound(bool on)
+{
+    Preferences prefs;
+
+    if (!prefs.begin("wifi", false))
+        return false;
+
+    const bool ok = prefs.putBool("bootsnd", on);
+    prefs.end();
+    if (ok)
+        bootSoundOn = on;
+    return ok;
+}
+
+// ---------------------------------------------------------
 // General configuration
 // ---------------------------------------------------------
 
 bool loadConfig(Config& config)
 {
     noGoArcDeg = getNoGoDeg();
+    beepOnKeys = getBeepOnKeys();
+    bootSoundOn = getBootSound();
 
     Preferences prefs;
 

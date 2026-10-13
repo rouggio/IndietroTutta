@@ -28,6 +28,22 @@ int getNoGoDeg();
 bool setNoGoDeg(int deg);       // clamps to 10..180, persists, updates the live copy
 extern int noGoArcDeg;          // live copy used by the UI
 
+// Beep on physical button presses. Own NVS key ("wifi"/"beepkeys",
+// default true) for the same reason as `nogo`: adding a field to `Config`
+// changes sizeof(Config), and loadConfig DELETES a blob whose size does
+// not match — which would wipe username/speedUnit/timezone/otaCheckOnStart
+// on every already-provisioned device.
+bool getBeepOnKeys();
+bool setBeepOnKeys(bool on);
+extern bool beepOnKeys;         // live copy used by buttons.cpp
+
+// Play the boot chime at power-up. Own NVS key ("wifi"/"bootsnd",
+// default true) — same reasoning as beepOnKeys above. Read in
+// loadConfig(), so soundStartup() must be called AFTER loadConfig().
+bool getBootSound();
+bool setBootSound(bool on);
+extern bool bootSoundOn;        // live copy read by soundStartup()
+
 bool loadConfig(Config& config);
 bool saveConfig(const Config& config);
 

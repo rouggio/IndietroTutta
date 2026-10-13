@@ -1,0 +1,29 @@
+meta {
+  name: Key beep off
+  type: http
+  seq: 24
+}
+
+post {
+  url: {{baseUrl}}/beep?on=0
+  body: none
+  auth: none
+}
+
+docs {
+  200 { beepOnKeys: false }
+
+  Read-or-set, same shape as /nogo. GET /beep just reports the current
+  value; POST /beep?on=1 re-enables.
+
+  Stored under its own NVS key ("wifi"/"beepkeys"), NOT in the cfg blob:
+  adding a field to Config changes sizeof(Config) and loadConfig deletes
+  any blob whose size does not match, which would wipe username,
+  speedUnit, timezoneOffsetHours and otaCheckOnStart on every
+  already-provisioned device. Default is ON when the key is absent.
+
+  Same setting as the "Key beep : ON/OFF" row on the device CONFIG
+  screen — either one updates the other.
+
+  Turn it back on with POST /beep?on=1.
+}
