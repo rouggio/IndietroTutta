@@ -494,9 +494,17 @@ static void healthTask(void *param)
                             // entry gate needs a fresh health, not a 30s wait
     for (;;) {
         const unsigned long now = millis();
+        // Until the very first successful health we know nothing about the
+        // link, and the race-screen entry gate (backendOnlineFresh) refuses
+        // to open while lastHealthOkMs is still 0. Retry fast in that window
+        // only: it is bounded by the first success, so this costs nothing
+        // afterwards.
+        const unsigned long bootHealthInterval = 1000;
         const unsigned long healthInterval =
             raceSessionLive() ? HEALTH_LIVE_INTERVAL
-                              : (online ? HEALTH_CHECK_INTERVAL : HEALTH_RETRY_INTERVAL);
+                              : (online ? HEALTH_CHECK_INTERVAL
+                                        : (lastHealthOkMs == 0 ? bootHealthInterval
+                                                               : HEALTH_RETRY_INTERVAL));
         if (healthNow || firstCheck || now - lastHealthCheck >= healthInterval) {
             healthNow = false;
             firstCheck = false;

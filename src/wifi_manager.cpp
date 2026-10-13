@@ -2,6 +2,7 @@
 #include "config_store.h"
 #include "http_server.h"
 #include "serial_buffer.h"
+#include "backend.h"
 
 #include <WiFi.h>
 #include <DNSServer.h>
@@ -430,6 +431,15 @@ void wifiLoop()
             bufferedSerialPrintln(
                 WiFi.localIP().toString()
             );
+
+            // Associating is what actually unblocks the first /health: the
+            // health task's own first check fires at task start, while STA is
+            // still associating, so it fails and then waits a full retry
+            // interval. Nudge it now so lastHealthOkMs is set one round trip
+            // after we get an IP instead of up to HEALTH_RETRY_INTERVAL later
+            // — that gap is what made the race screen flash NO NETWORK for
+            // seconds on a device that was plainly connected.
+            backendPollHealthNow();
         }
 
         // Full budget for the next drop
