@@ -1,0 +1,23 @@
+meta {
+  name: Sound - descending arpeggio
+  type: http
+  seq: 22
+}
+
+post {
+  url: {{baseUrl}}/sound
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "notes": [[880, 150], [1109, 150], [1319, 150], [1760, 400], [0, 200]]
+  }
+}
+
+docs {
+  202 { status: playing, notes: 5, totalMs: 1050 }
+
+  The trailing [0, 200] is a silence gap, so the tune ends cleanly.
+}

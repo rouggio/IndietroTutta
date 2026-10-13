@@ -15,6 +15,7 @@
 #include "server_link.h"
 #include "ota.h"
 #include "backend.h"
+#include "sound.h"
 
 #include <TFT_eSPI.h>
 #include "canvas.h"
@@ -493,6 +494,46 @@ static void handleNoGo()
                 String("{\"nogo\":") + noGoArcDeg + "}");
 }
 
+// Play a buzzer sound script (POST /sound, JSON body):
+//   {"notes":[[2500,120],[0,80],[2500,120]]}
+// Each note is [freqHz, durationMs]; freq 0 = silence. A new script
+// replaces whatever is playing. Test-only hook — nothing calls it
+// automatically yet, it exists so different sounds can be auditioned
+// before they are wired to real situations.
+//
+// Answers 202 as soon as the script is queued; playback happens on the
+// sound task so the UI, buttons and GPS keep running.
+static void handleSound()
+{
+    static uint16_t notes[SOUND_MAX_NOTES][2];
+
+    if (server.method() != HTTP_POST) {
+        server.send(405, "text/plain", "POST only");
+        return;
+    }
+
+    const char *err = nullptr;
+    int n = soundParseNotes(server.arg("plain").c_str(), notes, SOUND_MAX_NOTES, &err);
+    if (n < 0) {
+        bufferedSerialPrintf("[HTTP] sound rejected: %s\n", err ? err : "invalid");
+        server.send(400, "text/plain", err ? err : "invalid script");
+        return;
+    }
+
+    if (!soundPlay((const uint16_t (*)[2])notes, (size_t)n)) {
+        server.send(500, "text/plain", "could not queue script");
+        return;
+    }
+
+    unsigned long totalMs = 0;
+    for (int i = 0; i < n; i++) totalMs += notes[i][1];
+
+    bufferedSerialPrintf("[HTTP] sound playing: %d notes, %lums\n", n, totalMs);
+    server.send(202, "application/json",
+                String("{\"status\":\"playing\",\"notes\":") + n +
+                ",\"totalMs\":" + totalMs + "}");
+}
+
 // OTA-on-boot (GET /otabooth → current; POST /otabooth?on=0|1).
 // Same shape as /nogo: read-or-set, persisted through the config blob, so the
 // behaviour can be changed without walking to the boat (the CONFIG screen is
@@ -595,6 +636,9 @@ static void handleStatus()
     sys["mock"] = gpsMockActive();
     sys["server"] = serverBaseUrl();
     sys["nogo"] = noGoArcDeg;
+    // Estimate only: the core tone task owns the real playback timing, so
+    // this tracks when we queued a script, not what the buzzer is doing.
+    sys["soundPlaying"] = soundPlaying();
     // Race-screen entry gate: false means /health has not succeeded in the
     // last 60s, so the race screen refuses to open.
     sys["onlineFresh"] = backendOnlineFresh();
@@ -759,6 +803,7 @@ void httpServerInit(TinyGPSPlus &gps)
     server.on("/mock", HTTP_POST, handleMock);
     server.on("/nogo", HTTP_POST, handleNoGo);
     server.on("/nogo", HTTP_GET, handleNoGo);
+    server.on("/sound", HTTP_POST, handleSound);
     server.on("/ota", HTTP_POST, handleOta);
 server.on("/otabooth", HTTP_GET, handleOtaOnBoot);
 server.on("/otabooth", HTTP_POST, handleOtaOnBoot);

@@ -12,16 +12,15 @@
 #include "race_session.h"
 #include "race_run.h"
 #include "race_courses.h"
+#include "sound.h"
 
 TinyGPSPlus gps;
 
 
 void setup(void) {
-  // Buzzer self-test (passive buzzer + on D19, - on GND): two short beeps.
-  pinMode(19, OUTPUT);
-  tone(19, 2500, 120);
-  delay(200);
-  tone(19, 2500, 120);
+  // Boot chime on the passive buzzer (+ on D19, - on GND). Queued, so this
+  // costs no boot time — it plays over the splash.
+  soundStartup();
   screenInit();
   beginSplash();
   Serial.begin(115200);

@@ -1,0 +1,27 @@
+meta {
+  name: Sound - two short beeps
+  type: http
+  seq: 21
+}
+
+post {
+  url: {{baseUrl}}/sound
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "notes": [[2500, 120], [0, 80], [2500, 120]]
+  }
+}
+
+docs {
+  202 { status: playing, notes: 3, totalMs: 320 }
+
+  A note is [freqHz, durationMs]. freq 0 is a silence gap.
+
+  Answers 202 as soon as the script is queued. Playback runs on the
+  Arduino core's own tone task, so the UI, buttons and GPS keep running
+  while it sounds.
+}
