@@ -17,6 +17,11 @@ TinyGPSPlus gps;
 
 
 void setup(void) {
+  // Buzzer self-test (passive buzzer + on D19, - on GND): two short beeps.
+  pinMode(19, OUTPUT);
+  tone(19, 2500, 120);
+  delay(200);
+  tone(19, 2500, 120);
   screenInit();
   beginSplash();
   Serial.begin(115200);
