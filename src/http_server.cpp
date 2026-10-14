@@ -699,6 +699,16 @@ static void handleStatus()
     // Race-screen entry gate: false means /health has not succeeded in the
     // last 60s, so the race screen refuses to open.
     sys["onlineFresh"] = backendOnlineFresh();
+    // Which screen is showing. Without it the portal cannot tell whether a
+    // scripted test is even running: the mock feed sails the boat regardless
+    // of the page, so a device parked on MAIN looks identical to one racing
+    // — no countdown, no marks, no finish, and nothing in /status to say so.
+    switch (page) {
+        case PageRace: sys["page"] = "race"; break;
+        case PageDiagnostics: sys["page"] = "diagnostics"; break;
+        case PageConfig: sys["page"] = "config"; break;
+        default: sys["page"] = "main"; break;
+    }
 
     String json;
     serializeJson(doc, json);
