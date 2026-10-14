@@ -74,6 +74,9 @@ static int finLastSide = 0;
 // line was armed. Gates the "crossed but flip missed" escape so finishing
 // never happens for a boat that has not demonstrably been at the line.
 static bool finSawBand = false;
+// When the finish line was armed (first pass with every mark behind us), for
+// the serial diagnostic. Diagnostic only — nothing scores from it.
+static long finArmedAt = 0;
 // Pass tracking for the current target.
 static bool wasInside = false;
 // Circle-entry point + COG at entry. Side is judged at arrival (mark vs
@@ -122,6 +125,7 @@ void raceRunReset()
     hasGunSide = false;
     finLastSide = 0;
     finSawBand = false;
+    finArmedAt = 0;
     wasInside = false;
     entryValid = false;
     entryCog = -1.0;
@@ -512,6 +516,17 @@ void raceRunUpdate(TinyGPSPlus& gps)
             // last rounding finished it when it was cleared).
             return;
         }
+        // The moment every mark is behind us, the finish starts from a clean
+        // slate. Anything accumulated earlier — a band entry during the
+        // upwind/downwind that passed the START/finish geometry — is stale by
+        // then (the boat was round other marks, not finished) and only hands
+        // the escape hatch a reason to fire without an actual crossing, which
+        // is what the W/L-with-Gate course kept hitting.
+        if (finArmedAt == 0) {
+            finArmedAt = now;
+            finSawBand = false;
+            finLastSide = 0;
+        }
         // Bounded side flip across the finish line.
         double ax, ay, bx, by;
         toBoatFrame(lat, lon, fin->latA, fin->lonA, ax, ay);
@@ -520,6 +535,27 @@ void raceRunUpdate(TinyGPSPlus& gps)
         const double dist = segDistM(lat, lon, *fin);
         const bool near = dist >= 0.0 && dist < CROSS_RANGE_M;
         if (near) finSawBand = true;
+        // Diagnostic: same treatment as the start window — log only on a
+        // CHANGE of side/near, so it costs a few lines per race instead of
+        // evicting "passed mark" and "finished" from the serial ring. The
+        // offline route checker says this crossing is sustained and the
+        // instrument disagrees, so the disagreement has to be read off the
+        // device rather than argued about.
+        {
+            static int dbgFinSide = -9;
+            static bool dbgFinNear = false;
+            static bool dbgFinFirst = true;
+            if (dbgFinFirst || side != dbgFinSide || near != dbgFinNear) {
+                dbgFinFirst = false;
+                dbgFinSide = side;
+                dbgFinNear = near;
+                bufferedSerialPrintln(String("[RACE] fin dist=") + (int)dist +
+                                      "m side=" + side + " near=" + (near ? 1 : 0) +
+                                      " finLastSide=" + finLastSide +
+                                      " band=" + (finSawBand ? 1 : 0) +
+                                      " armedFor=" + (now - finArmedAt) + "s");
+            }
+        }
         if (near && finLastSide != 0 && side != 0 && side != finLastSide) {
             finished = true;
             endEpoch = now;
