@@ -37,6 +37,11 @@ long raceSplit(uint8_t i); // seconds since start at pass i, -1 when unset
 bool raceWrongPoll();           // true once per wrong-side call (consumed)
 bool raceGunEdge(bool* ocsOut); // true once per gun edge (consumed)
 
+// Pre-gun countdown cues (feat #8), each on its own edge and consumed, so
+// a repaint or reconnect cannot replay them.
+bool raceGunMinuteCue(); // true once when the gun is 60s away
+int  raceGunTickCue();   // seconds remaining 10..1 when a tick is due, -1 if none
+
 void raceLogEvent(const char* code, long t, const char* v); // e.g. SIG
 uint8_t raceEventCount();
 bool raceEventGet(uint8_t i, long* t, char* e, size_t esz, char* v, size_t vsz);

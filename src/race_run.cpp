@@ -38,6 +38,14 @@ static bool wrongFlag = false;
 static bool gunEdge = false;
 static bool gunEdgeOcs = false;
 
+// Pre-gun countdown cues (feat #8): the one-minute warning and the 10..1
+// per-second ticks. Edges off whole seconds remaining, same rationale as
+// gunEdge — a 200ms repaint or a reconnect must not replay a cue, and a
+// slow pass (the feed logs 2-5s ones) skips a tick instead of stalling.
+static bool gunMinuteCue = false;
+static int gunTickDue = -1;
+static long cueSecLeft = -1;
+
 // Run upload handshake with the backend task.
 static bool uploadPending = false;
 
@@ -103,6 +111,9 @@ void raceRunReset()
     wrongFlag = false;
     gunEdge = false;
     gunEdgeOcs = false;
+    gunMinuteCue = false;
+    gunTickDue = -1;
+    cueSecLeft = -1;
     uploadPending = false;
     for (uint8_t i = 0; i < 10; i++) {
         splits[i] = 0;
@@ -311,6 +322,19 @@ void raceRunUpdate(TinyGPSPlus& gps)
 
     if (gun <= 0) return; // practice not started / race gun unknown
 
+    // Pre-gun cues, evaluated BEFORE the start logic so they still fire on
+    // the pass where the boat crosses (now >= gun). Ceil of the seconds
+    // remaining: 60 the moment the gun is a minute away, 1 for the last
+    // second, 0 once it is gone.
+    if (!started) {
+        const long secLeft = (gun - now + 999) / 1000;
+        if (secLeft >= 0 && secLeft != cueSecLeft) {
+            cueSecLeft = secLeft;
+            if (secLeft == 60) gunMinuteCue = true;
+            if (secLeft >= 1 && secLeft <= 10) gunTickDue = (int)secLeft;
+        }
+    }
+
     const bool wasStarted = started;
     auto noteGunEdge = [&]() {
         if (started && !wasStarted) {
@@ -495,6 +519,20 @@ bool raceGunEdge(bool* ocsOut)
     gunEdge = false;
     if (ocsOut) *ocsOut = gunEdgeOcs;
     return true;
+}
+
+bool raceGunMinuteCue()
+{
+    if (!gunMinuteCue) return false;
+    gunMinuteCue = false;
+    return true;
+}
+
+int raceGunTickCue()
+{
+    const int v = gunTickDue;
+    gunTickDue = -1;
+    return v; // seconds remaining (10..1), or -1 when nothing is due
 }
 
 // --- Step 5: run upload ---------------------------------------------------

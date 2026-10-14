@@ -129,9 +129,41 @@ void soundGun(bool ocs)
     static const uint16_t goNotes[][2] = { { 880, 70 }, { 0, 25 }, { 1320, 70 } };
     static const uint16_t ocsNotes[][2] = { { 440, 80 }, { 0, 40 }, { 220, 120 } };
 
+    bufferedSerialPrintln(ocs ? "[SOUND] gun OCS" : "[SOUND] gun GO");
     if (ocs) {
         soundPlay(ocsNotes, sizeof(ocsNotes) / sizeof(ocsNotes[0]));
     } else {
         soundPlay(goNotes, sizeof(goNotes) / sizeof(goNotes[0]));
     }
+}
+
+// One minute out: two short beeps, distinct from the GO pattern so you
+// can tell "get ready" from "go" without looking at the screen.
+static const uint16_t gunMinuteNotes[][2] = {
+    { 1200, 90 },
+    { 0, 70 },
+    { 1200, 90 },
+};
+
+void soundGunMinute()
+{
+    if (!gunSoundOn) return;
+    bufferedSerialPrintln("[SOUND] gun 1:00");
+    soundPlay(gunMinuteNotes, sizeof(gunMinuteNotes) / sizeof(gunMinuteNotes[0]));
+}
+
+// One tick per second for the last ten. 10..4 sit at a steady pitch; 3, 2
+// and 1 climb so the gun is audible in your ears, not just the screen.
+void soundGunTick(int secLeft)
+{
+    if (!gunSoundOn || secLeft < 1 || secLeft > 10) return;
+
+    unsigned int hz = 1000;
+    if (secLeft == 3) hz = 1200;
+    else if (secLeft == 2) hz = 1500;
+    else if (secLeft == 1) hz = 1900;
+
+    const uint16_t notes[1][2] = { { (uint16_t)hz, 60 } };
+    bufferedSerialPrintln(String("[SOUND] gun tick ") + secLeft);
+    soundPlay(notes, 1U);
 }

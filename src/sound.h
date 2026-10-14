@@ -61,5 +61,12 @@ void soundButtonPress();
 // pattern instead of the rising GO beep.
 void soundGun(bool ocs);
 
+// One-minute warning, and the per-second tick for the last ten seconds
+// (`secLeft` 10..1 — the final three rise in pitch). Both on `gunSoundOn`.
+// Each logs itself: a cue is ~100-250ms, far shorter than any poll of
+// /status, so the serial line is the only way to prove one fired.
+void soundGunMinute();
+void soundGunTick(int secLeft);
+
 // Estimate: true while a script we queued should still be sounding.
 bool soundPlaying();

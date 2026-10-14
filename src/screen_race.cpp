@@ -804,10 +804,14 @@ static void drawRaceText(TinyGPSPlus& gps)
     char ban[12];
     if (millis() < sigUntil && sigMsg[0]) {
         snprintf(ban, sizeof(ban), "%-8.8s", sigMsg);
-    } else if (raceSession.valid && gun > 0 && now > 0 && now < gun && gun - now <= 10) {
-        // Final-ten countdown takes the banner (below signals, above
-        // transients): the eyes are on the header, not the pane, at the gun.
-        snprintf(ban, sizeof(ban), "GUN %-4ld", gun - now);
+    } else if (raceSession.valid && gun > 0 && now > 0 && now < gun && gun - now <= 60000) {
+        // Countdown takes the banner from one minute out (below signals,
+        // above transients): the eyes are on the header, not the pane, as
+        // the gun approaches. M:SS throughout, so the last ten read as the
+        // tail of one countdown rather than a second, differently-formatted
+        // one ("GUN 0:09", not "GUN 9").
+        const long left = gun - now;
+        snprintf(ban, sizeof(ban), "GUN %ld:%02ld", left / 60000, (left / 1000) % 60);
     } else if (millis() < transientUntil && transientMsg[0]) {
         snprintf(ban, sizeof(ban), "%-8.8s", transientMsg);
     } else {
@@ -1236,6 +1240,14 @@ void drawScreenRace(TinyGPSPlus &gps, bool requiresInit)
     // Wrong-side calls surface as a short header banner.
     if (raceWrongPoll()) {
         showTransient("WRONG!  ");
+    }
+    // Pre-gun cues: the one-minute warning and the 10..1 ticks. Both are
+    // edge-driven and consumed in race_run, and both sit ABOVE the
+    // menu/course early-returns below so they still sound with a menu open.
+    if (!gGrabbing) {
+        if (raceGunMinuteCue()) soundGunMinute();
+        const int tick = raceGunTickCue();
+        if (tick >= 0) soundGunTick(tick);
     }
     // Gun edge banner: GO, or OCS when over early — once per start, never
     // re-fired by reconnects (edge consumed above); skipped during grabs.
