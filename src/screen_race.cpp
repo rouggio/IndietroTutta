@@ -54,6 +54,11 @@ static uint8_t viewMode = 0;
 static int lastRaceCourseKey = -1; // sessionId+version fingerprint
 static bool mapDirty = true;       // a full clear is waiting for a map redraw
 static unsigned long lastMapDraw = 0;
+// Set when the map actually repainted this pass. The view tag lives in the
+// map's bottom-right corner (the only free space large enough), so it must
+// be redrawn with the map, not just when viewMode changes — otherwise the
+// next 1Hz map pass paints straight over it.
+static bool mapRepainted = false;
 
 static int raceCourseKey()
 {
@@ -345,6 +350,9 @@ static bool clampToWire(int cx, int cy, int& x, int& y)
 // Next destination: pre-start it's the start (line center, else start
 // point, else the current target); racing it's marks[progIdx] (gates resolve
 // to the pair center); finished it's the finish ("FIN"). Fills tag.
+// Target tags stay COMPACT ("ST", "FIN", "1P"): they render in the fixed
+// -width right-pane cells, so spelling them out ("START", "1 - Port")
+// overflowed the cell and changed its width.
 static bool nextDestination(TinyGPSPlus& gps, double& lat, double& lon, char* tag, size_t tagLen)
 {
     (void)gps;
@@ -355,14 +363,14 @@ static bool nextDestination(TinyGPSPlus& gps, double& lat, double& lon, char* ta
         if (raceSession.startLine.valid) {
             lat = (raceSession.startLine.latA + raceSession.startLine.latB) / 2.0;
             lon = (raceSession.startLine.lonA + raceSession.startLine.lonB) / 2.0;
-            snprintf(tag, tagLen, "ST  ");
+            snprintf(tag, tagLen, "START");
             return true;
         }
         for (uint8_t i = 0; i < raceSession.markCount; i++) {
             if (raceSession.marks[i].type == RaceMarkStart) {
                 lat = raceSession.marks[i].lat;
                 lon = raceSession.marks[i].lon;
-                snprintf(tag, tagLen, "ST  ");
+                snprintf(tag, tagLen, "START");
                 return true;
             }
         }
@@ -382,7 +390,7 @@ static bool nextDestination(TinyGPSPlus& gps, double& lat, double& lon, char* ta
             lat = last.lat;
             lon = last.lon;
         }
-        snprintf(tag, tagLen, "FIN ");
+        snprintf(tag, tagLen, "FINISH");
         return true;
     }
     uint8_t idx = raceProgIdx();
@@ -480,20 +488,31 @@ static void drawStaticLayer(const RaceProj& p, double rotEff)
         tft.drawString(num, px, py - rPx - 10, 2);
     }
     // Header wind readout moved to the right pane (WND row) — the arrow
-    // lives there as degrees now. Mock banner stays top-left.
-    // Mock state moved to the main screen (yellow FX tile there); keep this
-    // header slot painted clean (header is never full-cleared otherwise).
-    tft.fillRect(8, 4, 44, 18, RBG);
+    // lives there as degrees now.
+    // The mock banner also moved to the main screen (yellow FX tile). Its
+    // header slot no longer holds anything, so the old
+    // fillRect(8, 4, 44, 18) that kept it "clean" was removed: with the
+    // countdown banner now at the top-left it punched a black hole over
+    // the text on every 1Hz map repaint.
 }
+
+static void resetRaceText(); // defined below; the empty state clears and needs it
 
 static void drawRaceMap(TinyGPSPlus& gps, bool full)
 {
     if (!raceSession.valid) {
         if (full) {
-            // Clear BOTH the map and the right pane: stale course/pane pixels
-            // must not survive the empty state.
-            tft.fillRect(0, WIRE_TOP, 320, WIRE_Y1 - WIRE_TOP, RBG);
+            // Clear the map AND the whole right pane: stale course/pane
+            // pixels must not survive the empty state. The rect used to
+            // start at WIRE_TOP (y=30) while the pane starts at PANE_TOP
+            // (y=1), so the pane's top rows (SPD/BRG) survived the drop as
+            // ghost pixels despite the comment claiming both were cleared.
+            tft.fillRect(0, PANE_TOP, 320, WIRE_Y1 - PANE_TOP, RBG);
             drawFrameChrome();
+            // The clear wiped the header banner and the view tag too, and
+            // both are change-detected, so their caches must be reset or
+            // they simply never come back.
+            resetRaceText();
             const int cx = MAP_X + MAP_W / 2;
             const int cy = WIRE_TOP + (WIRE_Y1 - WIRE_TOP) / 2;
             tft.setTextDatum(MC_DATUM);
@@ -501,6 +520,8 @@ static void drawRaceMap(TinyGPSPlus& gps, bool full)
             tft.drawString("No session available", cx, cy - 30, 2);
             drawLabel1C(cx, cy + 2, "Start a practice session from menu", RDIM);
             drawLabel1C(cx, cy + 18, "or await committee instructions", RDIM);
+            // The view tag sits inside the cleared area; force it back.
+            mapRepainted = true;
         }
         dynOk = false;
         return;
@@ -510,7 +531,7 @@ static void drawRaceMap(TinyGPSPlus& gps, bool full)
     // whenever the fix/destination is missing.
     double rotEff = 0.0;
     double destLat = 0.0, destLon = 0.0;
-    char destTag[8] = {0};
+    char destTag[12] = {0};
     const bool haveDestHere = nextDestination(gps, destLat, destLon, destTag, sizeof(destTag));
     if (viewMode == 1 && gps.location.isValid() && haveDestHere) {
         double brg = TinyGPSPlus::courseTo(
@@ -558,6 +579,7 @@ static void drawRaceMap(TinyGPSPlus& gps, bool full)
         oldRotEff = rotEff;
         lastMapDraw = millis();
         dynOk = false;
+        mapRepainted = true; // the view tag lives in this area; see below
     }
 
     // Boat: triangle on the chart, or a projected dot on the frame edge.
@@ -575,7 +597,7 @@ static void drawRaceMap(TinyGPSPlus& gps, bool full)
         isDot = clampToWire(cx, cy, bx, by);
         haveBoat = true;
         double dLat = 0.0, dLon = 0.0;
-        char tag[8] = {0};
+        char tag[12] = {0};
         if (nextDestination(gps, dLat, dLon, tag, sizeof(tag))) {
             projToPx(p, dLat, dLon, dx, dy);
             haveDash = true;
@@ -647,12 +669,31 @@ static void drawSmart(int x, int y, uint8_t font, int datum, uint16_t color,
     if (strcmp(txt, last) == 0) return;
     tft.setTextDatum(datum);
     const int h = fontPxH(font);
+
+    // Erase only the CHANGING SUFFIX, not the whole string.
+    //
+    // The panel scans out continuously, so blanking the full old string
+    // and redrawing it shows up as a dark flash every time the value
+    // changes — and the gun countdown changes once a second, so the
+    // header blinked throughout the final minute. The prefix is almost
+    // always shared ("GUN 0:4" then only "0"→"9"), so erasing from the
+    // first differing glyph leaves most of the text lit and the flash
+    // confined to a couple of characters.
     int ex = x, ey = y;
     if (datum == TC_DATUM) ex = x - lastW / 2;
     else if (datum == TR_DATUM) ex = x - lastW;
     else if (datum == BL_DATUM) ey = y - h;
     else if (datum == BR_DATUM) { ex = x - lastW; ey = y - h; }
-    if (lastW > 0) tft.fillRect(ex, ey, lastW, h, RBG);
+
+    if (lastW > 0) {
+        size_t keep = 0;
+        while (last[keep] && txt[keep] && last[keep] == txt[keep]) keep++;
+        // textWidth() of the shared prefix, so the erase starts exactly
+        // where the first differing glyph begins.
+        const int prefixW = tft.textWidth(String(last).substring(0, keep).c_str(), font);
+        int eraseW = lastW - prefixW;
+        if (eraseW > 0) tft.fillRect(ex + prefixW, ey, eraseW, h, RBG);
+    }
     tft.setTextColor(color, RBG);
     lastW = tft.drawString(txt, x, y, font);
     strncpy(last, txt, lastLen - 1);
@@ -670,7 +711,7 @@ static char pLabT[8] = {0}; static int16_t pLabTW = 0;
 static char pSpd[10] = {0}; static int16_t pSpdW = 0;
 static char pBrg[8] = {0}; static int16_t pBrgW = 0;
 static char pDst[10] = {0}; static int16_t pDstW = 0;
-static char pNxt[8] = {0}; static int16_t pNxtW = 0;
+static char pNxt[12] = {0}; static int16_t pNxtW = 0;
 static char pTim[10] = {0}; static int16_t pTimW = 0;
 static char pLabW[8] = {0}; static int16_t pLabWW = 0;
 static char pWnd[8] = {0}; static int16_t pWndW = 0;
@@ -821,14 +862,40 @@ static void drawRaceText(TinyGPSPlus& gps)
     } else {
         ban[0] = '\0';
     }
-    drawSmart(160, 2, 4, TC_DATUM, RFG, ban, pBan, sizeof(pBan), pBanW);
+    // Banner: top-LEFT (was centred). Left-datum keeps drawSmart's erase box
+// anchored at the string origin, which is what the suffix-only erase
+// expects — a centred datum has to recompute the box from the old width.
+drawSmart(4, 2, 4, TL_DATUM, RFG, ban, pBan, sizeof(pBan), pBanW);
 
     // View-type indicator (RR cycles north-up → bearing-up → best-fit).
+    //
+    // Change-detected, and that is the whole point: drawLabel1() is the
+    // manual GLCD renderer, which paints glyphs one drawPixel() at a time.
+    // Calling it unconditionally on every 200ms pass made the tag
+    // shimmer as those pixels interleaved with the panel redraws. It now
+    // runs only when viewMode actually changes.
     static const char* vwTag[3] = { "N-UP", "BRG-UP", "FIT" };
-    drawLabel1(6, 9, vwTag[viewMode % 3], TFT_GREEN);
+    // Bottom-right of the map viewport. It used to sit top-left, where the
+    // countdown banner now lives. Right-aligned against the viewport
+    // divider (x=255), one row above the wire's south edge.
+    static const int VW_TAG_R = 252;
+    static const int VW_TAG_Y = 199;
+    static int vwTagLast = -1;
+    if (vwTagLast != (viewMode % 3) || mapRepainted) {
+        if (vwTagLast >= 0) {
+            // Erase the previous tag. Font 1 is a fixed 5x7 cell, so the
+            // box is derived from the string actually drawn — a hardcoded
+            // width cropped "BRG-UP" because it assumed the shorter labels.
+            const int w = (int)strlen(vwTag[vwTagLast]) * 6 + 2;
+            tft.fillRect(VW_TAG_R - w, VW_TAG_Y, w, 9, RBG);
+        }
+        vwTagLast = viewMode % 3;
+        const int tw = (int)strlen(vwTag[vwTagLast]) * 6;
+        drawLabel1(VW_TAG_R - tw, VW_TAG_Y, vwTag[vwTagLast], TFT_GREEN);
+    }
 
     // Destination geometry (map boat/dash + pane cells).
-    char tag[8];
+    char tag[12];
     double dLat = 0.0, dLon = 0.0;
     const bool haveDest = nextDestination(gps, dLat, dLon, tag, sizeof(tag));
     const bool haveFix = gps.location.isValid();
@@ -894,7 +961,10 @@ static void drawRaceText(TinyGPSPlus& gps)
     else snprintf(cell, sizeof(cell), "----");
     drawSmart(vx, paneRowY(2) + 16, 2, TR_DATUM, RFG, cell, pDst, sizeof(pDst), pDstW);
     // Row 3: next destination.
-    if (raceSession.valid && haveDest) snprintf(cell, sizeof(cell), "%-4.4s", tag);
+    // NEXT value. Cap 6 chars: the value line inside the 64px pane is ~53px,
+// which is ~7 font-2 characters — "FINISH" (6) fits, "1 - Port" (8) would
+// not. Mark tags stay compact ("1P") so they fit the same line.
+if (raceSession.valid && haveDest) snprintf(cell, sizeof(cell), "%-6.6s", tag);
     else snprintf(cell, sizeof(cell), "----");
     drawSmart(vx, paneRowY(3) + 16, 2, TR_DATUM, RFG, cell, pNxt, sizeof(pNxt), pNxtW);
     // Row 4: time.
@@ -903,16 +973,29 @@ static void drawRaceText(TinyGPSPlus& gps)
     // Arrow only when wind is known; a zero session wind parks at N, dead.
     const bool sesWnd = raceSession.valid && raceSession.windSpeed > 0;
     const bool envWnd = raceEnvWindSeen();
+    // Change-detect, and wipe before redraw. drawWindArrow() paints
+    // pixels directly with no erase of its own, so redrawing it at a
+    // NEW heading every pass left the previous arrow behind as ghost
+    // pixels (it only looked right while the wind was steady). Same bg,
+    // so the wipe is invisible.
+    static int wndArrowLast = INT32_MIN;
     if (raceSession.valid && (sesWnd || envWnd)) {
         const int wDir = sesWnd ? raceSession.windDir : raceSession.envWindDir;
         const int wSpd = sesWnd ? raceSession.windSpeed : raceSession.envWindSpeed;
-        drawWindArrow(PANE_X + 16, paneRowY(5) + 24, wDir, 9, RFG);
+        if (wndArrowLast != wDir) {
+            tft.fillRect(PANE_X + 1, paneRowY(5) + 9, 30, 30, RBG);
+            drawWindArrow(PANE_X + 16, paneRowY(5) + 24, wDir, 9, RFG);
+            wndArrowLast = wDir;
+        }
         if (wSpd > 0) snprintf(cell, sizeof(cell), "%2d", wSpd);
         else snprintf(cell, sizeof(cell), "--");
     } else {
         // No wind known: wipe the arrow zone (same-bg repaint, invisible)
         // so a stale arrow never survives the transition.
-        tft.fillRect(PANE_X + 1, paneRowY(5) + 9, 30, 30, RBG);
+        if (wndArrowLast != INT32_MIN) {
+            tft.fillRect(PANE_X + 1, paneRowY(5) + 9, 30, 30, RBG);
+            wndArrowLast = INT32_MIN;
+        }
         snprintf(cell, sizeof(cell), "--");
     }
     drawSmart(vx, paneRowY(5) + 16, 2, TR_DATUM, RFG, cell, pWnd, sizeof(pWnd), pWndW);
@@ -1311,7 +1394,10 @@ void drawScreenRace(TinyGPSPlus &gps, bool requiresInit)
             }
         }
     }
-    if (!courseOpen) drawRaceMap(gps, mapFull);
+    if (!courseOpen) {
+        mapRepainted = false;
+        drawRaceMap(gps, mapFull);
+    }
     // Deferred repeat: the library landed (or never did), act on it now.
     if (pendingRepeat) {
         if (courseReady()) {

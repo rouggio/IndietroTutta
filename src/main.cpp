@@ -12,6 +12,7 @@
 #include "race_session.h"
 #include "race_run.h"
 #include "race_courses.h"
+#include "gps_mock.h"
 #include "sound.h"
 
 TinyGPSPlus gps;
@@ -52,6 +53,12 @@ void loop() {
   // raceGpsEpoch() was previously only reached from race-screen paths, so
   // the clock (and log timestamps) never calibrated on the main screen.
   raceGpsEpoch(gps);
+  // Release one due mock fix here, not on the backend task: this is the
+  // fast loop. The backend task blocks ~2s per POST /gps, which held the
+  // mock feed to ~0.3Hz and cost the track ~7 fixes every 20s. Emitting
+  // from RAM is microseconds, so it does not disturb the UI cadence.
+  // gpsMockTick() no-ops when mock is off (the check is inside).
+  gpsMockTick(gps);
   screenLoop(gps);
   wifiLoop();
   backendLoop(gps);

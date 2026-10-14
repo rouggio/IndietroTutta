@@ -1,6 +1,7 @@
 #include "race_session.h"
 #include "race_run.h"
 #include "serial_buffer.h"
+#include "gps_mock.h"
 
 #include <Arduino.h>
 #include <ArduinoJson.h>
@@ -16,6 +17,44 @@ static long daysFromCivil(int y, int m, int d); // defined below
 // one. Lets countdowns tick through fix gaps instead of freezing.
 static long wallOffsetSec = 0;
 static bool wallHave = false;
+// Last value raceWallEpoch() handed out. The clock is held MONOTONIC:
+// every consumer (gun countdown, banner, pane TIME, split stamps) assumes
+// time only moves forward.
+static long wallLastSec = 0;
+
+// How far a recalibration may drag the clock BACKWARDS before we refuse
+// it.
+//
+// Measured on 1.0.260: the refused backstep was not the ~1s of sub-second
+// phase truncation (the first guess) but 5, 6, then 7 seconds — GROWING.
+// The cause is the batched mock feed: its buffer is deliberately ahead of
+// what has been released, so a released fix carries a stamp several
+// seconds BEHIND the server's true clock. Calibrating from it drags time
+// backwards by exactly that backlog, which showed up as the header
+// countdown and the pane TIME lurching back during the final minute.
+//
+// So the clock must come from the SERVER's clock (see
+// raceSetWallEpochFromServer), not from a buffered fix. This guard then
+// only has to absorb the sub-second truncation residue — a couple of
+// hundred ms at worst — and a 1s tolerance is ample.
+static const long WALL_BACKSTEP_TOLERANCE = 1;
+
+// Adopt an authoritative epoch (server clock) as the wall-clock anchor.
+// Called by the mock feed when a batch lands: the reply's serverTime is
+// the real clock, whereas the queued fixes are a lookahead window and are
+// legitimately in the future/stale. Monotonic, like every other path.
+void raceSetWallEpochFromServer(long epoch)
+{
+    if (epoch <= 0) return;
+    const long nowSec = (long)(millis() / 1000);
+    const long would = nowSec + (epoch - nowSec);
+    if (wallHave && would < wallLastSec - WALL_BACKSTEP_TOLERANCE) {
+        return;
+    }
+    wallOffsetSec = epoch - nowSec;
+    wallHave = true;
+    if (nowSec + wallOffsetSec > wallLastSec) wallLastSec = nowSec + wallOffsetSec;
+}
 
 long raceGpsEpoch(TinyGPSPlus& gps)
 {
@@ -24,15 +63,48 @@ long raceGpsEpoch(TinyGPSPlus& gps)
     }
     const long days = daysFromCivil(gps.date.year(), gps.date.month(), gps.date.day());
     const long epoch = days * 86400L + (long)gps.time.hour() * 3600L + (long)gps.time.minute() * 60L + (long)gps.time.second();
-    wallOffsetSec = epoch - (long)(millis() / 1000);
+
+    const long nowSec = (long)(millis() / 1000);
+    const long candidate = epoch - nowSec;
+
+    // In MOCK mode the fix stamp is NOT a clock source. The mock feed is
+    // batched: its queue is a deliberate lookahead window, so a released
+    // fix legitimately lags real time by the buffer depth (measured 5-7s
+    // and growing). main() calls raceGpsEpoch() on EVERY loop pass, so
+    // calibrating from that stamp rewound the clock constantly and fought
+    // raceSetWallEpochFromServer(), which has the server's real clock and
+    // is exact. The gun countdown and pane TIME lurched backwards as a
+    // result. The feed owns the clock while mocked.
+    if (gpsMockActive()) return epoch;
+
+    // Refuse a recalibration that would rewind time. Keeps the existing
+    // offset instead, so the clock stays monotonic and the drift is
+    // corrected later by a calibration that agrees with the direction of
+    // travel.
+    if (wallHave && (nowSec + candidate) < wallLastSec - WALL_BACKSTEP_TOLERANCE) {
+        static unsigned long lastWarn = 0;
+        if (millis() - lastWarn > 5000) {
+            lastWarn = millis();
+            bufferedSerialPrintln(String("[CLOCK] refused backstep ") +
+                                  (wallLastSec - (nowSec + candidate)) + "s");
+        }
+        return epoch;
+    }
+
+    wallOffsetSec = candidate;
     wallHave = true;
+    if (nowSec + candidate > wallLastSec) wallLastSec = nowSec + candidate;
     return epoch;
 }
 
 long raceWallEpoch()
 {
     if (!wallHave) return -1;
-    return (long)(millis() / 1000) + wallOffsetSec;
+    const long sec = (long)(millis() / 1000) + wallOffsetSec;
+    // Belt and braces: even a caller-side read must never hand back a
+    // value older than the previous one.
+    if (sec > wallLastSec) wallLastSec = sec;
+    return wallLastSec;
 }
 
 // Howard Hinnant's days_from_civil: days since 1970-01-01, proleptic Gregorian.

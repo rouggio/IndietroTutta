@@ -317,7 +317,14 @@ bool raceEventGet(uint8_t i, long* t, char* e, size_t esz, char* v, size_t vsz)
 void raceRunUpdate(TinyGPSPlus& gps)
 {
     if (!raceSession.valid || !gps.location.isValid()) return;
-    const long now = raceGpsEpoch(gps);
+    // Wall clock FIRST, GPS epoch only as a cold fallback. Both the banner
+    // and the sound cues are shown/h heard against wall time, so the engine
+    // must read the same clock they do. Reading the raw fix epoch instead
+    // put the cues ~5s out of step with the banner in mock mode, because
+    // the batched feed's released fix legitimately lags by the buffer
+    // depth (see raceSetWallEpochFromServer).
+    long now = raceWallEpoch();
+    if (now <= 0) now = raceGpsEpoch(gps);
     if (now <= 0) return;
     const double lat = gps.location.lat(), lon = gps.location.lng();
     const long gun = raceGunEpoch();

@@ -90,6 +90,12 @@ long raceWallEpoch();
 // UTC epoch from "YYYY-MM-DDTHH:MM:SS[.mmm]Z". -1 on parse failure.
 long raceIsoEpoch(const char* iso);
 
+// Adopt the server's clock as the wall-clock anchor (monotonic).
+// The mock feed calls this with each /sim/next reply's serverTime: the
+// queued fixes are a deliberate lookahead window and carry stamps that
+// lag real time, so calibrating the clock from them rewinds it.
+void raceSetWallEpochFromServer(long epoch);
+
 // True once a health wind object has arrived (even a calm 0kn one).
 // Calm is data: dir-valid beats speed>0, so near-calm stations still paint
 // the arrow instead of vanishing.

@@ -447,10 +447,13 @@ static void backendTask(void *param){
         // The UART is drained unparsed while mocked (see gpsLoop), so the
         // mock owns the fix exclusively — no blending with flaky real fixes.
         // Uploads carry simulated:true so the map can show them as such.
+        // REFILL ONLY: emitting a fix is gpsMockTick()'s job on the UI
+        // loop. This task blocks ~2s per POST /gps, so releasing fixes
+        // here ran at ~0.3Hz and the queue lost ~7 fixes per cycle.
         const bool mock = gpsMockActive();
         if (mock && mainGps) {
             const unsigned long t0 = millis();
-            gpsMockPoll(*mainGps);
+            gpsMockFeed(*mainGps);
             mockMs = millis() - t0;
         }
 
