@@ -857,6 +857,12 @@ static void drawRaceText(TinyGPSPlus& gps)
         // "GUN 0:00" while the pane's TIME cell, which divides by 60,
         // showed the right value, so the two disagreed on screen.)
         snprintf(ban, sizeof(ban), "GUN %ld:%02ld", left / 60, left % 60);
+    } else if (raceSession.valid && gun > 0 && now >= gun && !raceRunStarted() && raceRunOcs()) {
+        // OCS lives on the BANNER now, so the TIME cell can keep running
+        // (elapsed since the gun) instead of being overwritten with a
+        // word. State-based, not edge-based: the boat stays OCS until it
+        // re-crosses cleanly, and the banner should keep saying so.
+        snprintf(ban, sizeof(ban), "OCS");
     } else if (millis() < transientUntil && transientMsg[0]) {
         snprintf(ban, sizeof(ban), "%-8.8s", transientMsg);
     } else {
@@ -919,7 +925,12 @@ drawSmart(4, 2, 4, TL_DATUM, RFG, ban, pBan, sizeof(pBan), pBanW);
             const long rem = gun - now;
             snprintf(tim, sizeof(tim), " %2ld:%02ld", rem / 60, rem % 60);
         } else if (!raceRunStarted()) {
-            snprintf(tim, sizeof(tim), raceRunOcs() ? "OCS" : "GO");
+            // Past the gun but not away cleanly. Keep the clock running
+            // from the gun — OCS is announced on the banner, so this cell
+            // stays a time (it used to read "OCS"/"GO" and went blank as
+            // a clock while the boat was still OCS).
+            const long el = now - gun;
+            snprintf(tim, sizeof(tim), "+%2ld:%02ld", el / 60, el % 60);
         } else {
             const long base = raceRunFinished() && raceRunEndEpoch() > 0 ? raceRunEndEpoch() : now;
             const long el = base - raceRunStartEpoch();

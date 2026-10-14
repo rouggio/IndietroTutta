@@ -60,6 +60,10 @@ static int gunSide = 0;
 static bool hasGunSide = false;
 // Finish-line side tracking.
 static int finLastSide = 0;
+// The boat has been inside the finish-line band at least once since the
+// line was armed. Gates the "crossed but flip missed" escape so finishing
+// never happens for a boat that has not demonstrably been at the line.
+static bool finSawBand = false;
 // Pass tracking for the current target.
 static bool wasInside = false;
 // Circle-entry point + COG at entry. Side is judged at arrival (mark vs
@@ -103,6 +107,7 @@ void raceRunReset()
     gunSide = 0;
     hasGunSide = false;
     finLastSide = 0;
+    finSawBand = false;
     wasInside = false;
     entryValid = false;
     entryCog = -1.0;
@@ -423,38 +428,55 @@ void raceRunUpdate(TinyGPSPlus& gps)
 
     if (finished) return;
 
-    // Racing: advance through marks by radius pass; finish at the line.
-    const uint8_t lastIdx = raceSession.markCount > 0 ? raceSession.markCount - 1 : 0;
+    // ALL marks cleared → the finish is evaluated HERE, and only here.
+    //
+    // This used to be checked when progIdx merely EQUALLED the last mark,
+    // i.e. while that mark was still to be rounded. On Windward-Leeward
+    // (marks 1, 2, 1 + a finish line sameAs the start) that armed the line
+    // a whole rounding early: the boat drifted inside CROSS_RANGE_M of the
+    // start/finish line and flipped sides, so it finished without ever
+    // rounding mark 3. The mark and the line were both claiming to be the
+    // finish, and the line won. Finish is a line-segment cross, evaluated
+    // only once every mark is behind us.
     if (progIdx >= raceSession.markCount) {
-        finished = true;
-        endEpoch = now;
-        return;
-    }
-    const bool isLast = (progIdx == lastIdx);
-    const RaceSeg* fin = nullptr;
-    const bool lineFinish = isLast && finishIsLine(fin);
-
-    if (lineFinish && fin) {
-        // Finish-line cross: bounded side flip.
+        const RaceSeg* fin = nullptr;
+        if (!finishIsLine(fin)) {
+            // Course with no line armed at all: nothing left to do here (the
+            // last rounding finished it when it was cleared).
+            return;
+        }
+        // Bounded side flip across the finish line.
         double ax, ay, bx, by;
         toBoatFrame(lat, lon, fin->latA, fin->lonA, ax, ay);
         toBoatFrame(lat, lon, fin->latB, fin->lonB, bx, by);
         const int side = segSide(ax, ay, bx, by);
         const double dist = segDistM(lat, lon, *fin);
         const bool near = dist >= 0.0 && dist < CROSS_RANGE_M;
+        if (near) finSawBand = true;
         if (near && finLastSide != 0 && side != 0 && side != finLastSide) {
             finished = true;
             endEpoch = now;
-            splits[progIdx] = now - startEpoch;
-            splitSet[progIdx] = true;
             uploadPending = true;
             logEvent("FINISH", now, "line");
             logPass("[RACE] finished (line cross)", now);
+        } else if (finSawBand && dist >= CROSS_RANGE_M) {
+            // Escape hatch, NOT a radius finish: the boat demonstrably
+            // entered the line band and has now left it on the far side,
+            // so it crossed without the side flip being recorded (GPS gap
+            // at the line, or a very slow pass). Holding here forever would
+            // leave the session open with no result; finishing from outside
+            // the band on a boat that never entered it would be wrong, which
+            // is why finSawBand gates this.
+            finished = true;
+            endEpoch = now;
+            uploadPending = true;
+            logEvent("FINISH", now, "pass");
+            logPass("[RACE] finished (past line, no clean cross)", now);
         }
         if (side != 0) finLastSide = side;
-        // Still allow radius pass on the last mark as a fallback below.
-        if (finished) return;
+        return;
     }
+
     float r = 30.0f;
     if (!wasInside && targetInside(lat, lon, progIdx, r)) {
         wasInside = true;
@@ -496,24 +518,31 @@ void raceRunUpdate(TinyGPSPlus& gps)
         }
         splits[progIdx] = now - startEpoch;
         splitSet[progIdx] = true;
-        if (isLast) {
-            finished = true;
-            endEpoch = now;
-            uploadPending = true;
-            logEvent("FINISH", now, "mark");
-            logPass("[RACE] finished (mark)", now);
-        } else {
+        {
             const uint8_t doneIdx = progIdx;
             char v[16];
             snprintf(v, sizeof(v), "%d", doneIdx + 1);
             logEvent("PASS", now, v);
             progIdx = gatePairEnd(progIdx) + 1;
+
             if (progIdx >= raceSession.markCount) {
-                finished = true;
-                endEpoch = now;
-                uploadPending = true;
-                logEvent("FINISH", now, "mark");
-                logPass("[RACE] finished (last mark)", now);
+                progIdx = raceSession.markCount;
+                const RaceSeg* finChk = nullptr;
+                if (finishIsLine(finChk)) {
+                    // Every mark is behind us and a line is armed: the
+                    // cross is evaluated on the following passes. Radius-
+                    // passing the line circle must NEVER finish the race.
+                    logEvent("ARMED", now, "line");
+                    bufferedSerialPrintln("[RACE] last mark cleared, finish line armed");
+                } else {
+                    // No finish line on this course: the last rounding IS
+                    // the finish (explicit fallback, not an accident).
+                    finished = true;
+                    endEpoch = now;
+                    uploadPending = true;
+                    logEvent("FINISH", now, "mark");
+                    logPass("[RACE] finished (last mark)", now);
+                }
             } else {
                 char msg[48];
                 snprintf(msg, sizeof(msg), "[RACE] passed mark %d", doneIdx + 1);

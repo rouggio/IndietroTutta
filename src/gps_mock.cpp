@@ -270,6 +270,7 @@ static void simFetchBatch()
     JsonArray arr = doc["batch"].as<JsonArray>();
     int added = 0;
     long armEpoch = 0;
+    bool freshArm = false;
     // The whole queue mutation happens under one short lock: the UI tick
     // may be mid-loop on the other task while this appends.
     portENTER_CRITICAL(&simMux);
@@ -277,7 +278,18 @@ static void simFetchBatch()
         // Only reset when the queue has drained to nothing: a refetch
         // lands while fixes are still queued, and discarding them would
         // punch a hole in the track.
-        if (simCount == 0) simQueueReset();
+        if (simCount == 0) {
+            simQueueReset();
+            // A drained queue means the previous stream is GONE — the run
+            // ended, the server switched sources, or we simply fell behind.
+            // The pacing rule measures the head against simLastEmitEpoch, so
+            // carrying the old stream's epoch across a fresh arm made every
+            // point of the new batch look hours ahead and the whole batch
+            // was skipped as stale — every batch, forever, so the boat
+            // froze. Reset the pacer with the stream.
+            simLastEmitEpoch = 0;
+            freshArm = true;
+        }
         for (JsonObject o : arr) {
             const char* st = o["st"] | "";
             if (simQueuePush(o["lat"] | 0.0, o["lon"] | 0.0,
@@ -306,6 +318,10 @@ static void simFetchBatch()
     if (armEpoch > 0) {
         simArmEpoch = armEpoch;
         simArmMs = millis();
+        // On a fresh arm the head is due immediately — otherwise simNow()
+        // (anchored on this same epoch) would read as not-due for a whole
+        // batch, and the pacer would fight it.
+        if (freshArm) simLastEmitEpoch = 0;
     }
     const int queued = simCount;
     portEXIT_CRITICAL(&simMux);
