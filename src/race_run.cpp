@@ -9,6 +9,11 @@
 
 static const float PASS_HYST_M = 5.0f;   // exit radius = r + hyst
 static const float CROSS_RANGE_M = 150.0f; // line flips count inside this band
+// Distance at which a pre-gun position counts as a real "approach" for OCS
+// purposes. Comfortably inside CROSS_RANGE_M so a boat that sailed out and
+// came back is still judged, but far enough out that jitter on the line
+// cannot manufacture a side.
+static const float OCS_SETTLE_M = 60.0f;
 
 static uint8_t progIdx = 0;
 static bool started = false;
@@ -56,6 +61,11 @@ static long sigLastSes = 0;
 
 // Start-line side tracking.
 static int lastSide = 0;
+// Side held while the boat was genuinely clear of the start line, used to
+// judge OCS. Distinct from gunSide, which tracks the side every pass and
+// is meaningless while the boat is parked on the line.
+static int approachSide = 0;
+static bool sawApproach = false;
 static int gunSide = 0;
 static bool hasGunSide = false;
 // Finish-line side tracking.
@@ -97,6 +107,8 @@ static void saveSigCursor()
 
 void raceRunReset()
 {
+    const bool wasStarted = started;   // read BEFORE the wipe below
+    const bool wasFinished = finished;
     progIdx = 0;
     started = false;
     finished = false;
@@ -104,6 +116,8 @@ void raceRunReset()
     startEpoch = 0;
     endEpoch = 0;
     lastSide = 0;
+    approachSide = 0;
+    sawApproach = false;
     gunSide = 0;
     hasGunSide = false;
     finLastSide = 0;
@@ -126,6 +140,15 @@ void raceRunReset()
         splits[i] = 0;
         splitSet[i] = false;
     }
+    // Breadcrumb. A reset wipes hasGunSide/cueSecLeft — the state the start
+    // decision is built on — so a reset landing between the gun and the
+    // crossing silently demotes a clean line-cross start to a late join.
+    // The serial buffer rolls in ~3 minutes, so without this line there is
+    // no way to tell afterwards WHICH pass killed the start state.
+    bufferedSerialPrintln(String("[RACE] run reset (session ") +
+                          raceSession.sessionId + " cv" + raceSession.courseVersion +
+                          " was started=" + (wasStarted ? 1 : 0) +
+                          " finished=" + (wasFinished ? 1 : 0) + ")");
 }
 
 bool raceRunStarted() { return started; }
@@ -385,10 +408,45 @@ void raceRunUpdate(TinyGPSPlus& gps)
         const int side = startSegSide(lat, lon);
         const double dist = segDistM(lat, lon, raceSession.startLine);
         const bool near = dist >= 0.0 && dist < CROSS_RANGE_M;
+        // Diagnostic: log the start decision only when it CHANGES — the
+        // side, or whether the boat is inside the crossing band. Once a
+        // second it buried the race in ~66 lines and pushed "passed mark"
+        // and "finished" out of the 200-line serial ring, which is exactly
+        // what this was added to diagnose. On transitions it costs ~4 lines
+        // per race and still shows the whole approach: enter the band, flip
+        // the side, cross.
+        {
+            static int dbgLastSide = -9;
+            static bool dbgLastNear = false;
+            static bool dbgFirst = true;
+            const long dGun = now - gun;
+            if (dGun >= -60 && dGun <= 30 && !started &&
+                (dbgFirst || side != dbgLastSide || near != dbgLastNear)) {
+                dbgFirst = false;
+                dbgLastSide = side;
+                dbgLastNear = near;
+                bufferedSerialPrintln(String("[RACE] gun") +
+                                      (dGun > 0 ? String("+") : String("")) + dGun +
+                                      "s dist=" + (int)dist + "m side=" + side +
+                                      " near=" + (near ? 1 : 0) +
+                                      " gunSide=" + gunSide +
+                                      " hasGunSide=" + (hasGunSide ? 1 : 0) +
+                                      " ocs=" + (ocs ? 1 : 0));
+            }
+        }
         if (now < gun) {
             gunSide = side;
             hasGunSide = (side != 0);
-            if (near && lastSide != 0 && side != 0 && side != lastSide) {
+            // OCS needs an APPROACH, not a side flip on the line. A session
+            // anchored at the boat's own position puts the start line
+            // exactly under it, so the boat can sit on the line for the
+            // whole wait; taking that as "the side" made a metre of jitter
+            // read as a crossing. Remember the side held while genuinely
+            // outside OCS_SETTLE_M, and only raise OCS against THAT.
+            if (dist >= OCS_SETTLE_M) {
+                approachSide = side;
+                sawApproach = true;
+            } else if (near && sawApproach && side != 0 && side != approachSide) {
                 if (!ocs) {
                     ocs = true;
                     logEvent("OCS", now, nullptr);
@@ -412,11 +470,20 @@ void raceRunUpdate(TinyGPSPlus& gps)
                 startEpoch = gun;
                 logEvent("START", gun, "late");
                 logPass("[RACE] started (late join)", now);
-            } else if (now - gun > 60 && hasGunSide && side != 0 && side != gunSide) {
+            } else if (now - gun > 60 && hasGunSide && !ocs && near &&
+                       side != 0 && side != gunSide) {
                 // Crossed without a clean flip record (GPS gap at the line).
+                //
+                // Two guards, both learned the hard way: this used to have
+                // no `near` test, so 60s after the gun it started ANY boat
+                // sitting on the early side — hundreds of metres away from
+                // the line — and it cleared `ocs` unconditionally, so a boat
+                // that genuinely was OCS was silently forgiven and started
+                // as if it had never crossed early. It must now be AT the
+                // line, and an OCS boat is excluded entirely: that has to
+                // re-cross properly through the path above.
                 started = true;
                 startEpoch = gun;
-                ocs = false;
                 logEvent("START", gun, "late");
                 logPass("[RACE] started (late cross)", now);
             }
