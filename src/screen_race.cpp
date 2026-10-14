@@ -811,7 +811,11 @@ static void drawRaceText(TinyGPSPlus& gps)
         // tail of one countdown rather than a second, differently-formatted
         // one ("GUN 0:09", not "GUN 9").
         const long left = gun - now;
-        snprintf(ban, sizeof(ban), "GUN %ld:%02ld", left / 60000, (left / 1000) % 60);
+        // `left` is SECONDS: divide by 60, not 60000. (Scaling by 1000
+        // here is a silent trap — it made every countdown render as
+        // "GUN 0:00" while the pane's TIME cell, which divides by 60,
+        // showed the right value, so the two disagreed on screen.)
+        snprintf(ban, sizeof(ban), "GUN %ld:%02ld", left / 60, left % 60);
     } else if (millis() < transientUntil && transientMsg[0]) {
         snprintf(ban, sizeof(ban), "%-8.8s", transientMsg);
     } else {

@@ -45,6 +45,7 @@ static bool gunEdgeOcs = false;
 static bool gunMinuteCue = false;
 static int gunTickDue = -1;
 static long cueSecLeft = -1;
+static bool minuteDone = false;
 
 // Run upload handshake with the backend task.
 static bool uploadPending = false;
@@ -114,6 +115,7 @@ void raceRunReset()
     gunMinuteCue = false;
     gunTickDue = -1;
     cueSecLeft = -1;
+    minuteDone = false;
     uploadPending = false;
     for (uint8_t i = 0; i < 10; i++) {
         splits[i] = 0;
@@ -327,11 +329,24 @@ void raceRunUpdate(TinyGPSPlus& gps)
     // remaining: 60 the moment the gun is a minute away, 1 for the last
     // second, 0 once it is gone.
     if (!started) {
-        const long secLeft = (gun - now + 999) / 1000;
-        if (secLeft >= 0 && secLeft != cueSecLeft) {
-            cueSecLeft = secLeft;
-            if (secLeft == 60) gunMinuteCue = true;
+        // Both terms are epoch SECONDS, so the difference is already whole
+        // seconds — no ceil scaling here. (An earlier version applied the
+        // millisecond ceil trick (d+999)/1000 to this second-based delta
+        // and reported 51 seconds as 1, which fired a single bogus tick
+        // at handoff and silenced the whole countdown.)
+        const long secLeft = gun - now;
+        if (secLeft != cueSecLeft) {
+            // Sticky 1:00 warning: the feed pass is 200ms, but /health and
+            // /gps passes run 2-5s, so a plain `== 60` can be stepped over
+            // entirely and the warning lost. Ticks only fire for the newest
+            // second — a cue queued for a second already gone would land
+            // after the gun.
+            if (secLeft >= 0 && secLeft <= 60 && !minuteDone) {
+                minuteDone = true;
+                gunMinuteCue = true;
+            }
             if (secLeft >= 1 && secLeft <= 10) gunTickDue = (int)secLeft;
+            cueSecLeft = secLeft;
         }
     }
 
