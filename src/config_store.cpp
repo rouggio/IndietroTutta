@@ -110,6 +110,38 @@ bool setBootSound(bool on)
 }
 
 // ---------------------------------------------------------
+// Gun cue on/off
+// ---------------------------------------------------------
+// Own NVS key for the same reason nogo/beepkeys/bootsnd have one.
+bool gunSoundOn = true;
+
+bool getGunSound()
+{
+    Preferences prefs;
+
+    if (!prefs.begin("wifi", true))
+        return true;
+
+    const bool v = prefs.getBool("gunsnd", true);
+    prefs.end();
+    return v;
+}
+
+bool setGunSound(bool on)
+{
+    Preferences prefs;
+
+    if (!prefs.begin("wifi", false))
+        return false;
+
+    const bool ok = prefs.putBool("gunsnd", on);
+    prefs.end();
+    if (ok)
+        gunSoundOn = on;
+    return ok;
+}
+
+// ---------------------------------------------------------
 // General configuration
 // ---------------------------------------------------------
 
@@ -118,6 +150,7 @@ bool loadConfig(Config& config)
     noGoArcDeg = getNoGoDeg();
     beepOnKeys = getBeepOnKeys();
     bootSoundOn = getBootSound();
+    gunSoundOn = getGunSound();
 
     Preferences prefs;
 

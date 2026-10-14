@@ -530,6 +530,22 @@ static void handleBootSound()
                 String("{\"bootSound\":") + (bootSoundOn ? "true" : "false") + "}");
 }
 
+// Gun cue on/off (GET /gunsound → current; POST /gunsound?on=0|1).
+// Stored under its own NVS key ("wifi"/"gunsnd"), default ON.
+static void handleGunSound()
+{
+    if (server.method() == HTTP_POST && server.hasArg("on")) {
+        const bool on = (server.arg("on") == "1" || server.arg("on") == "true");
+        if (!setGunSound(on)) {
+            server.send(500, "text/plain", "could not persist gunSound");
+            return;
+        }
+        bufferedSerialPrintln(on ? "[HTTP] gun sound ON" : "[HTTP] gun sound OFF");
+    }
+    server.send(200, "application/json",
+                String("{\"gunSound\":") + (gunSoundOn ? "true" : "false") + "}");
+}
+
 // Play a buzzer sound script (POST /sound, JSON body):
 //   {"notes":[[2500,120],[0,80],[2500,120]]}
 // Each note is [freqHz, durationMs]; freq 0 = silence. A new script
@@ -676,6 +692,7 @@ static void handleStatus()
     sys["beepOnKeys"] = beepOnKeys;
     // Boot chime; own NVS key ("wifi"/"bootsnd").
     sys["bootSound"] = bootSoundOn;
+    sys["gunSound"] = gunSoundOn;
     // Estimate only: the core tone task owns the real playback timing, so
     // this tracks when we queued a script, not what the buzzer is doing.
     sys["soundPlaying"] = soundPlaying();
@@ -848,6 +865,8 @@ void httpServerInit(TinyGPSPlus &gps)
     server.on("/beep", HTTP_GET, handleBeep);
     server.on("/bootsound", HTTP_POST, handleBootSound);
     server.on("/bootsound", HTTP_GET, handleBootSound);
+    server.on("/gunsound", HTTP_POST, handleGunSound);
+    server.on("/gunsound", HTTP_GET, handleGunSound);
     server.on("/ota", HTTP_POST, handleOta);
 server.on("/otabooth", HTTP_GET, handleOtaOnBoot);
 server.on("/otabooth", HTTP_POST, handleOtaOnBoot);

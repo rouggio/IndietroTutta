@@ -14,6 +14,7 @@
 #include <string.h>
 
 #include "canvas.h"
+#include "sound.h"
 
 static const uint16_t RBG = TFT_BLACK;
 static const uint16_t RFG = TFT_WHITE;
@@ -684,18 +685,23 @@ static long lastGpsNow = 0;
 static double lastGpsLat = 0.0, lastGpsLon = 0.0;
 static int lastGpsCourse = -1;
 static unsigned long lastFixAt = 0;
+// 8s committee/gun signal banner lifetime (declared early so showTransient
+// can check it; the msg buffer is defined with showSignal below).
+static unsigned long sigUntil = 0;
 // Transient header message (duration cycling), 2s.
 static char transientMsg[12] = {0};
 static unsigned long transientUntil = 0;
 static void showTransient(const char* msg)
 {
+    // An active 8s committee/gun signal always outranks a 2s transient
+    // banner (NO FIX/OFFLINE/WRONG). Do not let one overwrite it.
+    if (sigUntil > millis()) return;
     strncpy(transientMsg, msg, sizeof(transientMsg) - 1);
     transientMsg[sizeof(transientMsg) - 1] = '\0';
     transientUntil = millis() + 2000;
 }
 // Committee-signal banner, 8s (outranks the transient in the header).
 static char sigMsg[12] = {0};
-static unsigned long sigUntil = 0;
 static void showSignal(const char* msg)
 {
     strncpy(sigMsg, msg, sizeof(sigMsg) - 1);
@@ -1233,9 +1239,14 @@ void drawScreenRace(TinyGPSPlus &gps, bool requiresInit)
     }
     // Gun edge banner: GO, or OCS when over early — once per start, never
     // re-fired by reconnects (edge consumed above); skipped during grabs.
+    // The signal outranks any concurrent 2s transient (NO FIX/WRONG/etc.).
     if (!gGrabbing) {
         bool edgeOcs = false;
-        if (raceGunEdge(&edgeOcs)) showSignal(edgeOcs ? "OCS" : "GO");
+        if (raceGunEdge(&edgeOcs)) {
+            showSignal(edgeOcs ? "OCS" : "GO");
+            transientUntil = 0;    // do not let a concurrent transient override
+            soundGun(edgeOcs);
+        }
     }
     if (courseChanged && (menuOpen || courseOpen) && !gGrabbing) {
         // A full-screen menu / course list sat over the page; force a clean

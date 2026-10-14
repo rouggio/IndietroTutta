@@ -44,6 +44,12 @@ bool getBootSound();
 bool setBootSound(bool on);
 extern bool bootSoundOn;        // live copy read by soundStartup()
 
+// Gun cue when the gun fires (practice or race). Own NVS key
+// ("wifi"/"gunsnd", default true) — same reason as `bootSoundOn`.
+bool getGunSound();
+bool setGunSound(bool on);
+extern bool gunSoundOn;         // live copy read by screen_race.cpp
+
 bool loadConfig(Config& config);
 bool saveConfig(const Config& config);
 

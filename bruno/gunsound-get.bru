@@ -1,0 +1,21 @@
+meta {
+  name: Gun cue on (GET current)
+  type: http
+  seq: 30
+}
+
+get {
+  url: {{baseUrl}}/gunsound
+  body: none
+  auth: none
+}
+
+docs {
+  200 { gunSound: true }
+
+  Reports only. Use POST /gunsound?on=1 to enable, /gunsound?on=0 to
+  disable.
+
+  The gun cue plays once when the gun fires (practice or race),
+  immediately on the edge. Goes with the 8s GO/OCS signal banner.
+}

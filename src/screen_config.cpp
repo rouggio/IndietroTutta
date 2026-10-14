@@ -23,13 +23,14 @@ enum ConfigRow {
     ROW_SPEED = 2,
     ROW_BEEP = 3,
     ROW_BOOTSOUND = 4,
+    ROW_GUNSOUND = 5,
     ROW_COUNT
 };
 
-// Five rows at 26px keep the detail line on screen (font 2 is 16px tall):
-// rows occupy 68..188, the detail sits at 192..208, the hint bar at 214.
+// Six rows at 22px keep the detail line on screen (font 2 is 16px tall):
+// rows occupy 68..190, the detail sits at 192..208, the hint bar at 214.
 static const int ROW_Y0 = 68;
-static const int ROW_DY = 26;
+static const int ROW_DY = 22;
 static const int DETAIL_Y = 192;
 static const int WIPE_HEIGHT = 148;
 
@@ -87,6 +88,9 @@ void drawScreenConfig(bool requiresInit)
             else if (i == ROW_BOOTSOUND)
                 row += String("Boot sound  : ") +
                        (bootSoundOn ? "ON" : "OFF");
+            else if (i == ROW_GUNSOUND)
+                row += String("Gun cue     : ") +
+                       (gunSoundOn ? "ON" : "OFF");
             else
                 row += String("Speed unit  : ") + speedLabel();
 
@@ -173,6 +177,13 @@ void screenConfigButton(Button button, ButtonEvent event)
                 "[CONFIG] Boot sound disabled (next power-up will be silent)");
             // Deliberately no audible confirmation here: enabling it must
             // not chirp now, or it would defeat the point of turning it off.
+        } else if (selRow == ROW_GUNSOUND) {
+            const bool next = !gunSoundOn;
+            setGunSound(next);
+            bufferedSerialPrintln(next ?
+                "[CONFIG] Gun cue enabled" :
+                "[CONFIG] Gun cue disabled");
+            if (next) soundGun(false);  // audible confirmation
         } else {
             config.speedUnit = (config.speedUnit + 1) % SPEED_UNITS;
             bufferedSerialPrintln("[CONFIG] Speed unit changed");

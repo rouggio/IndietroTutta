@@ -121,3 +121,17 @@ void soundButtonPress()
     if (!beepOnKeys) return;
     soundPlay(pressNotes, sizeof(pressNotes) / sizeof(pressNotes[0]));
 }
+
+void soundGun(bool ocs)
+{
+    if (!gunSoundOn) return;
+
+    static const uint16_t goNotes[][2] = { { 880, 70 }, { 0, 25 }, { 1320, 70 } };
+    static const uint16_t ocsNotes[][2] = { { 440, 80 }, { 0, 40 }, { 220, 120 } };
+
+    if (ocs) {
+        soundPlay(ocsNotes, sizeof(ocsNotes) / sizeof(ocsNotes[0]));
+    } else {
+        soundPlay(goNotes, sizeof(goNotes) / sizeof(goNotes[0]));
+    }
+}

@@ -1,0 +1,25 @@
+meta {
+  name: Gun cue off
+  type: http
+  seq: 31
+}
+
+post {
+  url: {{baseUrl}}/gunsound?on=0
+  body: none
+  auth: none
+}
+
+docs {
+  200 { gunSound: false }
+
+  Read-or-set, same shape as /beep and /bootsound. GET /gunsound reports
+  the current value; POST /gunsound?on=1 re-enables.
+
+  Stored under its own NVS key ("wifi"/"gunsnd"), NOT in the cfg blob.
+  Default ON when the key is absent.
+
+  Same setting as the "Gun cue : ON/OFF" row on the device CONFIG
+  screen — either one updates the other. Audible confirmation on enable
+  is the gun cue itself (short rising beep).
+}

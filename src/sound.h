@@ -56,5 +56,10 @@ void soundStartup();
 // Silently does nothing while the beepOnKeys setting is off.
 void soundButtonPress();
 
+// Gun cue played once when the gun fires (practice or race), while the
+// `gunSoundOn` setting is on. `ocs` selects a short falling "over early"
+// pattern instead of the rising GO beep.
+void soundGun(bool ocs);
+
 // Estimate: true while a script we queued should still be sounding.
 bool soundPlaying();
