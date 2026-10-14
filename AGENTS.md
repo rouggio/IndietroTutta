@@ -167,6 +167,17 @@ so capture uses font 2 for the race pane labels),
   the page in 320×40 bands (12.8 KB per sprite) instead of one big sprite.
 - Portal always up: open AP `IndietroTutta`, DNS → `192.168.4.1` → `/config`.
   Routes: `/config /save /wifi/remove /reset (wipe all!) /reboot /status /health /serial /mock?on=1|0 /nogo (GET current; POST /nogo?deg=<total width 10..180> — no-go arc width, own NVS key, shown in /status) /ota (POST immediate check vs current server) /server?mode=prod|dev&host=<ip:port> (GET=current) /btn?b=L|R&e=R|RR (remote button) /screen (RGB565 BE 320x240 grab: re-renders the current page into an off-screen 8bpp sprite and streams it, since the ST7789 can't be read back; `scripts/grab_screen.py` → PNG)`. All unauthenticated.
+- **`sys.page` in `/status`** (`main|race|diagnostics|config`): the mock feed
+  delivers the scripted run whatever page is showing, so a device parked on
+  MAIN produces a race with no countdown, no marks and no finish — and
+  nothing in `/status` used to distinguish that from a device that is
+  racing. **Always verify `sys.page` before a scripted test**; `L` cycles
+  RACE → MAIN, so a second blind `/btn` press silently parks the boat.
+- **Diagnostic logging is rationed on purpose.** The 200-line serial ring
+  rolls in ~3 minutes and a race does not fit in it. The start-window trace
+  logs only on a CHANGE of side/near (~4 lines per race); an earlier
+  once-a-second version pushed `passed mark` and `finished` out of the ring
+  — the diagnostic destroyed the evidence it was added to collect.
 - OTA: `GET ota/latest.txt` → semver compare → `HTTPUpdate firmware.bin` + progress bar + `redrawCurrentPage()`. `rebootOnUpdate(false)`: on success the panel gets a clean `fillScreen` before `ESP.restart()` so the boot splash shows neatly (no stale progress-overlay pixels). Boot check if `otaCheckOnStart`, 60s WiFi timeout. `make ota-local` stages a dev build into LAN `public/ota/` with no commit/push/hook (cloud untouched; `config.h` + `public/ota/*` stay dirty by design); `make dl` (= `dl`) = ota-local + immediate pull + verify, and `make dist` (= `dc`) is the cloud publish that commits the bin into the backend repo.
 - Bruno in `bruno/` covers portal routes (`access-point` + `local-network` envs).
 - Quirks: empty portal name keeps stored username; username regex both sides; WiFi rotate-on-5s-fail never blocks UI; OTA download blocks loop; laps RAM-only.
