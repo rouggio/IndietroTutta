@@ -70,6 +70,8 @@ static int gunSide = 0;
 static bool hasGunSide = false;
 // Finish-line side tracking.
 static int finLastSide = 0;
+static double finMinDist = 1e9;
+static long finishPendingUntil = 0; // hold a grace window after the cross
 // The boat has been inside the finish-line band at least once since the
 // line was armed. Gates the "crossed but flip missed" escape so finishing
 // never happens for a boat that has not demonstrably been at the line.
@@ -500,6 +502,19 @@ void raceRunUpdate(TinyGPSPlus& gps)
     }
 
     if (finished) return;
+    // Grace window: after the finish cross is scored, keep the race alive
+    // briefly so the boat's trailing fixes (already on the way, but not yet
+    // polled) reach both the panel and the store.
+    if (finishPendingUntil > 0 && now < finishPendingUntil) return;
+    if (finishPendingUntil > 0 && now >= finishPendingUntil) {
+        finished = true;
+        endEpoch = now;
+        uploadPending = true;
+        logEvent("FINISH", now, "line");
+        logPass("[RACE] finished (line cross, held grace)", now);
+        finishPendingUntil = 0;
+        return;
+    }
 
     // ALL marks cleared → the finish is evaluated HERE, and only here.
     //
@@ -528,6 +543,7 @@ void raceRunUpdate(TinyGPSPlus& gps)
             finArmedAt = now;
             finSawBand = false;
             finLastSide = 0;
+            finMinDist = 1e9;
         }
         // Bounded side flip across the finish line.
         double ax, ay, bx, by;
@@ -537,6 +553,7 @@ void raceRunUpdate(TinyGPSPlus& gps)
         const double dist = segDistM(lat, lon, *fin);
         const bool near = dist >= 0.0 && dist < CROSS_RANGE_M;
         if (near) finSawBand = true;
+        if (near && dist < finMinDist) finMinDist = dist;
         // Diagnostic: same treatment as the start window — log only on a
         // CHANGE of side/near, so it costs a few lines per race instead of
         // evicting "passed mark" and "finished" from the serial ring. The
@@ -559,12 +576,10 @@ void raceRunUpdate(TinyGPSPlus& gps)
             }
         }
         if (near && finLastSide != 0 && side != 0 && side != finLastSide) {
-            finished = true;
-            endEpoch = now;
-            uploadPending = true;
+            finishPendingUntil = now + 4000;
             logEvent("FINISH", now, "line");
-            logPass("[RACE] finished (line cross)", now);
-        } else if (finSawBand && dist >= CROSS_RANGE_M) {
+            logPass("[RACE] finished (line cross, grace pending)", now);
+        } else if (finSawBand && dist >= CROSS_RANGE_M && (finMinDist < 25.0)) {
             // Escape hatch, NOT a radius finish: the boat demonstrably
             // entered the line band and has now left it on the far side,
             // so it crossed without the side flip being recorded (GPS gap
