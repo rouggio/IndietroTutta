@@ -177,7 +177,9 @@ long raceGunEpoch()
 {
     if (!raceSession.valid) return 0;
     if (raceSession.startTime <= 0) return 0;
-    return raceSession.startTime + raceSession.startOffsetSec;
+    // One gun for the whole session: pursuit/handicap starts (per-boat
+    // startOffsetSec) were removed, so this is just the session startTime.
+    return raceSession.startTime;
 }
 
 // Signed side of directed segment A->B for point P (ENU meters, boat frame).

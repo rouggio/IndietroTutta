@@ -43,8 +43,7 @@ struct RaceSession {
     long sessionId = 0;
     char mode[9] = {0}; // "practice" | "race"
     char status[10] = {0}; // "scheduled" | "live"
-    long startTime = 0;  // UTC epoch of gun (without pursuit offset), 0 = none
-    long startOffsetSec = 0;
+    long startTime = 0;  // UTC epoch of the gun, 0 = none (one gun for every boat)
     int windDir = 0;
     int windSpeed = 0; // knots (0 = unknown)
     // Venue wind from the health top-level "wind" piggyback (backend

@@ -176,7 +176,6 @@ static bool sessionFromJson(JsonObject sess, RaceSession& out)
     strncpy(tmp.status, status, sizeof(tmp.status) - 1);
     const char* st = sess["startTime"] | (const char*)nullptr;
     tmp.startTime = st ? raceIsoEpoch(st) : 0;
-    tmp.startOffsetSec = sess["startOffsetSec"] | 0L;
     tmp.windDir = sess["windDir"] | 0;
     tmp.windSpeed = sess["windSpeed"] | 0;
     tmp.courseVersion = sess["courseVersion"] | 0;
@@ -295,7 +294,6 @@ bool raceSessionParse(const char* healthBody)
     const bool geometryChanged = !sameGeometry(raceSession, next);
     const bool volatileChanged = raceSession.valid &&
                                  (raceSession.startTime != next.startTime ||
-                                  raceSession.startOffsetSec != next.startOffsetSec ||
                                   strcmp(raceSession.mode, next.mode) != 0 ||
                                   strcmp(raceSession.status, next.status) != 0);
     // Env wind lives in raceSession (applyEnvWind may have just refreshed
@@ -321,7 +319,6 @@ bool raceSessionSave()
                String(",\"mode\":\"") + raceSession.mode + "\"" +
                String(",\"status\":\"") + raceSession.status + "\"" +
                String(",\"startTime\":") + raceSession.startTime +
-               String(",\"startOffsetSec\":") + raceSession.startOffsetSec +
                String(",\"windDir\":") + raceSession.windDir +
                String(",\"windSpeed\":") + raceSession.windSpeed +
                String(",\"courseVersion\":") + raceSession.courseVersion +
@@ -397,7 +394,6 @@ bool raceSessionLoad()
     const char* status = root["status"] | "";
     strncpy(tmp.status, status, sizeof(tmp.status) - 1);
     tmp.startTime = root["startTime"] | 0L;
-    tmp.startOffsetSec = root["startOffsetSec"] | 0L;
     tmp.windDir = root["windDir"] | 0;
     tmp.windSpeed = root["windSpeed"] | 0;
     tmp.courseVersion = root["courseVersion"] | 0;

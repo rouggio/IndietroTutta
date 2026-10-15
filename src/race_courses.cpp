@@ -290,7 +290,6 @@ bool courseStartSession(uint8_t i, double boatLat, double boatLon, long nowEpoch
     strncpy(next.mode, "practice", sizeof(next.mode) - 1);
     strncpy(next.status, "scheduled", sizeof(next.status) - 1);
     next.startTime = nowEpoch + p.gunSec; // the gun the countdown runs to
-    next.startOffsetSec = 0;
     next.windDir = wind;
     next.windSpeed = practiceWindSpeed();
     next.courseVersion = raceSession.valid ? raceSession.courseVersion + 1 : 1;
