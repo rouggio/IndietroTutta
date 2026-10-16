@@ -474,8 +474,40 @@ static bool nextDestination(TinyGPSPlus& gps, double& lat, double& lon, char* ta
         snprintf(tag, tagLen, "FINISH");
         return true;
     }
-    uint8_t idx = raceProgIdx();
-    if (idx >= raceSession.markCount) idx = raceSession.markCount - 1;
+    // Outgoing/cleared distinction (phase 1): do not switch the displayed
+    // target to the next mark (or the finish) until the boat is actually
+    // nearer to it than to the outgoing mark — i.e. a clear bearing outward.
+    // Scoring still advances on the pass; only presentation waits.
+    uint8_t targetIdx = raceProgIdx();
+    if (targetIdx >= raceSession.markCount) targetIdx = raceSession.markCount; // finish
+    uint8_t idx;
+    if (targetIdx == 0 || !gps.location.isValid()) {
+        idx = (targetIdx >= raceSession.markCount) ? (raceSession.markCount ? raceSession.markCount - 1 : 0) : targetIdx;
+    } else {
+        uint8_t outgoing = (uint8_t)(targetIdx - 1);
+        if (outgoing >= raceSession.markCount) outgoing = raceSession.markCount - 1;
+        const RaceMark& oM = raceSession.marks[outgoing];
+        double dOut = TinyGPSPlus::distanceBetween(gps.location.lat(), gps.location.lng(), oM.lat, oM.lon);
+        double dNext;
+        if (targetIdx < raceSession.markCount) {
+            const RaceMark& nM = raceSession.marks[targetIdx];
+            dNext = TinyGPSPlus::distanceBetween(gps.location.lat(), gps.location.lng(), nM.lat, nM.lon);
+        } else if (raceSession.finishSameAsStart && raceSession.startLine.valid) {
+            dNext = TinyGPSPlus::distanceBetween(gps.location.lat(), gps.location.lng(),
+                    (raceSession.startLine.latA+raceSession.startLine.latB)/2.0,
+                    (raceSession.startLine.lonA+raceSession.startLine.lonB)/2.0);
+        } else if (raceSession.finishLine.valid) {
+            const RaceSeg& fin = raceSession.finishLine;
+            dNext = TinyGPSPlus::distanceBetween(gps.location.lat(), gps.location.lng(),
+                    (fin.latA+fin.latB)/2.0, (fin.lonA+fin.lonB)/2.0);
+        } else dNext = dOut;
+        // Only switch when clearly committed outward (clear bearing).
+        if (dNext < dOut) {
+            idx = (targetIdx >= raceSession.markCount) ? (raceSession.markCount ? raceSession.markCount - 1 : 0) : targetIdx;
+        } else {
+            idx = outgoing;
+        }
+    }
     const RaceMark& m = raceSession.marks[idx];
     if (m.type == RaceMarkGate && m.gate[0]) {
         // Pair center: find the sibling buoy.
