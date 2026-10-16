@@ -384,7 +384,8 @@ static void legReset(uint8_t idx)
 
 // Score the pass: split + event + forward advance + leg reset. The finish
 // arm/finish paths are the same as ever (todo 16: line cross only).
-static void scorePass(uint8_t doneIdx, long now)
+// kind: "mark" (exc+tri logged), "gate" (tri only), "pin" (start-pin skip).
+static void scorePass(uint8_t doneIdx, long now, const char* kind, double exc, double tri)
 {
     splits[doneIdx] = now - startEpoch;
     splitSet[doneIdx] = true;
@@ -406,8 +407,13 @@ static void scorePass(uint8_t doneIdx, long now)
             logPass("[RACE] finished (last mark)", now);
         }
     } else {
-        char msg[48];
-        snprintf(msg, sizeof(msg), "[RACE] passed mark %d", doneIdx + 1);
+        char msg[80];
+        if (kind && strcmp(kind, "gate") == 0)
+            snprintf(msg, sizeof(msg), "[RACE] passed mark %d (gate tri=%.0f)", doneIdx + 1, tri);
+        else if (kind && strcmp(kind, "pin") == 0)
+            snprintf(msg, sizeof(msg), "[RACE] passed mark %d (pin skip)", doneIdx + 1);
+        else
+            snprintf(msg, sizeof(msg), "[RACE] passed mark %d exc=%.0f tri=%.0f", doneIdx + 1, exc, tri);
         bufferedSerialPrintln(msg);
     }
     legReset(progIdx);
@@ -727,7 +733,7 @@ void raceRunUpdate(TinyGPSPlus& gps)
         const RaceMark& cur = raceSession.marks[progIdx];
         // Start pins are not roundings: sail past them, never score them.
         if (cur.type == RaceMarkStart || cur.type == RaceMarkNone) {
-            scorePass(progIdx, now);
+            scorePass(progIdx, now, "pin", -1, -1);
             legPrevLat = lat;
             legPrevLon = lon;
             havePrev = true;
@@ -758,7 +764,7 @@ void raceRunUpdate(TinyGPSPlus& gps)
             const bool clears = !segXing(lat, lon, nx, ny, gax, gay, gbx, gby);
             if (tri > TRI_SWITCH_DEG) triHeld = true; else triHeld = false;
             if (gateThreaded && clears && triHeld && haveNext) {
-                scorePass(progIdx, now);
+                scorePass(progIdx, now, "gate", -1, tri);
                 legPrevLat = lat;
                 legPrevLon = lon;
                 havePrev = true;
@@ -786,7 +792,9 @@ void raceRunUpdate(TinyGPSPlus& gps)
             // (tacks included) stays free, wrong-way loops still fault.
             if (!sideArmed && exc >= SIDE_ARM_DEG) {
                 sideArmed = true;
-                bufferedSerialPrintln("[RACE] side armed");
+                char amsg[48];
+                snprintf(amsg, sizeof(amsg), "[RACE] side armed exc=%.0f", exc);
+                bufferedSerialPrintln(amsg);
             }
             const bool judgeSide = sideArmed && cur.type == RaceMarkSingle &&
                 (cur.side == 'P' || cur.side == 'S') &&
@@ -803,7 +811,11 @@ void raceRunUpdate(TinyGPSPlus& gps)
                         snprintf(wv, sizeof(wv), "%c!%c", cur.side, sailed);
                         logEvent("WRONG", now, wv);
                         wrongFlag = true;
-                        bufferedSerialPrintln("[RACE] wrong side, re-round");
+                        char wmsg[80];
+                        snprintf(wmsg, sizeof(wmsg),
+                            "[RACE] wrong side %c!%c rel=%.0f brg=%.0f cog=%.0f",
+                            cur.side, sailed, rel, raw, cog);
+                        bufferedSerialPrintln(wmsg);
                         legReset(progIdx); // the re-round re-proves itself
                         legPrevLat = lat;
                         legPrevLon = lon;
@@ -817,7 +829,7 @@ void raceRunUpdate(TinyGPSPlus& gps)
             if (tri > TRI_SWITCH_DEG) {
                 if (triHeld) {
                     if (exc >= PASS_EXC_DEG) {
-                        scorePass(progIdx, now);
+                        scorePass(progIdx, now, "mark", exc, tri);
                         legPrevLat = lat;
                         legPrevLon = lon;
                         havePrev = true;
@@ -831,7 +843,11 @@ void raceRunUpdate(TinyGPSPlus& gps)
                 // Anti-stuck: left the area facing elsewhere — the next
                 // visit is a new approach, not a continuation.
                 if (legMinDist > 0 && smoothDist > 2.0 * legMinDist && tri < 60.0) {
-                    bufferedSerialPrintln("[RACE] re-approach, leg reset");
+                    char rmsg[80];
+                    snprintf(rmsg, sizeof(rmsg),
+                        "[RACE] re-approach d=%.0f min=%.0f tri=%.0f, leg reset",
+                        smoothDist, legMinDist, tri);
+                    bufferedSerialPrintln(rmsg);
                     legReset(progIdx);
                     legPrevLat = lat;
                     legPrevLon = lon;
