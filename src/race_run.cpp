@@ -18,6 +18,11 @@ static const float OCS_SETTLE_M = 60.0f;
 static uint8_t progIdx = 0;
 static bool started = false;
 static bool finished = false;
+// Two-phase pass: after a valid exit, scoring is deferred until the boat is
+// clearly committed to the next leg (outward bearing), not at circle exit.
+static int pendingMark = -1;
+static double pendingMinDist = -1.0;
+static long pendingStartEpoch = 0;
 static bool ocs = false;
 static long startEpoch = 0;
 static long endEpoch = 0;
@@ -371,6 +376,72 @@ void raceRunUpdate(TinyGPSPlus& gps)
 
     if (gun <= 0) return; // practice not started / race gun unknown
 
+    // Deferred commit: a pass that already cleared side checks at circle
+    // exit waits here until the boat is clearly committed to the next leg.
+    if (pendingMark >= 0) {
+        const uint8_t k = (uint8_t)pendingMark;
+        if (k >= raceSession.markCount) { pendingMark = -1; pendingMinDist = -1; pendingStartEpoch = 0; }
+        else {
+            const RaceMark& cur = raceSession.marks[k];
+            double dOut = TinyGPSPlus::distanceBetween(lat, lon, cur.lat, cur.lon);
+            uint8_t nextIdx = gatePairEnd(k) + 1;
+            double dNext = dOut;
+            if (nextIdx < raceSession.markCount) {
+                const RaceMark& nm = raceSession.marks[nextIdx];
+                dNext = TinyGPSPlus::distanceBetween(lat, lon, nm.lat, nm.lon);
+            } else if (raceSession.finishSameAsStart && raceSession.startLine.valid) {
+                dNext = TinyGPSPlus::distanceBetween(lat, lon,
+                    (raceSession.startLine.latA + raceSession.startLine.latB) / 2.0,
+                    (raceSession.startLine.lonA + raceSession.startLine.lonB) / 2.0);
+            } else if (raceSession.finishLine.valid) {
+                const RaceSeg& fin = raceSession.finishLine;
+                dNext = TinyGPSPlus::distanceBetween(lat, lon,
+                    (fin.latA + fin.latB) / 2.0,
+                    (fin.lonA + fin.lonB) / 2.0);
+            }
+            if (pendingMinDist < 0) pendingMinDist = dOut;
+            else if (dOut < pendingMinDist) pendingMinDist = dOut;
+            const bool clearOut = (dOut > pendingMinDist + 3.0) && (dNext < dOut);
+            const bool timedOut = (pendingStartEpoch > 0 && now - pendingStartEpoch > 15);
+            if (clearOut || timedOut) {
+                const uint8_t doneIdx = k;
+                pendingMark = -1;
+                pendingMinDist = -1;
+                pendingStartEpoch = 0;
+                splits[doneIdx] = now - startEpoch;
+                splitSet[doneIdx] = true;
+                char v[16];
+                snprintf(v, sizeof(v), "%d", doneIdx + 1);
+                logEvent("PASS", now, v);
+                progIdx = gatePairEnd(doneIdx) + 1;
+                if (progIdx >= raceSession.markCount) {
+                    progIdx = raceSession.markCount;
+                    const RaceSeg* finChk = nullptr;
+                    if (finishIsLine(finChk)) {
+                        logEvent("ARMED", now, "line");
+                        bufferedSerialPrintln("[RACE] last mark cleared, finish line armed");
+                    } else {
+                        finished = true;
+                        endEpoch = now;
+                        uploadPending = true;
+                        logEvent("FINISH", now, "mark");
+                        logPass("[RACE] finished (last mark)", now);
+                    }
+                } else {
+                    char msg[48];
+                    snprintf(msg, sizeof(msg), "[RACE] passed mark %d", doneIdx + 1);
+                    bufferedSerialPrintln(msg);
+                }
+                entryValid = false;
+                wasInside = false;
+                return;
+            }
+            // Not committed yet: stay on the outgoing mark.
+            return;
+        }
+    }
+
+
     // Pre-gun cues, evaluated BEFORE the start logic so they still fire on
     // the pass where the boat crosses (now >= gun). Ceil of the seconds
     // remaining: 60 the moment the gun is a minute away, 1 for the last
@@ -661,37 +732,15 @@ void raceRunUpdate(TinyGPSPlus& gps)
         }
         splits[progIdx] = now - startEpoch;
         splitSet[progIdx] = true;
-        {
-            const uint8_t doneIdx = progIdx;
-            char v[16];
-            snprintf(v, sizeof(v), "%d", doneIdx + 1);
-            logEvent("PASS", now, v);
-            progIdx = gatePairEnd(progIdx) + 1;
-
-            if (progIdx >= raceSession.markCount) {
-                progIdx = raceSession.markCount;
-                const RaceSeg* finChk = nullptr;
-                if (finishIsLine(finChk)) {
-                    // Every mark is behind us and a line is armed: the
-                    // cross is evaluated on the following passes. Radius-
-                    // passing the line circle must NEVER finish the race.
-                    logEvent("ARMED", now, "line");
-                    bufferedSerialPrintln("[RACE] last mark cleared, finish line armed");
-                } else {
-                    // No finish line on this course: the last rounding IS
-                    // the finish (explicit fallback, not an accident).
-                    finished = true;
-                    endEpoch = now;
-                    uploadPending = true;
-                    logEvent("FINISH", now, "mark");
-                    logPass("[RACE] finished (last mark)", now);
-                }
-            } else {
-                char msg[48];
-                snprintf(msg, sizeof(msg), "[RACE] passed mark %d", doneIdx + 1);
-                bufferedSerialPrintln(msg);
-            }
-        }
+        char exv[16];
+        snprintf(exv, sizeof(exv), "%u", progIdx + 1);
+        logEvent("EXITED", now, exv);
+        pendingMark = (int)progIdx;
+        pendingMinDist = -1.0;
+        pendingStartEpoch = now;
+        wasInside = false;
+        entryValid = false;
+        return;
     }
 }
 
