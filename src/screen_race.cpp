@@ -474,40 +474,13 @@ static bool nextDestination(TinyGPSPlus& gps, double& lat, double& lon, char* ta
         snprintf(tag, tagLen, "FINISH");
         return true;
     }
-    // Outgoing/cleared distinction (phase 1): do not switch the displayed
-    // target to the next mark (or the finish) until the boat is actually
-    // nearer to it than to the outgoing mark — i.e. a clear bearing outward.
-    // Scoring still advances on the pass; only presentation waits.
+    // The engine switches progIdx exactly at the clear-route event,
+    // so the display follows it directly: no presentation hold of its own.
     uint8_t targetIdx = raceProgIdx();
     if (targetIdx >= raceSession.markCount) targetIdx = raceSession.markCount; // finish
-    uint8_t idx;
-    if (targetIdx == 0 || !gps.location.isValid()) {
-        idx = (targetIdx >= raceSession.markCount) ? (raceSession.markCount ? raceSession.markCount - 1 : 0) : targetIdx;
-    } else {
-        uint8_t outgoing = (uint8_t)(targetIdx - 1);
-        if (outgoing >= raceSession.markCount) outgoing = raceSession.markCount - 1;
-        const RaceMark& oM = raceSession.marks[outgoing];
-        double dOut = TinyGPSPlus::distanceBetween(gps.location.lat(), gps.location.lng(), oM.lat, oM.lon);
-        double dNext;
-        if (targetIdx < raceSession.markCount) {
-            const RaceMark& nM = raceSession.marks[targetIdx];
-            dNext = TinyGPSPlus::distanceBetween(gps.location.lat(), gps.location.lng(), nM.lat, nM.lon);
-        } else if (raceSession.finishSameAsStart && raceSession.startLine.valid) {
-            dNext = TinyGPSPlus::distanceBetween(gps.location.lat(), gps.location.lng(),
-                    (raceSession.startLine.latA+raceSession.startLine.latB)/2.0,
-                    (raceSession.startLine.lonA+raceSession.startLine.lonB)/2.0);
-        } else if (raceSession.finishLine.valid) {
-            const RaceSeg& fin = raceSession.finishLine;
-            dNext = TinyGPSPlus::distanceBetween(gps.location.lat(), gps.location.lng(),
-                    (fin.latA+fin.latB)/2.0, (fin.lonA+fin.lonB)/2.0);
-        } else dNext = dOut;
-        // Only switch when clearly committed outward (clear bearing).
-        if (dNext < dOut) {
-            idx = (targetIdx >= raceSession.markCount) ? (raceSession.markCount ? raceSession.markCount - 1 : 0) : targetIdx;
-        } else {
-            idx = outgoing;
-        }
-    }
+    // progIdx IS the target: the engine advanced it at the switch already.
+    uint8_t idx = (targetIdx >= raceSession.markCount) ?
+        (raceSession.markCount ? raceSession.markCount - 1 : 0) : targetIdx;
     const RaceMark& m = raceSession.marks[idx];
     if (m.type == RaceMarkGate && m.gate[0]) {
         // Pair center: find the sibling buoy.
@@ -1514,6 +1487,13 @@ void drawScreenRace(TinyGPSPlus &gps, bool requiresInit)
         focusEnabled = false; autoHoldTag[0] = '\0';
     }
     if (focusMode == 0) autoHoldTag[0] = '\0';
+    // A scored switch leaves the zoom: the new leg re-engages by distance.
+    static uint8_t lastFocusProg = 255;
+    const uint8_t nowProg = raceProgIdx();
+    if (lastFocusProg != nowProg) {
+        lastFocusProg = nowProg;
+        if (focusMode == 2) { focusEnabled = false; autoHoldTag[0] = '\0'; }
+    }
     focusNext = focusEnabled;
     static bool lastFocusEnabled = false;
     const bool focusSwitch = (focusEnabled != lastFocusEnabled);

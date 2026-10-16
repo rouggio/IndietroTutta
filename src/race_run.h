@@ -10,8 +10,10 @@
 //
 // States per course, practice or race:
 //   IDLE/PRE-START → RACING (start line crossed, or gun for point starts)
-//   → marks advance by radius pass with required-side check (gates: either
-//   buoy, no side check) → FINISHED (line cross or last-mark pass).
+//   → marks advance by the spec phases (approach free, rounding proven by
+//   bearing excursion, bow side from nearly-proven, 90° triangle switch;
+//   gates thread the pair then clear it) → FINISHED (line cross or last-mark
+//   pass). No meter thresholds on marks anywhere.
 // The gun comes from the session itself: a race session's startTime, or a
 // practice session's startTime (the device creates it with now+gun when the
 // sailor starts a practice race from the menu). The run (splits + event log)

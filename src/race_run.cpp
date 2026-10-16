@@ -7,7 +7,6 @@
 #include <math.h>
 #include <string.h>
 
-static const float PASS_HYST_M = 5.0f;   // exit radius = r + hyst
 static const float CROSS_RANGE_M = 150.0f; // line flips count inside this band
 // Distance at which a pre-gun position counts as a real "approach" for OCS
 // purposes. Comfortably inside CROSS_RANGE_M so a boat that sailed out and
@@ -18,11 +17,31 @@ static const float OCS_SETTLE_M = 60.0f;
 static uint8_t progIdx = 0;
 static bool started = false;
 static bool finished = false;
-// Two-phase pass: after a valid exit, scoring is deferred until the boat is
-// clearly committed to the next leg (outward bearing), not at circle exit.
-static int pendingMark = -1;
-static double pendingMinDist = -1.0;
-static long pendingStartEpoch = 0;
+// Pass recognition (spec mark-passing.md §3): angles + bow side only, no
+// ranges. Per-leg state: excursion of the true mark bearing since the leg
+// began (rounding proof), bow-side arming (wrong-way loops), triangle
+// switch (clear route), gate threading, and an anti-stuck leg reset.
+static const double PASS_EXC_DEG = 150.0; // excursion proving the rounding
+static const double SIDE_ARM_DEG = 135.0; // side engages just below it
+static const double TRI_SWITCH_DEG = 90.0; // clear-route triangle at the boat
+static const double DEAD_CONE_DEG = 20.0;  // bow/stern exemption for side
+static uint8_t legIdx = 255;      // target the leg state belongs to
+static bool legExcInit = false;
+static double legExcMin = 0.0, legExcMax = 0.0; // unwrapped smoothed extremes
+static bool haveSmoothBrg = false;
+static double smoothBrg = 0.0;    // EMA of the unwrapped mark bearing
+static double smoothDist = -1.0;  // EMA of the mark distance
+static double legMinDist = -1.0;  // smallest smoothed distance this leg
+static bool sideArmed = false;
+static bool triHeld = false;      // triangle>90 on the previous pass
+static bool gateThreaded = false;
+static double legPrevLat = 0.0, legPrevLon = 0.0;
+static bool havePrev = false;
+
+// Forward: defined with the pass helpers below, used by raceRunReset.
+static void legReset(uint8_t idx);
+static void logEvent(const char* code, long now, const char* v);
+static void logPass(const char* what, long now);
 static bool ocs = false;
 static long startEpoch = 0;
 static long endEpoch = 0;
@@ -84,16 +103,7 @@ static bool finSawBand = false;
 // When the finish line was armed (first pass with every mark behind us), for
 // the serial diagnostic. Diagnostic only — nothing scores from it.
 static long finArmedAt = 0;
-// Pass tracking for the current target.
-static bool wasInside = false;
-// Circle-entry point + COG at entry. Side is judged at arrival (mark vs
-// heading on the way in — the rounding's side is established there;
-// departure with the mark astern is free). This replaces the old
-// entry->exit chord, which inverted on lapping passes. Dead-ahead/astern
-// arrivals (within 20 deg) are unjudged.
-static double entryLat = 0.0, entryLon = 0.0;
-static double entryCog = -1.0;
-static bool entryValid = false;
+// (leg rounding state lives in the block above: excursion/side/triangle.)
 
 void raceRunInit()
 {
@@ -133,9 +143,7 @@ void raceRunReset()
     finLastSide = 0;
     finSawBand = false;
     finArmedAt = 0;
-    wasInside = false;
-    entryValid = false;
-    entryCog = -1.0;
+    legReset(progIdx);
     strncpy(runResult, "FINISHED", sizeof(runResult) - 1);
     scpSec = 0;
     evCount = 0;
@@ -264,47 +272,145 @@ static uint8_t gatePairEnd(uint8_t i)
     return end;
 }
 
-// Inside any required circle of the current target (either buoy for gates)?
-static bool targetInside(double lat, double lon, uint8_t idx, float& rOut)
+// 0..360 normalization for bearings.
+static double norm360(double d)
 {
-    if (idx >= raceSession.markCount) return false;
-    const RaceMark& m = raceSession.marks[idx];
-    if (m.type == RaceMarkGate && m.gate[0]) {
-        for (uint8_t k = 0; k < raceSession.markCount; k++) {
-            const RaceMark& g = raceSession.marks[k];
-            if (g.type == RaceMarkGate && strcmp(g.gate, m.gate) == 0) {
-                const double d = TinyGPSPlus::distanceBetween(lat, lon, g.lat, g.lon);
-                if (d < g.r) {
-                    rOut = g.r;
-                    return true;
-                }
-            }
-        }
-        rOut = m.r;
-        return false;
-    }
-    const double d = TinyGPSPlus::distanceBetween(lat, lon, m.lat, m.lon);
-    rOut = m.r;
-    return d < m.r;
+    while (d < 0.0) d += 360.0;
+    while (d >= 360.0) d -= 360.0;
+    return d;
 }
 
-static bool targetOutside(double lat, double lon, uint8_t idx, float r)
+// Nearest equivalent of ang to ref (unwrapped continuity for the EMA).
+static double unwrapNear(double ref, double ang)
 {
-    // Outside = beyond r + hysteresis on EVERY circle of the target.
-    if (idx >= raceSession.markCount) return true;
-    const RaceMark& m = raceSession.marks[idx];
-    if (m.type == RaceMarkGate && m.gate[0]) {
-        for (uint8_t k = 0; k < raceSession.markCount; k++) {
-            const RaceMark& g = raceSession.marks[k];
-            if (g.type == RaceMarkGate && strcmp(g.gate, m.gate) == 0) {
-                if (TinyGPSPlus::distanceBetween(lat, lon, g.lat, g.lon) < g.r + PASS_HYST_M) {
-                    return false;
-                }
-            }
+    double d = ang - ref;
+    while (d < -180.0) d += 360.0;
+    while (d > 180.0) d -= 360.0;
+    return ref + d;
+}
+
+// Angle at the boat between points A and B, folded to 0..180.
+static double triAngle(double lat, double lon,
+                       double aLat, double aLon, double bLat, double bLon)
+{
+    const double b1 = TinyGPSPlus::courseTo(lat, lon, aLat, aLon);
+    const double b2 = TinyGPSPlus::courseTo(lat, lon, bLat, bLon);
+    double d = fabs(b1 - b2);
+    while (d >= 360.0) d -= 360.0;
+    if (d > 180.0) d = 360.0 - d;
+    return d;
+}
+
+// Bounded segment-segment crossing (local equirectangular meters — exact
+// crossing math, not a proximity threshold).
+static bool segXing(double aLat, double aLon, double bLat, double bLon,
+                    double cLat, double cLon, double dLat, double dLon)
+{
+    const double lat0 = (aLat + bLat + cLat + dLat) * 0.25;
+    const double k = cos(lat0 * M_PI / 180.0);
+    const double d1x = (bLon - aLon) * k, d1y = bLat - aLat;
+    const double d2x = (dLon - cLon) * k, d2y = dLat - cLat;
+    const double denom = d1x * d2y - d1y * d2x;
+    if (fabs(denom) < 1e-12) return false;
+    const double t = ((cLon - aLon) * k * d2y - (cLat - aLat) * d2x) / denom;
+    const double u = ((cLon - aLon) * k * d1y - (cLat - aLat) * d1x) / denom;
+    return t >= 0.0 && t <= 1.0 && u >= 0.0 && u <= 1.0;
+}
+
+// Sibling buoy of a gate pair (same gate id), or -1 when lone.
+static int gateSibling(uint8_t i)
+{
+    if (i >= raceSession.markCount) return -1;
+    const RaceMark& m = raceSession.marks[i];
+    if (m.type != RaceMarkGate || !m.gate[0]) return -1;
+    for (uint8_t k = 0; k < raceSession.markCount; k++) {
+        if (k != i && raceSession.marks[k].type == RaceMarkGate &&
+            strcmp(raceSession.marks[k].gate, m.gate) == 0) {
+            return (int)k;
         }
+    }
+    return -1;
+}
+
+// Reference point of a target: the mark, or the pair center for gates.
+static void targetPoint(uint8_t i, double& lat, double& lon)
+{
+    const RaceMark& m = raceSession.marks[i];
+    const int sib = gateSibling(i);
+    if (sib >= 0) {
+        lat = (m.lat + raceSession.marks[sib].lat) / 2.0;
+        lon = (m.lon + raceSession.marks[sib].lon) / 2.0;
+    } else {
+        lat = m.lat;
+        lon = m.lon;
+    }
+}
+
+// Next-target point after target i (triangle far arm): the following mark
+// (gate pairs resolve to their center), else the finish center. False when
+// there is nothing (caller then treats the triangle as satisfied).
+static bool nextTargetPoint(uint8_t i, double& lat, double& lon)
+{
+    uint8_t ni = gatePairEnd(i) + 1;
+    if (ni < raceSession.markCount) {
+        targetPoint(ni, lat, lon);
         return true;
     }
-    return TinyGPSPlus::distanceBetween(lat, lon, m.lat, m.lon) >= m.r + PASS_HYST_M;
+    const RaceSeg* fin = nullptr;
+    if (finishIsLine(fin)) {
+        lat = (fin->latA + fin->latB) / 2.0;
+        lon = (fin->latA + fin->latB) / 2.0;
+        return true;
+    }
+    return false;
+}
+
+// Fresh leg state for target idx (re-approach / re-round / next leg).
+static void legReset(uint8_t idx)
+{
+    legIdx = idx;
+    legExcInit = false;
+    legExcMin = 0.0;
+    legExcMax = 0.0;
+    haveSmoothBrg = false;
+    smoothBrg = 0.0;
+    smoothDist = -1.0;
+    legMinDist = -1.0;
+    sideArmed = false;
+    triHeld = false;
+    gateThreaded = false;
+    havePrev = false;
+}
+
+// Score the pass: split + event + forward advance + leg reset. The finish
+// arm/finish paths are the same as ever (todo 16: line cross only).
+static void scorePass(uint8_t doneIdx, long now)
+{
+    splits[doneIdx] = now - startEpoch;
+    splitSet[doneIdx] = true;
+    char v[16];
+    snprintf(v, sizeof(v), "%d", doneIdx + 1);
+    logEvent("PASS", now, v);
+    progIdx = gatePairEnd(doneIdx) + 1;
+    if (progIdx >= raceSession.markCount) {
+        progIdx = raceSession.markCount;
+        const RaceSeg* finChk = nullptr;
+        if (finishIsLine(finChk)) {
+            logEvent("ARMED", now, "line");
+            bufferedSerialPrintln("[RACE] last mark cleared, finish line armed");
+        } else {
+            finished = true;
+            endEpoch = now;
+            uploadPending = true;
+            logEvent("FINISH", now, "mark");
+            logPass("[RACE] finished (last mark)", now);
+        }
+    } else {
+        char msg[48];
+        snprintf(msg, sizeof(msg), "[RACE] passed mark %d", doneIdx + 1);
+        bufferedSerialPrintln(msg);
+    }
+    legReset(progIdx);
 }
 
 static void logEvent(const char* code, long now, const char* v)
@@ -376,70 +482,7 @@ void raceRunUpdate(TinyGPSPlus& gps)
 
     if (gun <= 0) return; // practice not started / race gun unknown
 
-    // Deferred commit: a pass that already cleared side checks at circle
-    // exit waits here until the boat is clearly committed to the next leg.
-    if (pendingMark >= 0) {
-        const uint8_t k = (uint8_t)pendingMark;
-        if (k >= raceSession.markCount) { pendingMark = -1; pendingMinDist = -1; pendingStartEpoch = 0; }
-        else {
-            const RaceMark& cur = raceSession.marks[k];
-            double dOut = TinyGPSPlus::distanceBetween(lat, lon, cur.lat, cur.lon);
-            uint8_t nextIdx = gatePairEnd(k) + 1;
-            double dNext = dOut;
-            if (nextIdx < raceSession.markCount) {
-                const RaceMark& nm = raceSession.marks[nextIdx];
-                dNext = TinyGPSPlus::distanceBetween(lat, lon, nm.lat, nm.lon);
-            } else if (raceSession.finishSameAsStart && raceSession.startLine.valid) {
-                dNext = TinyGPSPlus::distanceBetween(lat, lon,
-                    (raceSession.startLine.latA + raceSession.startLine.latB) / 2.0,
-                    (raceSession.startLine.lonA + raceSession.startLine.lonB) / 2.0);
-            } else if (raceSession.finishLine.valid) {
-                const RaceSeg& fin = raceSession.finishLine;
-                dNext = TinyGPSPlus::distanceBetween(lat, lon,
-                    (fin.latA + fin.latB) / 2.0,
-                    (fin.lonA + fin.lonB) / 2.0);
-            }
-            if (pendingMinDist < 0) pendingMinDist = dOut;
-            else if (dOut < pendingMinDist) pendingMinDist = dOut;
-            const bool clearOut = (dOut > pendingMinDist + 3.0) && (dNext < dOut);
-            const bool timedOut = (pendingStartEpoch > 0 && now - pendingStartEpoch > 15);
-            if (clearOut || timedOut) {
-                const uint8_t doneIdx = k;
-                pendingMark = -1;
-                pendingMinDist = -1;
-                pendingStartEpoch = 0;
-                splits[doneIdx] = now - startEpoch;
-                splitSet[doneIdx] = true;
-                char v[16];
-                snprintf(v, sizeof(v), "%d", doneIdx + 1);
-                logEvent("PASS", now, v);
-                progIdx = gatePairEnd(doneIdx) + 1;
-                if (progIdx >= raceSession.markCount) {
-                    progIdx = raceSession.markCount;
-                    const RaceSeg* finChk = nullptr;
-                    if (finishIsLine(finChk)) {
-                        logEvent("ARMED", now, "line");
-                        bufferedSerialPrintln("[RACE] last mark cleared, finish line armed");
-                    } else {
-                        finished = true;
-                        endEpoch = now;
-                        uploadPending = true;
-                        logEvent("FINISH", now, "mark");
-                        logPass("[RACE] finished (last mark)", now);
-                    }
-                } else {
-                    char msg[48];
-                    snprintf(msg, sizeof(msg), "[RACE] passed mark %d", doneIdx + 1);
-                    bufferedSerialPrintln(msg);
-                }
-                entryValid = false;
-                wasInside = false;
-                return;
-            }
-            // Not committed yet: stay on the outgoing mark.
-            return;
-        }
-    }
+    // (Passes score in the mark section below — single event, no deferral.)
 
 
     // Pre-gun cues, evaluated BEFORE the start logic so they still fire on
@@ -678,69 +721,128 @@ void raceRunUpdate(TinyGPSPlus& gps)
         return;
     }
 
-    float r = 30.0f;
-    if (!wasInside && targetInside(lat, lon, progIdx, r)) {
-        wasInside = true;
-        entryLat = lat;
-        entryLon = lon;
-        entryCog = gps.course.isValid() ? gps.course.deg() : -1.0;
-        entryValid = true;
-        char msg[48];
-        snprintf(msg, sizeof(msg), "[RACE] mark %u entered circle (%.0fm)",
-                 (unsigned)(progIdx + 1), (double)r);
-        bufferedSerialPrintln(msg);
-        char evv[16];
-        snprintf(evv, sizeof(evv), "%u", (unsigned)(progIdx + 1));
-        logEvent("ENTER", now, evv);
-    } else if (wasInside && targetOutside(lat, lon, progIdx, r)) {
-        wasInside = false;
-        char msg[48];
-        snprintf(msg, sizeof(msg), "[RACE] mark %u left circle", (unsigned)(progIdx + 1));
-        bufferedSerialPrintln(msg);
-        char evv[16];
-        snprintf(evv, sizeof(evv), "%u", (unsigned)(progIdx + 1));
-        logEvent("EXIT", now, evv);
-        // Strict side check on single marks (gates stay lenient: either
-        // buoy, no side judgment). Judged at arrival: mark bearing vs
-        // heading at circle entry. Dead-ahead/astern (within 20 deg) and
-        // missing COG pass unjudged.
+    // --- Pass recognition (spec §3-5): angles + bow side, no ranges. ---
+    if (legIdx != progIdx) legReset(progIdx);
+    {
         const RaceMark& cur = raceSession.marks[progIdx];
-        if (cur.type == RaceMarkSingle && (cur.side == 'P' || cur.side == 'S') && entryValid) {
-            entryValid = false;
-            if (entryCog >= 0.0) {
-                double brg = TinyGPSPlus::courseTo(entryLat, entryLon, cur.lat, cur.lon);
-                if (brg < 0) brg += 360.0;
-                double rel = brg - entryCog;
-                while (rel < 0.0) rel += 360.0;
-                while (rel >= 360.0) rel -= 360.0;
-                const bool deadZone = rel < 20.0 || rel > 340.0 ||
-                                      (rel > 160.0 && rel < 200.0);
+        // Start pins are not roundings: sail past them, never score them.
+        if (cur.type == RaceMarkStart || cur.type == RaceMarkNone) {
+            scorePass(progIdx, now);
+            legPrevLat = lat;
+            legPrevLon = lon;
+            havePrev = true;
+            return;
+        }
+        const bool isGate = (cur.type == RaceMarkGate && gateSibling(progIdx) >= 0);
+        double tx, ty; // this target's reference point (mark or pair center)
+        if (isGate) targetPoint(progIdx, tx, ty);
+        else { tx = cur.lat; ty = cur.lon; }
+        double nx, ny; // next-target point (triangle far arm)
+        const bool haveNext = nextTargetPoint(progIdx, nx, ny);
+        const double tri = haveNext ? triAngle(lat, lon, tx, ty, nx, ny) : 180.0;
+
+        if (isGate) {
+            // Thread the pair, then leave on a bearing that clears it.
+            double gax, gay, gbx, gby;
+            const int sib = gateSibling(progIdx);
+            gax = cur.lat; gay = cur.lon;
+            gbx = raceSession.marks[sib].lat; gby = raceSession.marks[sib].lon;
+            if (havePrev && !gateThreaded &&
+                segXing(legPrevLat, legPrevLon, lat, lon, gax, gay, gbx, gby)) {
+                gateThreaded = true;
+                char evv[16];
+                snprintf(evv, sizeof(evv), "%u", (unsigned)(progIdx + 1));
+                logEvent("ENTER", now, evv);
+                bufferedSerialPrintln("[RACE] gate threaded");
+            }
+            const bool clears = !segXing(lat, lon, nx, ny, gax, gay, gbx, gby);
+            if (tri > TRI_SWITCH_DEG) triHeld = true; else triHeld = false;
+            if (gateThreaded && clears && triHeld && haveNext) {
+                scorePass(progIdx, now);
+                legPrevLat = lat;
+                legPrevLon = lon;
+                havePrev = true;
+                return;
+            }
+        } else {
+            // Excursion of the smoothed true bearing: the rounding proof.
+            const double raw = norm360(TinyGPSPlus::courseTo(lat, lon, tx, ty));
+            if (!haveSmoothBrg) {
+                smoothBrg = raw;
+                legExcMin = legExcMax = raw;
+                haveSmoothBrg = true;
+            } else {
+                const double u = unwrapNear(smoothBrg, raw);
+                smoothBrg = 0.6 * smoothBrg + 0.4 * u;
+                if (smoothBrg < legExcMin) legExcMin = smoothBrg;
+                if (smoothBrg > legExcMax) legExcMax = smoothBrg;
+            }
+            const double exc = legExcMax - legExcMin;
+            const double rawD = TinyGPSPlus::distanceBetween(lat, lon, tx, ty);
+            if (smoothDist < 0) smoothDist = rawD;
+            else smoothDist = 0.5 * smoothDist + 0.5 * rawD;
+            if (legMinDist < 0 || smoothDist < legMinDist) legMinDist = smoothDist;
+            // Side engages only once nearly proven round: the approach
+            // (tacks included) stays free, wrong-way loops still fault.
+            if (!sideArmed && exc >= SIDE_ARM_DEG) {
+                sideArmed = true;
+                bufferedSerialPrintln("[RACE] side armed");
+            }
+            const bool judgeSide = sideArmed && cur.type == RaceMarkSingle &&
+                (cur.side == 'P' || cur.side == 'S') &&
+                gps.course.isValid();
+            if (judgeSide) {
+                const double cog = gps.course.deg();
+                double rel = norm360(raw - cog);
+                const bool deadZone = rel < DEAD_CONE_DEG || rel > 360.0 - DEAD_CONE_DEG ||
+                    (rel > 160.0 && rel < 200.0);
                 if (!deadZone) {
                     const char sailed = rel > 180.0 ? 'P' : 'S';
                     if (sailed != cur.side) {
-                        char v[16];
-                        snprintf(v, sizeof(v), "%c!%c", cur.side, sailed);
-                        logEvent("WRONG", now, v);
+                        char wv[16];
+                        snprintf(wv, sizeof(wv), "%c!%c", cur.side, sailed);
+                        logEvent("WRONG", now, wv);
                         wrongFlag = true;
                         bufferedSerialPrintln("[RACE] wrong side, re-round");
-                        return; // no advance: re-enter and round again
+                        legReset(progIdx); // the re-round re-proves itself
+                        legPrevLat = lat;
+                        legPrevLon = lon;
+                        havePrev = true;
+                        return;
                     }
                 }
             }
-        } else {
-            entryValid = false;
+            // Two consecutive triangle reads: one noisy fix near the mark
+            // must not flip the target.
+            if (tri > TRI_SWITCH_DEG) {
+                if (triHeld) {
+                    if (exc >= PASS_EXC_DEG) {
+                        scorePass(progIdx, now);
+                        legPrevLat = lat;
+                        legPrevLon = lon;
+                        havePrev = true;
+                        return;
+                    }
+                } else {
+                    triHeld = true;
+                }
+            } else {
+                triHeld = false;
+                // Anti-stuck: left the area facing elsewhere — the next
+                // visit is a new approach, not a continuation.
+                if (legMinDist > 0 && smoothDist > 2.0 * legMinDist && tri < 60.0) {
+                    bufferedSerialPrintln("[RACE] re-approach, leg reset");
+                    legReset(progIdx);
+                    legPrevLat = lat;
+                    legPrevLon = lon;
+                    havePrev = true;
+                    return;
+                }
+            }
         }
-        splits[progIdx] = now - startEpoch;
-        splitSet[progIdx] = true;
-        char exv[16];
-        snprintf(exv, sizeof(exv), "%u", progIdx + 1);
-        logEvent("EXITED", now, exv);
-        pendingMark = (int)progIdx;
-        pendingMinDist = -1.0;
-        pendingStartEpoch = now;
-        wasInside = false;
-        entryValid = false;
-        return;
+        legPrevLat = lat;
+        legPrevLon = lon;
+        havePrev = true;
     }
 }
 
