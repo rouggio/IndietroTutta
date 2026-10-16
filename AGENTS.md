@@ -188,7 +188,9 @@ so capture uses font 2 for the race pane labels),
   tools/fix_cp1252.js <file>` reverses the cp1252 double encode and refuses to
   write anything still dirty.
 - **The device's IP is DHCP and it roams between Wi-Fi networks** — moving between APs
-  around the house changes it without warning. Before any remote test, **do not guess the
+  around the house changes it without warning. Known leases (same ones recur
+  per AP): `192.168.0.106` on SSID `Studio`, `192.168.1.13` on SSID
+  `Vodafone-Rouggio`. Before any remote test, **do not guess the
   address by trying candidates: if the device landed on another subnet its portal is
   unreachable and you have nothing to query.** Ask the dev backend, which records the LAN
   IP of every heartbeat (`curl localhost:3000/devices` → `ip`); the device is already
