@@ -188,6 +188,7 @@ static bool sessionFromJson(JsonObject sess, RaceSession& out)
         dst.lat = m["lat"] | 0.0;
         dst.lon = m["lon"] | 0.0;
         dst.r = m["r"] | 30.0f;
+        dst.buoyDiam = m["buoyDiam"] | 5.0f;
         const char* side = m["side"] | "P";
         dst.side = side[0] ? side[0] : 'P';
         dst.type = markTypeFrom(m["type"] | "");
@@ -405,6 +406,7 @@ bool raceSessionLoad()
         dst.lat = m["lat"] | 0.0;
         dst.lon = m["lon"] | 0.0;
         dst.r = m["r"] | 30.0f;
+        dst.buoyDiam = m["buoyDiam"] | 5.0f;
         const char* side = m["side"] | "P";
         dst.side = side[0] ? side[0] : 'P';
         dst.type = (RaceMarkType)(m["type"] | 0);

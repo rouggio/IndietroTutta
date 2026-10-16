@@ -114,6 +114,17 @@ static void drawNote()
     tft.drawString(noteMsg, tft.width() / 2, 14, 2);
 }
 
+static const char* pageName(ScreenPage p)
+{
+    switch (p) {
+        case PageMain: return "main";
+        case PageDiagnostics: return "diagnostics";
+        case PageRace: return "race";
+        case PageConfig: return "config";
+        default: return "unknown";
+    }
+}
+
 void nextScreen() {
   // Cycle between the top-level pages. DIAGNOSTICS and CONFIG are
   // reachable only via speed-screen gestures (RR and LL) and are not
@@ -121,6 +132,7 @@ void nextScreen() {
   do {
     page = (ScreenPage)(((int)page + 1) % ((int)PageConfig + 1));
   } while (page == PageDiagnostics || page == PageConfig);
+  bufferedSerialPrintln(String("[PAGE] nextScreen -> ") + pageName(page));
   if (page == PageRace && !backendOnlineFresh()) {
     static unsigned long lastRefusal = 0;
     if (millis() - lastRefusal > 5000) { // don't spam the ring buffer
@@ -136,6 +148,7 @@ void nextScreen() {
 void setCurrentPage(ScreenPage p) {
     if (p < PageMain || p > PageConfig) return;
     page = p;
+    bufferedSerialPrintln(String("[PAGE] setCurrentPage -> ") + pageName(page));
     // Clear immediately: no stale pixels may survive a page
     // switch, even before the next redraw pass.
     prevPage = (p == PageMain) ? PageDiagnostics : PageMain;

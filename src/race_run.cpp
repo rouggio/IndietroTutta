@@ -32,7 +32,7 @@ struct RaceEvent {
     char e[8] = {0};
     char v[16] = {0};
 };
-static RaceEvent evRing[32];
+static RaceEvent evRing[64];
 static uint8_t evCount = 0; // saturates at 32 (oldest dropped)
 
 // Wrong-side flag (consumed by the screen for the banner).
@@ -304,9 +304,9 @@ static bool targetOutside(double lat, double lon, uint8_t idx, float r)
 
 static void logEvent(const char* code, long now, const char* v)
 {
-    if (evCount >= 32) {
-        // Full: shift left, append at the end (32 entries, rare path).
-        for (uint8_t i = 0; i < 31; i++) evRing[i] = evRing[i + 1];
+    if (evCount >= 64) {
+        // Full: shift left, append at the end (64 entries, rare path).
+        for (uint8_t i = 0; i < 63; i++) evRing[i] = evRing[i + 1];
     } else {
         evCount++;
     }
@@ -353,6 +353,10 @@ bool raceEventGet(uint8_t i, long* t, char* e, size_t esz, char* v, size_t vsz)
 void raceRunUpdate(TinyGPSPlus& gps)
 {
     if (!raceSession.valid || !gps.location.isValid()) return;
+    // FX clock: only discard a truly stale fix. Mock fixes legitimately lag
+    // several seconds because of the 5-sample queue depth, so the threshold
+    // here must stay well above 1 s or genuine passes are silently dropped.
+    if (gps.location.age() > 5000) return;
     // Wall clock FIRST, GPS epoch only as a cold fallback. Both the banner
     // and the sound cues are shown/h heard against wall time, so the engine
     // must read the same clock they do. Reading the raw fix epoch instead
@@ -576,9 +580,15 @@ void raceRunUpdate(TinyGPSPlus& gps)
             }
         }
         if (near && finLastSide != 0 && side != 0 && side != finLastSide) {
-            finishPendingUntil = now + 4000;
+            // Score the finish on the crossing edge so the session terminates
+            // the moment the boat crosses — waiting for "trailing fixes" only
+            // delayed status/upload (user sees the boat sail past the line
+            // with nothing happening) and let the run get abandoned mid-grace.
+            finished = true;
+            endEpoch = now;
+            uploadPending = true;
             logEvent("FINISH", now, "line");
-            logPass("[RACE] finished (line cross, grace pending)", now);
+            logPass("[RACE] finished (line cross)", now);
         } else if (finSawBand && dist >= CROSS_RANGE_M && (finMinDist < 25.0)) {
             // Escape hatch, NOT a radius finish: the boat demonstrably
             // entered the line band and has now left it on the far side,
@@ -604,8 +614,21 @@ void raceRunUpdate(TinyGPSPlus& gps)
         entryLon = lon;
         entryCog = gps.course.isValid() ? gps.course.deg() : -1.0;
         entryValid = true;
+        char msg[48];
+        snprintf(msg, sizeof(msg), "[RACE] mark %u entered circle (%.0fm)",
+                 (unsigned)(progIdx + 1), (double)r);
+        bufferedSerialPrintln(msg);
+        char evv[16];
+        snprintf(evv, sizeof(evv), "%u", (unsigned)(progIdx + 1));
+        logEvent("ENTER", now, evv);
     } else if (wasInside && targetOutside(lat, lon, progIdx, r)) {
         wasInside = false;
+        char msg[48];
+        snprintf(msg, sizeof(msg), "[RACE] mark %u left circle", (unsigned)(progIdx + 1));
+        bufferedSerialPrintln(msg);
+        char evv[16];
+        snprintf(evv, sizeof(evv), "%u", (unsigned)(progIdx + 1));
+        logEvent("EXIT", now, evv);
         // Strict side check on single marks (gates stay lenient: either
         // buoy, no side judgment). Judged at arrival: mark bearing vs
         // heading at circle entry. Dead-ahead/astern (within 20 deg) and

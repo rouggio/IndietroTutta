@@ -101,17 +101,7 @@ void drawScreenConfig(bool requiresInit)
         // Detail line under the rows: what PROD/DEV actually means right
         // now. Host is set once via portal `/server` (typing an IP with
         // two buttons is nobody's idea of fun); the toggle here flips mode.
-        String detail;
-        if (serverMode() == 1) {
-            const String host = serverDevHost();
-            detail = host.length() ? String("-> ") + host : "-> no host! use portal";
-        } else {
-            detail = "-> Render prod";
-        }
-        tft.setTextColor(GRAY, BG);
-        tft.setTextDatum(TL_DATUM);
-        tft.drawString(detail, 12, DETAIL_Y, 2);
-
+        // Detail line removed (dev base URL line) per user request.
         needsRedraw = false;
     }
 

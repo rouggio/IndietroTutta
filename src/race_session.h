@@ -19,6 +19,7 @@ struct RaceMark {
     double lat = 0.0;
     double lon = 0.0;
     float r = 30.0f;
+    float buoyDiam = 5.0f;
     char side = 'P';
     RaceMarkType type = RaceMarkNone;
     char gate[8] = {0};

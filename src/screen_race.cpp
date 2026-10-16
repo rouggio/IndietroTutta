@@ -10,6 +10,7 @@
 #include <TFT_eSPI.h>
 #include <TinyGPSPlus.h>
 #include <math.h>
+#include <Preferences.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -27,7 +28,7 @@ static const uint16_t MENU_GRAY = 0x7BEF; // CONFIG gray: menu reference color
 static const int HDR_H = 28;
 static const int MAP_X = 0;
 static const int MAP_Y = 30;
-static const int MAP_W = 256;   // left viewport (4/5 of 320)
+static const int MAP_W = 320;   // full screen width (no side pane)
 static const int WIRE_TOP = 30; // wire fills from below the header...
 static const int WIRE_Y1 = 208; // ...to the frame south (strip is gone)
 static const int FRAME_SOUTH = 213;
@@ -42,7 +43,64 @@ static inline int paneRowY(int r) { return PANE_TOP + (r * PANE_H) / 6; }
 static void drawFrameChrome()
 {
     tft.drawRect(0, 0, 320, FRAME_SOUTH, RDIM);
-    tft.drawLine(255, 0, 255, FRAME_SOUTH - 1, RDIM); // viewport divider (full height)
+    // no side-pane divider: full-width map
+}
+
+static const int AUTO_DIST_OPTIONS[] = {10, 50, 100, 200};
+static const uint8_t AUTO_DIST_N = 4;
+static int autoDistM = -1;
+static uint8_t focusMode = 0; // 0 map,1 target,2 auto
+static bool focusEnabled = false;
+static bool focusNext = false;
+static double targetDistM = -1.0;
+static bool focusValid = false;
+static double focusLat = 0.0, focusLon = 0.0;
+static char autoHoldTag[12] = {0};
+
+static void autoDistEnsure()
+{
+    if (autoDistM >= 0) return;
+    autoDistM = 100;
+    Preferences p;
+    if (p.begin("race", true)) { autoDistM = (int)p.getInt("autoDist", 100); p.end(); }
+}
+
+static void autoDistSave(int v)
+{
+    Preferences p;
+    if (p.begin("race", false)) { p.putInt("autoDist", v); p.end(); }
+}
+
+static int autoDistNext()
+{
+    autoDistEnsure();
+    for (uint8_t i = 0; i < AUTO_DIST_N; i++) {
+        if (autoDistM <= AUTO_DIST_OPTIONS[i]) {
+            int n = AUTO_DIST_OPTIONS[(i + 1) % AUTO_DIST_N];
+            autoDistM = n; autoDistSave(n); return n;
+        }
+    }
+    autoDistM = AUTO_DIST_OPTIONS[0]; autoDistSave(autoDistM); return autoDistM;
+}
+
+static void viewModeEnsure()
+{
+    static bool done = false;
+    if (done) return;
+    done = true;
+    Preferences p;
+    if (p.begin("race", true)) {
+        int v = (int)p.getInt("viewMode", 0);
+        if (v < 0 || v > 2) v = 0;
+        focusMode = (uint8_t)v;
+        p.end();
+    }
+}
+
+static void viewModeSave()
+{
+    Preferences p;
+    if (p.begin("race", false)) { p.putInt("viewMode", focusMode); p.end(); }
 }
 
 static const double DEG_M = 111320.0;
@@ -52,6 +110,7 @@ static const double DEG_M = 111320.0;
 static uint8_t viewMode = 0;
 
 static int lastRaceCourseKey = -1; // sessionId+version fingerprint
+static int lastResetCourseKey = -2; // tracks the session key raceRun was last reset for
 static bool mapDirty = true;       // a full clear is waiting for a map redraw
 static unsigned long lastMapDraw = 0;
 // Set when the map actually repainted this pass. The view tag lives in the
@@ -115,8 +174,12 @@ static void buildProjection(RaceProj& p, double rotDeg)
         p.ok = false;
         return;
     }
-    p.lat0 = (minLat + maxLat) / 2.0;
-    p.lon0 = (minLon + maxLon) / 2.0;
+    if (focusNext && focusValid) {
+        p.lat0 = focusLat; p.lon0 = focusLon;
+    } else {
+        p.lat0 = (minLat + maxLat) / 2.0;
+        p.lon0 = (minLon + maxLon) / 2.0;
+    }
     p.cosLat = cos(p.lat0 * M_PI / 180.0);
     if (p.cosLat < 0.2) p.cosLat = 0.2;
 
@@ -152,6 +215,9 @@ static void buildProjection(RaceProj& p, double rotDeg)
     const double rGrowth = maxR / DEG_M;
     spanX += 2 * rGrowth;
     spanY += 2 * rGrowth;
+    if (focusNext && focusValid) {
+        spanX = 0.0003; spanY = 0.0003;
+    }
     if (spanX < 0.0005) spanX = 0.0005;
     if (spanY < 0.0005) spanY = 0.0005;
     const int pad = 12;
@@ -160,8 +226,8 @@ static void buildProjection(RaceProj& p, double rotDeg)
     const double sx = ww / spanX;
     const double sy = wh / spanY;
     p.scale = sx < sy ? sx : sy;
-    p.rcx = (rminx + rmaxx) / 2.0;
-    p.rcy = (rminy + rmaxy) / 2.0;
+    if (focusNext && focusValid) { p.rcx = 0.0; p.rcy = 0.0; }
+    else { p.rcx = (rminx + rmaxx) / 2.0; p.rcy = (rminy + rmaxy) / 2.0; }
     p.ox = MAP_X + MAP_W / 2;
     p.oy = WIRE_TOP + (WIRE_Y1 - WIRE_TOP) / 2;
     p.ok = true;
@@ -237,7 +303,7 @@ static void raceTarget(uint8_t& idx, bool& isLine, uint8_t& lineIdx,
     if (gateId && gateLen) gateId[0] = '\0';
     if (!raceSession.valid) return;
     const long gun = raceGunEpoch();
-    const bool preStart = (gun <= 0 || !raceRunStarted());
+    const bool preStart = (gun <= 0 || (!raceRunStarted() && strcmp(raceSession.status, "finished") != 0 && !raceRunFinished()));
     if (preStart) {
         if (raceSession.startLine.valid) {
             isLine = true;
@@ -358,7 +424,7 @@ static bool nextDestination(TinyGPSPlus& gps, double& lat, double& lon, char* ta
     (void)gps;
     if (!raceSession.valid) return false;
     const long gun = raceGunEpoch();
-    const bool preStart = (gun <= 0 || !raceRunStarted());
+    const bool preStart = (gun <= 0 || (!raceRunStarted() && strcmp(raceSession.status, "finished") != 0 && !raceRunFinished()));
     if (preStart) {
         if (raceSession.startLine.valid) {
             lat = (raceSession.startLine.latA + raceSession.startLine.latB) / 2.0;
@@ -389,6 +455,21 @@ static bool nextDestination(TinyGPSPlus& gps, double& lat, double& lon, char* ta
             const RaceMark& last = raceSession.marks[raceSession.markCount - 1];
             lat = last.lat;
             lon = last.lon;
+        }
+        snprintf(tag, tagLen, "FINISH");
+        return true;
+    }
+    if (raceRunStarted() && raceProgIdx() >= raceSession.markCount) {
+        if (raceSession.finishSameAsStart && raceSession.startLine.valid) {
+            lat = (raceSession.startLine.latA + raceSession.startLine.latB) / 2.0;
+            lon = (raceSession.startLine.lonA + raceSession.startLine.lonB) / 2.0;
+        } else if (raceSession.finishLine.valid) {
+            const RaceSeg& fin = raceSession.finishLine;
+            lat = (fin.latA + fin.latB) / 2.0;
+            lon = (fin.lonA + fin.lonB) / 2.0;
+        } else {
+            const RaceMark& last = raceSession.marks[raceSession.markCount - 1];
+            lat = last.lat; lon = last.lon;
         }
         snprintf(tag, tagLen, "FINISH");
         return true;
@@ -897,7 +978,7 @@ drawSmart(4, 2, 4, TL_DATUM, RFG, ban, pBan, sizeof(pBan), pBanW);
         }
         vwTagLast = viewMode % 3;
         const int tw = (int)strlen(vwTag[vwTagLast]) * 6;
-        drawLabel1(VW_TAG_R - tw, VW_TAG_Y, vwTag[vwTagLast], TFT_GREEN);
+        // removed green view tag (now shown in hint)
     }
 
     // Destination geometry (map boat/dash + pane cells).
@@ -942,74 +1023,19 @@ drawSmart(4, 2, 4, TL_DATUM, RFG, ban, pBan, sizeof(pBan), pBanW);
         snprintf(tim, sizeof(tim), "--:--");
     }
 
-    // Right values pane: 6 equal rows filling the pane from the very top;
-    // small labels via the manual GLCD helper (renders on the capture sprite
-    // too); values change-detect. Drawn even with no session (grid + '---')
-    // so the cell layout stays consistent.
-    if (!paneClean) {
-        // PANE_W-1 keeps the frame's 1px right border (x=319) intact.
-        tft.fillRect(PANE_X, PANE_TOP, PANE_W - 1, PANE_H, RBG);
-        for (int r = 1; r < 6; r++) {
-            const int ly = paneRowY(r);
-            tft.drawLine(PANE_X + 2, ly, PANE_X + PANE_W - 3, ly, RDIM);
-        }
-        static const char* labs[6] = { "SPD KN", "BRG", "DST M", "NEXT", "TIME", "WND" };
-        for (int r = 0; r < 6; r++) drawLabel1(PANE_X + 3, paneRowY(r) + 4, labs[r], RDIM);
-        paneClean = true;
+    // Overlay indicators: SPD/DST top-right, TIME bottom-right.
+    {
+        char ov[16];
+        tft.setTextDatum(TR_DATUM);
+        tft.setTextColor(RFG, RBG);
+        if (gps.speed.isValid()) snprintf(ov, sizeof(ov), "%.1f Kn", gps.speed.knots());
+        else snprintf(ov, sizeof(ov), "--- Kn");
+        tft.drawString(ov, MAP_X + MAP_W - 6, MAP_Y - 24, 4);
+        if (showBrg) snprintf(ov, sizeof(ov), "%ld m", distM);
+        else snprintf(ov, sizeof(ov), "--- m");
+        tft.drawString(ov, MAP_X + MAP_W - 6, MAP_Y + 4, 4);
+        tft.drawString(tim, MAP_X + MAP_W - 6, WIRE_Y1 - 48, 6);
     }
-    char cell[14];
-    const int vx = PANE_X + PANE_W - 8;
-    // Row 0: speed.
-    if (gps.speed.isValid()) snprintf(cell, sizeof(cell), "%4.1f", gps.speed.knots());
-    else snprintf(cell, sizeof(cell), " --- ");
-    drawSmart(vx, paneRowY(0) + 16, 2, TR_DATUM, RFG, cell, pSpd, sizeof(pSpd), pSpdW);
-    // Row 1: bearing to destination.
-    if (showBrg) snprintf(cell, sizeof(cell), "%3d", (int)brg);
-    else snprintf(cell, sizeof(cell), "---");
-    drawSmart(vx, paneRowY(1) + 16, 2, TR_DATUM, RFG, cell, pBrg, sizeof(pBrg), pBrgW);
-    // Row 2: distance.
-    if (showBrg) snprintf(cell, sizeof(cell), "%4ld", distM);
-    else snprintf(cell, sizeof(cell), "----");
-    drawSmart(vx, paneRowY(2) + 16, 2, TR_DATUM, RFG, cell, pDst, sizeof(pDst), pDstW);
-    // Row 3: next destination.
-    // NEXT value. Cap 6 chars: the value line inside the 64px pane is ~53px,
-// which is ~7 font-2 characters — "FINISH" (6) fits, "1 - Port" (8) would
-// not. Mark tags stay compact ("1P") so they fit the same line.
-if (raceSession.valid && haveDest) snprintf(cell, sizeof(cell), "%-6.6s", tag);
-    else snprintf(cell, sizeof(cell), "----");
-    drawSmart(vx, paneRowY(3) + 16, 2, TR_DATUM, RFG, cell, pNxt, sizeof(pNxt), pNxtW);
-    // Row 4: time.
-    drawSmart(vx, paneRowY(4) + 16, 2, TR_DATUM, RFG, tim, pTim, sizeof(pTim), pTimW);
-    // Row 5: wind — session wind first, env fallback like the main screen.
-    // Arrow only when wind is known; a zero session wind parks at N, dead.
-    const bool sesWnd = raceSession.valid && raceSession.windSpeed > 0;
-    const bool envWnd = raceEnvWindSeen();
-    // Change-detect, and wipe before redraw. drawWindArrow() paints
-    // pixels directly with no erase of its own, so redrawing it at a
-    // NEW heading every pass left the previous arrow behind as ghost
-    // pixels (it only looked right while the wind was steady). Same bg,
-    // so the wipe is invisible.
-    static int wndArrowLast = INT32_MIN;
-    if (raceSession.valid && (sesWnd || envWnd)) {
-        const int wDir = sesWnd ? raceSession.windDir : raceSession.envWindDir;
-        const int wSpd = sesWnd ? raceSession.windSpeed : raceSession.envWindSpeed;
-        if (wndArrowLast != wDir) {
-            tft.fillRect(PANE_X + 1, paneRowY(5) + 9, 30, 30, RBG);
-            drawWindArrow(PANE_X + 16, paneRowY(5) + 24, wDir, 9, RFG);
-            wndArrowLast = wDir;
-        }
-        if (wSpd > 0) snprintf(cell, sizeof(cell), "%2d", wSpd);
-        else snprintf(cell, sizeof(cell), "--");
-    } else {
-        // No wind known: wipe the arrow zone (same-bg repaint, invisible)
-        // so a stale arrow never survives the transition.
-        if (wndArrowLast != INT32_MIN) {
-            tft.fillRect(PANE_X + 1, paneRowY(5) + 9, 30, 30, RBG);
-            wndArrowLast = INT32_MIN;
-        }
-        snprintf(cell, sizeof(cell), "--");
-    }
-    drawSmart(vx, paneRowY(5) + 16, 2, TR_DATUM, RFG, cell, pWnd, sizeof(pWnd), pWndW);
 
     // Hint bar: texts change length across modes now, so repaint on change
     // (band clear once, then both sides).
@@ -1022,7 +1048,9 @@ if (raceSession.valid && haveDest) snprintf(cell, sizeof(cell), "%-6.6s", tag);
         snprintf(hintR, sizeof(hintR), "R Sel RR Pick");
     } else {
         snprintf(hintL, sizeof(hintL), "L Next  LL Menu");
-        snprintf(hintR, sizeof(hintR), "RR Switch View");
+        const char* viewName = focusMode == 0 ? "Map" : focusMode == 1 ? "Tgt" : "Auto";
+        const char* bearName = (viewMode % 2 == 0) ? "N" : "BRG";
+        snprintf(hintR, sizeof(hintR), "R %s RR %s", viewName, bearName);
     }
     if (strcmp(hintL, lastHintL) != 0 || strcmp(hintR, lastHintR) != 0) {
         tft.fillRect(0, 219, 320, 21, RBG);
@@ -1044,20 +1072,25 @@ enum MenuRow : uint8_t {
     MenuStart = 0,  // start a practice session (no session running)
     MenuRepeat,     // re-create the last practice session at the boat
     MenuResync,     // pull the committee session now (race mode)
+    MenuAutoDist,   // cycle auto focus switch distance (10/50/100/200 m)
     MenuAbandon,    // end the running session
 };
 
-static MenuRow menuRows[4];
+static MenuRow menuRows[5];
+static char menuAutoDistLabel[24] = {0};
 
 static uint8_t buildMenuRows()
-{
+ {
+    autoDistEnsure();
     const bool has = raceSession.valid;
     const bool race = has && strcmp(raceSession.mode, "race") == 0;
     uint8_t n = 0;
     if (!has) menuRows[n++] = MenuStart;
     if (!race && practicePrefsValid()) menuRows[n++] = MenuRepeat;
     if (race) menuRows[n++] = MenuResync;
+    menuRows[n++] = MenuAutoDist;   // always adjustable
     if (has) menuRows[n++] = MenuAbandon;
+    snprintf(menuAutoDistLabel, sizeof(menuAutoDistLabel), "Auto distance %dm", autoDistM);
     return n;
 }
 
@@ -1067,6 +1100,7 @@ static const char* menuRowText(MenuRow r)
         case MenuStart: return "Start practice session";
         case MenuRepeat: return "Repeat last session";
         case MenuResync: return "Resync now";
+        case MenuAutoDist: return menuAutoDistLabel;
         case MenuAbandon: return "Abandon session";
     }
     return "";
@@ -1300,6 +1334,14 @@ static void menuConfirm()
         case MenuResync:
             backendPollHealthNow();
             break;
+        case MenuAutoDist: {
+            int nv = autoDistNext();
+            snprintf(menuAutoDistLabel, sizeof(menuAutoDistLabel),
+                     "Auto distance %dm", nv);
+            showTransient("AUTO DIST");
+            menuDirty = true;
+            return; // stay in menu, like config rows
+        }
         case MenuAbandon:
             courseAbandonSession();
             showSignal("ABANDON ");
@@ -1311,11 +1353,13 @@ static void menuConfirm()
 void drawScreenRace(TinyGPSPlus &gps, bool requiresInit)
 {
     raceSampleFix(gps);
+    autoDistEnsure();
+    viewModeEnsure();
     if (requiresInit) {
         tft.fillScreen(RBG);
         mapDirty = true; // force a full map redraw after the clear
         resetRaceText();
-        if (!gGrabbing) raceRunReset(); // capture must not wipe a live run
+        if (!gGrabbing && !raceRunStarted()) raceRunReset(); // keep running run
     }
     // courseChanged means the SESSION changed under us — that is what closes
     // an open overlay. It must NOT be triggered by a forced repaint: a full
@@ -1326,10 +1370,11 @@ void drawScreenRace(TinyGPSPlus &gps, bool requiresInit)
     lastRaceCourseKey = key;
     const bool mapFull = mapDirty || courseChanged;
     mapDirty = false;
-    if (courseChanged) {
-        if (!gGrabbing) raceRunReset();
+    if (courseChanged && key != lastResetCourseKey && !gGrabbing) {
+        lastResetCourseKey = key;
+        raceRunReset();
         // A course change can follow an overlay or the empty state that wiped
-        // the pane without resetting its caches — force the text/pane repaint
+        // the pane without resetting its caches ? force the text/pane repaint
         // (resetRaceText clears the value caches and paneClean).
         resetRaceText();
     }
@@ -1405,9 +1450,49 @@ void drawScreenRace(TinyGPSPlus &gps, bool requiresInit)
             }
         }
     }
+    char tTag[12] = {0};
+    if (raceSession.valid) {
+        double tLat = 0, tLon = 0;
+        if (nextDestination(gps, tLat, tLon, tTag, sizeof(tTag))) {
+            focusLat = tLat; focusLon = tLon; focusValid = true;
+            if (gps.location.isValid()) targetDistM =
+                TinyGPSPlus::distanceBetween(gps.location.lat(), gps.location.lng(),
+                                             tLat, tLon);
+        } else {
+            focusValid = false; targetDistM = -1.0; tTag[0] = '\0';
+        }
+    } else {
+        focusValid = false; targetDistM = -1.0;
+    }
+    autoDistEnsure();
+    if (focusMode == 1) focusEnabled = true;
+    else if (focusMode == 2 && focusValid) {
+        if (autoHoldTag[0] == '\0' || strcmp(autoHoldTag, tTag) != 0) {
+            if (targetDistM >= 0 && targetDistM <= (double)autoDistM) {
+                strcpy(autoHoldTag, tTag); // engage
+                focusEnabled = true;
+            } else {
+                autoHoldTag[0] = '\0';
+                focusEnabled = false;
+            }
+        } else {
+            focusEnabled = true;
+        }
+    } else {
+        focusEnabled = false; autoHoldTag[0] = '\0';
+    }
+    if (focusMode == 0) autoHoldTag[0] = '\0';
+    focusNext = focusEnabled;
+    static bool lastFocusEnabled = false;
+    const bool focusSwitch = (focusEnabled != lastFocusEnabled);
+    lastFocusEnabled = focusEnabled;
+    if (focusSwitch) {
+        tft.fillRect(0, MAP_Y, MAP_W, WIRE_Y1 - MAP_Y, RBG);
+        mapDirty = true;
+    }
     if (!courseOpen) {
         mapRepainted = false;
-        drawRaceMap(gps, mapFull);
+        drawRaceMap(gps, mapFull || focusSwitch);
     }
     // Deferred repeat: the library landed (or never did), act on it now.
     if (pendingRepeat) {
@@ -1537,10 +1622,18 @@ void screenRaceButton(Button button, ButtonEvent event)
         menuFull = true;
         return;
     }
-    // Right short does nothing on this screen (durations dropped).
-    // Right long: cycle views — north-up → bearing-up → best-fit.
+    // Right short: cycle map views — overall, next-target, auto (10/50/100/200 m).
+    if (button == Button::Right && event == ButtonEvent::ShortPress) {
+        focusMode = (focusMode + 1) % 3;
+        focusEnabled = (focusMode == 1); // auto upgrades in draw pass
+        focusNext = focusEnabled;
+        viewModeSave();
+        redrawCurrentPage();
+        return;
+    }
+    // Right long: toggle bearing (N-up <-> bearing-up).
     if (button == Button::Right && event == ButtonEvent::LongPress) {
-        viewMode = (viewMode + 1) % 3;
+        viewMode = (viewMode + 1) % 2;
         redrawCurrentPage();
         return;
     }

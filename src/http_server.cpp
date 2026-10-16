@@ -748,6 +748,22 @@ static void handleBtn()
                 String("{\"b\":\"") + b + "\",\"e\":\"" + e + "\"}");
 }
 
+static void handlePage()
+{
+    const String p = server.hasArg("p") ? server.arg("p") : "";
+    ScreenPage sp = PageMain;
+    bool ok = true;
+    if (p == "main" || p == "0") sp = PageMain;
+    else if (p == "diagnostics" || p == "1") sp = PageDiagnostics;
+    else if (p == "race" || p == "2") sp = PageRace;
+    else if (p == "config" || p == "3") sp = PageConfig;
+    else ok = false;
+    if (!ok) { server.send(400, "text/plain", "p must be main|diagnostics|race|config"); return; }
+    setCurrentPage(sp);
+    server.send(200, "application/json",
+                String("{\"page\":\"") + p + "\"}");
+}
+
 // Framebuffer grab (GET /screen): raw RGB565 big-endian, 320x240, no header.
 // scripts/grab_screen.py turns it into a PNG. Slow — a debugging tool, not a
 // live feed.
@@ -883,6 +899,7 @@ server.on("/otabooth", HTTP_POST, handleOtaOnBoot);
     server.on("/server", HTTP_GET, handleServer);
     server.on("/server", HTTP_POST, handleServer);
     server.on("/btn", HTTP_POST, handleBtn);
+    server.on("/page", HTTP_POST, handlePage);
     server.on("/screen", HTTP_GET, handleScreen);
 
     // Expose serial buffer as plain text at /serial
