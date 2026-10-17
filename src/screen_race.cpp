@@ -627,6 +627,12 @@ static void drawStaticLayer(const RaceProj& p, double rotEff)
 
 static void resetRaceText(); // defined below; the empty state clears and needs it
 
+// Overlay readout caches (see drawReadoutTR): the last string drawn and its
+// exact pixel width, so a box that shrinks can blank its own leftover first.
+static char ovSpd[16] = {0}; static int16_t ovSpdW = 0;
+static char ovDst[16] = {0}; static int16_t ovDstW = 0;
+static char ovTim[12] = {0}; static int16_t ovTimW = 0;
+
 static void drawRaceMap(TinyGPSPlus& gps, bool full)
 {
     if (!raceSession.valid) {
@@ -703,6 +709,13 @@ static void drawRaceMap(TinyGPSPlus& gps, bool full)
     }
     if (full) {
         tft.fillRect(MAP_X, WIRE_TOP, MAP_W, WIRE_Y1 - WIRE_TOP, RBG);
+        // That fill just wiped the DST/TIME overlay boxes (SPD lives above the
+        // map, at y=6, and survives), so forget their extents: erasing against
+        // a box that is no longer there would scratch the fresh map pixels.
+        // The text itself comes back on this same pass - drawReadoutTR always
+        // draws, so it needs no reset to reappear.
+        ovDstW = 0;
+        ovTimW = 0;
         drawFrameChrome();
         drawStaticLayer(p, rotEff);
         oldRotEff = rotEff;
@@ -785,7 +798,9 @@ static void drawRaceMap(TinyGPSPlus& gps, bool full)
 
 static int fontPxH(uint8_t font)
 {
-    // Classic TFT_eSPI fonts used here: 2 = 16px, 4 = 26px.
+    // Classic TFT_eSPI fonts used here: 2 = 16px, 4 = 26px, 6 = 48px (the
+    // chr_hgt_f* heights in TFT_eSPI's Font16/32/64 tables).
+    if (font == 6) return 48;
     return font == 4 ? 26 : 16;
 }
 
@@ -824,6 +839,44 @@ static void drawSmart(int x, int y, uint8_t font, int datum, uint16_t color,
         if (eraseW > 0) tft.fillRect(ex + prefixW, ey, eraseW, h, RBG);
     }
     tft.setTextColor(color, RBG);
+    lastW = tft.drawString(txt, x, y, font);
+    strncpy(last, txt, lastLen - 1);
+    last[lastLen - 1] = '\0';
+}
+
+// Race-map overlay readouts (SPD / DST / TIME). This is drawSmart WITHOUT the
+// identical-string skip, on purpose: those three sit inside the map's own
+// repaint (drawRaceMap fills MAP_Y..WIRE_Y1 and wipes them), and a cached
+// "already drawn" alone would hide a readout until its value next changed.
+// Redrawing every pass is what the old opaque overlay did anyway.
+//
+// What it adds is the ERASE. An opaque drawString erases exactly the NEW
+// string's box, so a box that shrinks in PIXELS leaves the old left edge
+// standing as ghost pixels. Character padding cannot prevent that: in font 4
+// the digits are tabular (advance 14) but a space advances 5, so dropping the
+// leading digit out of "%4ld m" ("1000 m" -> " 999 m") shortens the rendered
+// string by 9px at an unchanged character count - and if the discarded glyph
+// had ink there, it survives. Blank from the first differing glyph to the end
+// of the previous box, then draw over it.
+static void drawReadoutTR(int x, int y, uint8_t font, const char* txt,
+                          char* last, size_t lastLen, int16_t& lastW)
+{
+    tft.setTextDatum(TR_DATUM);
+    if (lastW > 0 && strcmp(txt, last) != 0) {
+        size_t keep = 0;
+        while (last[keep] && txt[keep] && last[keep] == txt[keep]) keep++;
+        // Width of the shared prefix from a stack buffer: the speed readout
+        // changes ~10x a second and must not churn the heap (a String would,
+        // and the heap here is the one /screen capture starves on).
+        char pre[20];
+        if (keep > sizeof(pre) - 1) keep = sizeof(pre) - 1;
+        memcpy(pre, last, keep);
+        pre[keep] = '\0';
+        const int prefixW = tft.textWidth(pre, font);
+        const int eraseW = lastW - prefixW; // previous box, right of the shared prefix
+        if (eraseW > 0) tft.fillRect(x - lastW + prefixW, y, eraseW, fontPxH(font), RBG);
+    }
+    tft.setTextColor(RFG, RBG);
     lastW = tft.drawString(txt, x, y, font);
     strncpy(last, txt, lastLen - 1);
     last[lastLen - 1] = '\0';
@@ -1091,20 +1144,20 @@ drawSmart(4, 2, 4, TL_DATUM, RFG, ban, pBan, sizeof(pBan), pBanW);
         snprintf(tim, sizeof(tim), "--:--");
     }
 
-    // Overlay indicators: SPD/DST top-right, TIME bottom-right.
+    // Overlay indicators: SPD/DST top-right, TIME bottom-right. All three go
+    // through drawReadoutTR, not a bare drawString: an opaque draw only erases
+    // the new (often narrower) string's box, which is how the leading glyph of
+    // the previous value survived as ghost pixels (todo 34).
     {
         char ov[16];
-        tft.setTextDatum(TR_DATUM);
-        tft.setTextColor(RFG, RBG);
+        const int ox = MAP_X + MAP_W - 6;
         if (gps.speed.isValid()) snprintf(ov, sizeof(ov), "%4.1f Kn", gps.speed.knots());
         else snprintf(ov, sizeof(ov), " --.- Kn");
-        tft.drawString(ov, MAP_X + MAP_W - 6, MAP_Y - 24, 4);
-        // Fixed-width both: a shorter value must overwrite every pixel of a
-        // longer one (100 -> 99 left the leading "1" behind: "199 m").
+        drawReadoutTR(ox, MAP_Y - 24, 4, ov, ovSpd, sizeof(ovSpd), ovSpdW);
         if (showBrg) snprintf(ov, sizeof(ov), "%4ld m", distM);
         else snprintf(ov, sizeof(ov), "  --- m");
-        tft.drawString(ov, MAP_X + MAP_W - 6, MAP_Y + 4, 4);
-        tft.drawString(tim, MAP_X + MAP_W - 6, WIRE_Y1 - 48, 6);
+        drawReadoutTR(ox, MAP_Y + 4, 4, ov, ovDst, sizeof(ovDst), ovDstW);
+        drawReadoutTR(ox, WIRE_Y1 - 48, 6, tim, ovTim, sizeof(ovTim), ovTimW);
     }
 
     // Hint bar: texts change length across modes now, so repaint on change
