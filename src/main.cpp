@@ -60,6 +60,14 @@ void loop() {
   // gpsMockTick() no-ops when mock is off (the check is inside).
   gpsMockTick(gps);
   screenLoop(gps);
+  // Todo 30: a session newly assigned to this boat opens the race screen for
+  // the sailor, so the fleet sees a race without touching the instrument.
+  // Only ever FROM MAIN: DIAGNOSTICS and CONFIG are deliberate trips, and the
+  // request is one-shot, so a sailor who leaves the race screen afterwards is
+  // not dragged back.
+  if (backendTakeRacePageRequest() && page == PageMain) {
+    setCurrentPage(PageRace);
+  }
   wifiLoop();
   backendLoop(gps);
   otaLoop();

@@ -4,16 +4,18 @@
 #include <stdint.h>
 #include <stddef.h>
 
-// Run state machine + pass detection + strict rules (Step 5) + committee
-// signals (Step 7). Display-level crossing logic from Step 3 lives in the
-// .cpp; Step 6 (results UI) reads the upload the device POSTs at finish.
+// Run state machine + pass detection (SPEC-mark-passing.md, locked) +
+// committee signals (Step 7). Display-level crossing logic from Step 3 lives
+// in the .cpp; Step 6 (results UI) reads the upload the device POSTs at finish.
 //
 // States per course, practice or race:
 //   IDLE/PRE-START → RACING (start line crossed, or gun for point starts)
-//   → marks advance by the spec phases (approach free, rounding proven by
-//   bearing excursion, bow side from nearly-proven, 90° triangle switch;
-//   gates thread the pair then clear it) → FINISHED (line cross or last-mark
-//   pass). No meter thresholds on marks anywhere.
+//   → marks advance by the two-traverse rule (cut the entry traverse leaving
+//   A = approach latched; round the buoy CCW-for-P toward C, never turning
+//   back; cut the exit traverse toward C while leaving B = PASS on the
+//   declared side, WRONG + re-round otherwise; gates cut the pair segment)
+//   → FINISHED (line cross or last-mark pass). No meter thresholds on marks
+//   anywhere; leaving trends read over consecutive fixes, not distances.
 // The gun comes from the session itself: a race session's startTime, or a
 // practice session's startTime (the device creates it with now+gun when the
 // sailor starts a practice race from the menu). The run (splits + event log)
@@ -26,6 +28,11 @@ void raceRunUpdate(TinyGPSPlus& gps); // call every pass with a fix
 
 bool raceRunStarted();    // crossed and racing
 bool raceRunFinished();
+// Run integrity watchdog: true when the engine stopped the run itself
+// (unusable fix stream, or a mark that keeps re-arming wrong). The screen
+// shows a red BAD RUN tag and the run uploads nothing.
+bool raceRunBadRun();
+const char* raceRunBadRunWhy();
 bool raceRunOcs();        // crossed early, awaiting proper re-cross
 long raceRunStartEpoch(); // gun-cross moment, 0 when none
 long raceRunEndEpoch();   // finish moment, 0 when unfinished

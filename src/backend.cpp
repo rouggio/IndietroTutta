@@ -79,11 +79,24 @@ static volatile bool abandonFailed = false; // exhausted: the web still thinks l
 static constexpr uint8_t ABANDON_TRIES_MAX = 4;
 static constexpr unsigned long ABANDON_RETRY_MS = 4000;
 static volatile unsigned long lastHealthOkMs = 0;
+static volatile bool racePageWant = false; // todo 30: session arrived → show it
+static volatile long racePageSessionId = 0; // the session that request was for
 static TinyGPSPlus* mainGps = nullptr;
 
 bool backendOnline()
 {
     return online;
+}
+
+// Todo 30: page the fleet to the race screen when a session is assigned, so
+// the fleet sees the race without touching the instrument. The health task
+// must not touch the display, so it only raises this; the UI loop consumes
+// it. True ONCE per request.
+bool backendTakeRacePageRequest()
+{
+    const bool want = racePageWant;
+    racePageWant = false;
+    return want;
 }
 
 // Recent health = the network is really there. A single dropped poll must
@@ -177,7 +190,25 @@ static void healthCheck()
             // ~2KB body, heap-backed JSON — safe on the task stack.
             String body = link.http.getString();
             if (body.length() > 0 && body.length() < 8192) {
-                raceSessionParse(body.c_str());
+                const bool sessionChanged = raceSessionParse(body.c_str());
+                // Todo 30: a session this boat did not have is now assigned
+                // (a committee start, or a practice session laid out on the
+                // web). Raise a page request so the race screen comes up by
+                // itself: the race engine only runs there, so a boat left on
+                // MAIN would sail its whole pre-start blind and then begin
+                // mid-course. Raised on ARRIVAL only — the UI loop decides
+                // whether the page may be taken (it may not, mid-menu or on
+                // a diagnostic page) and a skipper who leaves is not dragged
+                // back.
+                if (sessionChanged && raceSession.valid) {
+                    // Once per SESSION: a postponement also reads as a
+                    // change, and a skipper who left the race screen is not
+                    // dragged back by a start-time edit.
+                    if (raceSession.sessionId != racePageSessionId) {
+                        racePageSessionId = raceSession.sessionId;
+                        racePageWant = true;
+                    }
+                }
             }
         } else {
             online = false;

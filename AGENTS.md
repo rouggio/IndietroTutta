@@ -73,8 +73,17 @@ boat triangle/edge-dot + ~1 cm dashed yellow stub toward the next mark; right pa
 WND row = wind arrow + whole-knot speed; mark numbers drawn above the circles;
 N-UP/BRG-UP/FIT view tag; empty state clears map+pane and shows a 3-line message;
 map ≤1Hz, text padded),
-`gps_mock.*` scripted GPS for indoor testing (synthetic RMC+GGA from `GET /sim/next`
-into `gps.encode()`; NVS flag; uploads suppressed; MOCK banner; portal `/mock`),
+`gps_mock.*` scripted GPS for indoor testing: ONE request buys the WHOLE
+journey (`GET /sim/tape`, CSV, ~18KB) into a 640-fix tape in RAM, released one
+fix per second and synthesised into RMC+GGA for `gps.encode()` (the endless
+wander is refilled 30 fixes at a time through the same URL, same player). So
+the network can delay the START of a mock race but can never punch a hole in
+one — the old 30-fix, wall-clock-sliced window both skipped race 182's first
+130s and dropped 13-fix lumps whenever the device ran ahead of it. **A scripted
+journey also waits for `page == RACE` and a valid session** before its first
+fix: it is only scored there, so sailing it while parked on MAIN wasted its
+front (which is the other half of how 182 broke). NVS flag; uploads suppressed;
+MOCK banner; portal `/mock`),
 `race_session.*` health-pulled session cache (marks/lines/windDir+windSpeed/startTime+offset,
 NVS `race` ns, ArduinoJson heap doc; explicit unassigned clears it, offline keeps cache;
 health top-level `wind` → envWindDir/envWindSpeed RAM-only fallback: UI compass +
@@ -88,6 +97,8 @@ ST7789 is write-only — `#define tft (*gCanvas)`; font 1 on a sprite faults,
 so capture uses font 2 for the race pane labels),
 `config_store.*` NVS ns `wifi` blob `cfg` + `wifi_%d_ssid/pass`.
 (Race engine now lives in `race_session.*` + `race_run.*` + `race_courses.*` + `screen_race.*`.)
+**Mark-passing law: `SPEC-mark-passing.md` at the repo root — LOCKED, read it
+before touching any pass/score/target logic.**
 
 ## UI navigation (hints: L/LL left, R/RR right)
 
@@ -173,6 +184,11 @@ so capture uses font 2 for the race pane labels),
   nothing in `/status` used to distinguish that from a device that is
   racing. **Always verify `sys.page` before a scripted test**; `L` cycles
   RACE → MAIN, so a second blind `/btn` press silently parks the boat.
+  Since todo 30 the page comes up by itself when a session is newly assigned
+  (`backendTakeRacePageRequest()` → `setCurrentPage(PageRace)` from MAIN
+  only, once, so a skipper who leaves is not dragged back), and a scripted
+  journey will not release a fix until the race screen is up — the mock boat
+  simply waits instead of sailing its front unwatched.
 - **Diagnostic logging is rationed on purpose.** The 200-line serial ring
   rolls in ~3 minutes and a race does not fit in it. The start-window trace
   logs only on a CHANGE of side/near (~4 lines per race); an earlier

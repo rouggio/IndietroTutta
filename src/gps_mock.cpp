@@ -1,17 +1,18 @@
 #include "gps_mock.h"
 #include "config.h"
 #include "race_session.h"
+#include "screens.h"
 #include "serial_buffer.h"
 #include "server_link.h"
 
 #include <Arduino.h>
-#include <ArduinoJson.h>
 #include <Preferences.h>
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 // 5s-cached flag so the 200ms UI path never blocks on NVS.
 static bool mockCache = false;
@@ -115,252 +116,214 @@ static bool feedServerFix(TinyGPSPlus& gps, double lat, double lon,
 }
 
 // ---------------------------------------------------------------------
-// Batched feed, split across two callers.
-//
-// This used to fetch ONE fix per HTTP round trip at 1Hz, so every fix
-// cost a request on the critical mock path. Now one request buys 30
-// fixes: the device buffers them and emits from RAM.
-//
-// The split matters more than the batch. Fetch and emit used to share
-// one function on the backend task, which blocks ~2s per POST /gps, so
-// the shared call ran ~3x below 1Hz: the queue head drifted past the
-// staleness guard and ~7 fixes per cycle were dropped. Measured, not
-// assumed. So:
-//   gpsMockFeed()  backend task — refill only, blocking, once per batch
-//   gpsMockTick()  UI loop — release ONE due fix, pure RAM, no I/O
-// A fetch in flight can therefore never stall the tick.
-//
-// Emission is CLOCK-driven, not count-driven: a fix is released when the
-// wall clock crosses its own stamped time. If the loop stalls, fixes are
-// SKIPPED (a small gap in the mock track) rather than replayed late —
-// the mock timestamp is what calibrates raceWallEpoch, and therefore
-// what the gun countdown and every log line read, so letting it slip
-// would quietly corrupt the countdown rather than just the track.
 // ---------------------------------------------------------------------
-static const int SIM_BATCH_MAX = 30;
-// Read-ahead floor. The effective threshold is simRefetchAt(), which
-// scales with the measured fetch cost.
-static const int SIM_REFETCH_FLOOR = 6;
-// How far behind schedule a fix may be before it is dropped instead of
-// emitted late — measured against the PREVIOUS fix's stamp, NOT against
-// the wall clock.
+// The journey is a TAPE, not a stream.
 //
-// An earlier version compared `now - head.epoch >= 3`, which cannot work:
-// the queue is deliberately buffered BEHIND real time (a refetch appends
-// 30 future points behind the few still queued, so the head legitimately
-// sits ~6s in the past). That permanent offset read as staleness and
-// dropped ~3-5 fixes every 20s that were never actually late. Emission is
-// now paced by the gap between consecutive stamps instead.
-static const long SIM_SKIP_BEHIND = 3;
+// The mock feed used to poll a 30-fix window every ~30s and walk it. The
+// window was cut by the SERVER's clock, and that broke races two ways:
+//
+//   - a device that adopted the session late began mid-journey. Race 182
+//     started at t=130s: the start crossing and the first mark's rounding
+//     were already behind it, so the boat's target stayed one mark behind
+//     for the whole race, and it then crossed the finish line still waiting
+//     for a mark the route had already given it. Nothing looked wrong.
+//   - a device that had run AHEAD of the window was handed fixes it had
+//     already passed; they were dropped in 13-fix lumps, a ~150m hole in
+//     the track. A hole that lands on a rounding is a pass that never
+//     happened.
+//
+// So one request now buys the WHOLE journey (GET /sim/tape, CSV, ~18KB for
+// an 8 minute race) and the device plays it from RAM, one fix per second,
+// through to the end. The network can delay the START of a mock race; it
+// can no longer punch a hole in the middle of one, and a stalled render
+// pass cannot make the boat skip either.
+//
+// A fix is 16 bytes (E7 degrees, tenths, epoch seconds), so a whole journey
+// is ~7KB of static RAM instead of a 64-deep window of 60-byte structs. The
+// ISO stamp NMEA wants is BUILT at release time (isoFromEpoch), to the same
+// second the JSON feed used to carry.
+//
+// The wander (mock with no scripted run) is endless, so it arrives 30 fixes
+// at a time from the same tape URL and is refilled — but it lands in the
+// same tape and is released by the same 1Hz player.
+// ---------------------------------------------------------------------
+static const int SIM_TAPE_MAX = 640;   // fixes: ~10 minutes at 1Hz
+static const int SIM_FIX_MS = 1000;    // the tape plays at the GPS's own rate
+static const int SIM_TAPE_LOW = 20;    // page / refill the tape below this
+static const long SIM_RUN_CHECK_MS = 20000; // "same run still?" cadence
 
-// The queue is written by the backend task (fetch) and read by the UI
-// loop (tick), so the head/count mutations live under a short critical
-// section. feedServerFix() is deliberately OUTSIDE it: encoding NMEA is
-// far too slow to hold a spinlock.
+// The tape is written by the backend task (fetch) and read by the UI loop
+// (release), so every head/count mutation lives under this short critical
+// section. feedServerFix() is deliberately OUTSIDE it: encoding NMEA is far
+// too slow to hold a spinlock. It is a RING, so the endless walk can refill
+// it for as long as the boat walks.
 static portMUX_TYPE simMux = portMUX_INITIALIZER_UNLOCKED;
 
 struct MockFix {
-    double lat, lon, speed, course;
-    long epoch;      // when this fix is due (parsed from st)
-    char st[24];     // the same stamp, verbatim: feedServerFix builds NMEA
+    int32_t latE7, lonE7;   // degrees x 1e7 (~1cm)
+    int16_t spd10, crs10;   // knots x 10, degrees x 10
+    uint32_t epoch;         // fix time, whole seconds
 };
 
-// Ring: 30 arriving + up to 30 still queued while a refetch is in
-// flight = 60, rounded to 64.
-static MockFix simQueue[64];
-static int simHead = 0;  // next fix to emit
-static int simCount = 0; // fixes queued
+static MockFix simTape[SIM_TAPE_MAX];
+static int simHead = 0;                 // next fix to release
+static volatile int simCount = 0;       // fixes in the tape
+static volatile int simLoaded = 0;      // fixes the server has handed us (page cursor)
+static volatile int simTotal = 0;       // fixes in the current journey
+static volatile long simSessionId = 0;  // the session this journey is raced in
+static unsigned long simNextFixAt = 0;  // when the next fix is due
 static bool simFetching = false;
-static unsigned long simLastFetch = 0;
-static unsigned long simLastFetchMs = 0; // measured cost of the last fetch
-static unsigned long simLastEmitMs = 0;  // when the last fix was released
-static long simLastEmitEpoch = 0;        // stamp of the last released fix
+static unsigned long simNextAttemptAt = 0; // fetch backoff (a 404 is not free)
+static unsigned long simLastCheck = 0;     // last "same run?" check
 static char simRunId[24] = {0};
-static bool simWander = false;
+static volatile bool simWander = false; // the tape holds the walk, not a run
+// UI thread only: -1 unknown, 0 held, 1 sailing. Logged on change, so a held
+// journey says WHY it is held instead of just looking like a dead boat.
+static int8_t simGateState = -1;
 
-static int simRemaining() { return simCount; }
-
-// Local schedule for emission: the epoch of the queue head when the
-// batch was armed, plus elapsed millis. Deliberately NOT raceWallEpoch():
-// that clock is calibrated only once a fix has been parsed by the race
-// engine, so on the MAIN screen — where no race code runs — it reads -1
-// and gating emission on it stalls the whole mock feed.
-static long simArmEpoch = 0;
-static unsigned long simArmMs = 0;
-
-static long simNow()
-{
-    if (simArmEpoch > 0)
-        return simArmEpoch + (long)((millis() - simArmMs) / 1000);
-    return raceWallEpoch();
-}
-
-static void simQueueReset()
+static void tapeResetLocked()
 {
     simHead = 0;
     simCount = 0;
+    simLoaded = 0;
+    simTotal = 0;
+    simNextFixAt = millis();   // a fresh tape is due immediately
+    simGateState = -1;         // ...and says why if it does not sail
 }
 
-static bool simQueuePush(double lat, double lon, double speed, double course, const char* st)
+// Append one fix. Caller holds simMux. False when the tape is full.
+static bool tapePushLocked(double lat, double lon, double speed,
+                           double course, long epoch)
 {
-    const long epoch = raceIsoEpoch(st);
     if (epoch <= 0) return false;
-    if (simCount >= (int)(sizeof(simQueue) / sizeof(simQueue[0]))) return false;
-    const int idx = (simHead + simCount) % (int)(sizeof(simQueue) / sizeof(simQueue[0]));
-    simQueue[idx].lat = lat;
-    simQueue[idx].lon = lon;
-    simQueue[idx].speed = speed;
-    simQueue[idx].course = course;
-    simQueue[idx].epoch = epoch;
-    strncpy(simQueue[idx].st, st, sizeof(simQueue[idx].st) - 1);
-    simQueue[idx].st[sizeof(simQueue[idx].st) - 1] = '\0';
+    if (simCount >= SIM_TAPE_MAX) return false;
+    const int idx = (simHead + simCount) % SIM_TAPE_MAX;
+    simTape[idx].latE7 = (int32_t)lround(lat * 1e7);
+    simTape[idx].lonE7 = (int32_t)lround(lon * 1e7);
+    simTape[idx].spd10 = (int16_t)lround(speed * 10.0);
+    simTape[idx].crs10 = (int16_t)lround(course * 10.0);
+    simTape[idx].epoch = (uint32_t)epoch;
     simCount++;
     return true;
 }
 
-static int simRefetchAt(); // defined below; used in the fetch log line
-
-static void simFetchBatch()
+// Epoch seconds -> the ISO stamp feedServerFix parses. UTC, which is what
+// the script (and the server's own clock) is in.
+static void isoFromEpoch(uint32_t epoch, char* out, size_t n)
 {
-    if (simFetching) return;
-    simFetching = true;
-    const unsigned long t0 = millis();
-    simLastFetch = t0;
+    time_t t = (time_t)epoch;
+    struct tm tmv;
+    if (!gmtime_r(&t, &tmv)) { out[0] = '\0'; return; }
+    snprintf(out, n, "%04d-%02d-%02dT%02d:%02d:%02d",
+             tmv.tm_year + 1900, tmv.tm_mon + 1, tmv.tm_mday,
+             tmv.tm_hour, tmv.tm_min, tmv.tm_sec);
+}
 
+static String tapeUrl(int from)
+{
+    return serverBaseUrl() + "/sim/tape?deviceId=" + String(WiFi.macAddress()) +
+           "&from=" + String(from);
+}
+
+// GET the tape — a whole journey, the next page of one, or 30 fixes of the
+// walk — and push it into RAM. Returns false when the server has nothing
+// (404) or the socket died.
+//
+// The header names the source. A DIFFERENT run id means a new journey (or
+// the walk taking over): the tape is dropped and refilled from that feed's
+// own fix 0. When we were reading a cursor into the OLD feed, the rows that
+// follow are the new feed seen from that stale cursor, so they are skipped
+// and the next pass reloads from zero; when the read was already from 0,
+// the rows that follow ARE the new feed's start and are kept.
+static bool simFetchTape(int from)
+{
+    const unsigned long t0 = millis();
     ServerLink link;
-    if (!link.begin(serverBaseUrl() + "/sim/next?deviceId=" + String(WiFi.macAddress()))) {
+    if (!link.begin(tapeUrl(from))) {
         bufferedSerialPrintln("[MOCK] fetch could not start");
-        simFetching = false;
-        return;
+        return false;
     }
+    // A whole journey is ~18KB; the 8s default is a heartbeat's timeout.
+    link.http.setTimeout(20000);
     const int code = link.http.GET();
     if (code != HTTP_CODE_OK) {
-        bufferedSerialPrintln(String("[MOCK] fetch HTTP ") + code);
         link.http.end();
-        simFetching = false;
-        return;
+        bufferedSerialPrintln(String("[MOCK] fetch HTTP ") + code);
+        return false;
     }
-    String payload = link.http.getString();
-    link.http.end();
-    // 30 fixes with per-point ISO stamps run ~1.8KB after the backend
-    // trimmed the coordinates to 6 decimals. The cap is deliberately
-    // ABOVE the doc size: an oversize body is logged and dropped rather
-    // than silently parsed into a truncated document.
-    if (payload.isEmpty() || payload.length() > 8192) {
-        bufferedSerialPrintln(String("[MOCK] fetch rejected, bytes=") +
-                              payload.length());
-        simFetching = false;
-        return;
-    }
+    WiFiClient& st = link.http.getStream();
+    const int len = link.http.getSize();
+    st.setTimeout(15000);
 
-    // The doc must hold the WHOLE document: 30 objects x 5 members, each
-    // with a 24-char stamp. ArduinoJson's footprint runs well above the
-    // JSON text (a 3072 doc silently failed to parse a 3141-byte reply,
-    // and a 6144 doc is still short of a 2868-byte body), so this is
-    // sized for the parsed tree, not the wire. It is transient and only
-    // allocated once per batch (~30s), which is the price of the batch.
-    DynamicJsonDocument doc(12288);
-    if (deserializeJson(doc, payload)) {
-        bufferedSerialPrintln(String("[MOCK] parse failed, bytes=") +
-                              payload.length());
-        simFetching = false;
-        return;
-    }
-
-    JsonArray arr = doc["batch"].as<JsonArray>();
+    char line[96];
+    char rid[24] = {0};
+    long sid = 0, gun = 0, dur = 0, total = 0, nowEpoch = 0;
     int added = 0;
-    long armEpoch = 0;
-    bool freshArm = false;
-    // The whole queue mutation happens under one short lock: the UI tick
-    // may be mid-loop on the other task while this appends.
-    portENTER_CRITICAL(&simMux);
-    if (!doc["batch"].isNull() && arr.size() > 0) {
-        // Only reset when the queue has drained to nothing: a refetch
-        // lands while fixes are still queued, and discarding them would
-        // punch a hole in the track.
-        if (simCount == 0) {
-            simQueueReset();
-            // A drained queue means the previous stream is GONE — the run
-            // ended, the server switched sources, or we simply fell behind.
-            // The pacing rule measures the head against simLastEmitEpoch, so
-            // carrying the old stream's epoch across a fresh arm made every
-            // point of the new batch look hours ahead and the whole batch
-            // was skipped as stale — every batch, forever, so the boat
-            // froze. Reset the pacer with the stream.
-            simLastEmitEpoch = 0;
-            freshArm = true;
-        }
-        for (JsonObject o : arr) {
-            const char* st = o["st"] | "";
-            if (simQueuePush(o["lat"] | 0.0, o["lon"] | 0.0,
-                             o["speed"] | 0.0, o["course"] | 0.0, st)) {
-                // Anchor the local schedule on the FIRST fix of the
-                // batch, and only when we started from empty: a refetch
-                // landing mid-drain must not re-anchor, because the head
-                // has already moved on.
-                if (added == 0 && armEpoch == 0) armEpoch = simQueue[simHead].epoch;
-                added++;
+    bool changed = false;    // the feed is not the one in the tape
+    bool restart = false;    // ...and these rows start at the old cursor
+    size_t got = 0;
+
+    while (len <= 0 || got < (size_t)len) {
+        const size_t n = st.readBytesUntil('\n', line, sizeof(line) - 1);
+        if (n == 0) break;                       // stalled or end of body
+        got += n + 1;
+        line[n] = '\0';
+        if (line[n - 1] == '\r') line[n - 1] = '\0';
+        if (line[0] == '#') {
+            if (sscanf(line, "#%23[^,],%ld,%ld,%ld,%ld,%ld",
+                       rid, &sid, &gun, &dur, &total, &nowEpoch) >= 1) {
+                if (nowEpoch > 0) raceSetWallEpochFromServer(nowEpoch);
+                portENTER_CRITICAL(&simMux);
+                if (rid[0] && strcmp(rid, simRunId) != 0) {
+                    tapeResetLocked();
+                    strncpy(simRunId, rid, sizeof(simRunId) - 1);
+                    simRunId[sizeof(simRunId) - 1] = '\0';
+                    simWander = (strcmp(rid, "wander") == 0);
+                    simTotal = (int)total;
+                    simSessionId = sid;
+                    changed = true;
+                    restart = (from > 0);
+                }
+                portEXIT_CRITICAL(&simMux);
             }
+            if (restart) break;
+            continue;
         }
-        strncpy(simRunId, doc["runId"] | "", sizeof(simRunId) - 1);
-        simRunId[sizeof(simRunId) - 1] = '\0';
-        simWander = doc["wander"] | false;
-    } else {
-        // Pre-batching server (or a single-sample reply): fall back to
-        // the flat fields so an older backend still drives the device.
-        const char* st = doc["serverTime"] | "";
-        if (simQueuePush(doc["lat"] | 0.0, doc["lon"] | 0.0,
-                         doc["speed"] | 0.0, doc["course"] | 0.0, st)) {
-            if (armEpoch == 0) armEpoch = simQueue[simHead].epoch;
-            added++;
-        }
+        long epoch = 0;
+        double lat = 0, lon = 0, spd = 0, crs = 0;
+        if (sscanf(line, "%ld,%lf,%lf,%lf,%lf", &epoch, &lat, &lon, &spd, &crs) != 5)
+            continue;
+        portENTER_CRITICAL(&simMux);
+        const bool ok = tapePushLocked(lat, lon, spd, crs, epoch);
+        if (ok) { added++; simLoaded++; }
+        portEXIT_CRITICAL(&simMux);
+        if (!ok) break;                          // full: page the rest later
     }
-    if (armEpoch > 0) {
-        simArmEpoch = armEpoch;
-        simArmMs = millis();
-        // On a fresh arm the head is due immediately — otherwise simNow()
-        // (anchored on this same epoch) would read as not-due for a whole
-        // batch, and the pacer would fight it.
-        if (freshArm) simLastEmitEpoch = 0;
-    }
-    const int queued = simCount;
-    portEXIT_CRITICAL(&simMux);
+    link.http.end();
 
-    // Anchor the wall clock on the SERVER's clock, not on a queued fix. The
-    // batch is a lookahead window, so the head fix's stamp legitimately
-    // lags real time by however far we have buffered; calibrating from it
-    // would rewind time by exactly that backlog (measured: 5, 6, 7s and
-    // growing), which showed up as the gun countdown and pane TIME
-    // lurching backwards. serverTime is the authoritative clock.
-    raceSetWallEpochFromServer(raceIsoEpoch(doc["serverTime"] | ""));
-
-    simLastFetchMs = millis() - t0;
-    if (added) {
-        bufferedSerialPrintln(String("[MOCK] batch +") + added +
-                              " queued=" + queued +
-                              " fetch=" + simLastFetchMs + "ms" +
-                              " ahead=" + simRefetchAt() + "s");
+    if (changed) {
+        bufferedSerialPrintln(String("[MOCK] feed ") + rid +
+                              (restart ? " (reloading from 0)" : " (loaded)"));
+    } else if (added || from == 0) {
+        bufferedSerialPrintln(String("[MOCK] tape +") + added +
+                              " from=" + from + " queued=" + simCount +
+                              " total=" + simTotal +
+                              " fetch=" + (millis() - t0) + "ms");
     }
-    simFetching = false;
+    return true;
 }
 
-// Read-ahead: how many fixes must remain before the next fetch starts.
-// Adaptive, because no fixed threshold is right for both a fast LAN fetch
-// and a slow one. What matters is only that the next fetch lands BEFORE
-// the buffer empties, so: two measured fetch durations of runway, with a
-// floor (so the very first fetch, with nothing measured yet, still has
-// margin) and a cap at half the batch.
-static int simRefetchAt()
-{
-    int ahead = (int)(simLastFetchMs / 1000) * 2 + 2;
-    if (ahead < SIM_REFETCH_FLOOR) ahead = SIM_REFETCH_FLOOR;
-    if (ahead > SIM_BATCH_MAX / 2) ahead = SIM_BATCH_MAX / 2;
-    return ahead;
-}
-
-// Backend task: refill only. Blocking (HTTP), but at most once per batch,
-// and it never touches the release path — so a slow fetch costs track
-// runway, not tick timing.
+// Backend task: refill the tape, and keep an eye on the feed's identity.
+// Blocking (HTTP, up to ~20s for a whole journey), but it never touches the
+// release path: a slow fetch costs the START of the next mock race, never a
+// hole in the middle of one.
+//
+// Three reasons to fetch, in priority order:
+//   empty                  nothing in RAM — load the journey (or the walk)
+//   page                   more of a journey left: read the next slice
+//   check                  a journey is fully loaded: ask for the header
+//                          alone every 20s, so a NEW session arriving
+//                          mid-feed is picked up without a reboot
 void gpsMockFeed(TinyGPSPlus& gps)
 {
     (void)gps;
@@ -370,91 +333,102 @@ void gpsMockFeed(TinyGPSPlus& gps)
     // for the whole run strands the engine (and the diagnostics Age).
     // A true dropout (no server answer) still holds the last fix.
     if (simFetching) return;
-    if ((millis() - simLastFetch) < 1000) return;
+    if ((long)(millis() - simNextAttemptAt) < 0) return;
 
-    int remaining;
+    int count, loaded, total;
+    bool wander;
     portENTER_CRITICAL(&simMux);
-    remaining = simCount;
+    count = simCount; loaded = simLoaded; total = simTotal; wander = simWander;
     portEXIT_CRITICAL(&simMux);
-    if (remaining > simRefetchAt()) return;
 
-    simFetchBatch();
+    const bool empty = (count == 0);
+    const bool page = !wander && total > 0 && loaded < total && count < SIM_TAPE_LOW;
+    const bool check = !wander && !empty && !page &&
+                       (millis() - simLastCheck) >= SIM_RUN_CHECK_MS;
+    if (!empty && !page && !check) return;
+
+    simFetching = true;
+    const bool ok = simFetchTape((page || check) ? loaded : 0);
+    simFetching = false;
+    // A 404 is a real answer (no run and no seed to walk from): it is not
+    // free, so back off harder on it than on a success.
+    simNextAttemptAt = millis() + (ok ? 1000 : 5000);
+    if (check) simLastCheck = millis();
 }
 
-// UI loop: release at most ONE due fix. Pure RAM work, no I/O, so a
-// fetch in flight cannot stall it. This is what makes the ticks regular:
-// the old combined call ran at the backend task's ~0.3Hz.
+// UI loop: release ONE fix per second out of RAM. No I/O, no heap, no
+// stamps to compare against the wall clock — a slow render pass can DELAY
+// a fix, but it can never SKIP one, and nothing here can block on a socket.
+//
+// This is where the old feed lost races: the queue was a 30-fix window of
+// the server's clock, so a stall (or a late start) meant fixes already
+// behind were dropped. The tape has no behind: it is the journey itself,
+// played in order, and it runs out only when the journey does.
 void gpsMockTick(TinyGPSPlus& gps)
 {
     if (!gpsMockActive()) return;
 
+    int count;
+    long wantSession;
+    bool wander;
+    portENTER_CRITICAL(&simMux);
+    count = simCount; wantSession = simSessionId; wander = simWander;
+    portEXIT_CRITICAL(&simMux);
+    if (count == 0) return;  // nothing loaded (yet): hold the last fix
+
+    // A scripted journey belongs to ONE session and is scored only on the race
+    // screen, so it must not sail before both of those are true. That is how
+    // race 182 lost its start — the boat sailed its first 130s with the screen
+    // on MAIN, so the engine began mid-course and stayed one mark behind, then
+    // crossed the finish line still waiting for a mark the route had already
+    // given it. Holding the tape costs a delay; sailing it unwatched costs the
+    // truth. (The WANDER is not a journey and keeps walking everywhere.)
+    const char* hold = nullptr;
+    if (!wander) {
+        if (page != PageRace) hold = (page == PageMain) ? "main screen" : "not on race";
+        else if (!raceSession.valid) hold = "no session yet";
+        else if (wantSession && raceSession.sessionId != wantSession) hold = "another session";
+    }
+    if (hold) {
+        if (simGateState != 0) {
+            simGateState = 0;
+            bufferedSerialPrintln(String("[MOCK] journey held: ") + hold);
+        }
+        return;
+    }
+    if (!wander && simGateState != 1) {
+        simGateState = 1;
+        bufferedSerialPrintln(String("[MOCK] journey sailing (session ") + wantSession + ")");
+    }
+
     MockFix due;
     bool have = false;
-    int skipped = 0;
-    const long now = simNow();
-
+    const unsigned long now = millis();
     portENTER_CRITICAL(&simMux);
-    if (simCount > 0 && now > 0) {
-        // Pacing: release a fix when its own stamp is due, and only ever
-        // one per stamp-gap. simLastEmitEpoch is the stamp of the fix we
-        // released last, so this walks the batch in stamp order and never
-        // replays a backlog — a stall simply pauses the queue.
-        while (simLastEmitEpoch > 0 && simCount > 0 &&
-               simQueue[simHead].epoch - simLastEmitEpoch > SIM_SKIP_BEHIND) {
-            // A stamp far ahead of the last release means real time passed
-            // without us emitting (a genuine stall). Skip forward to the
-            // newest fix that is still in step, rather than dumping the
-            // whole backlog into the GPS at once.
-            simHead = (simHead + 1) % (int)(sizeof(simQueue) / sizeof(simQueue[0]));
-            simCount--;
-            skipped++;
-        }
-        if (simCount > 0 && now >= simQueue[simHead].epoch) {
-            due = simQueue[simHead];
-            have = true;
-            simLastEmitEpoch = due.epoch;
-            simHead = (simHead + 1) % (int)(sizeof(simQueue) / sizeof(simQueue[0]));
-            simCount--;
-        }
+    if (simCount > 0 && (long)(now - simNextFixAt) >= 0) {
+        due = simTape[simHead];
+        simHead = (simHead + 1) % SIM_TAPE_MAX;
+        simCount--;
+        have = true;
     }
     portEXIT_CRITICAL(&simMux);
 
-    if (skipped) {
-        bufferedSerialPrintln(String("[MOCK] skipped ") + skipped + " queued=" +
-                              simRemaining());
-    }
-    if (!have) return; // nothing due: hold the last fix
-    if (!feedServerFix(gps, due.lat, due.lon, due.speed, due.course, due.st)) return;
-    simLastEmitMs = millis();
+    if (!have) return;      // nothing loaded (yet): hold the last fix
+    simNextFixAt = now + SIM_FIX_MS;
 
-    // Release timing, once every 10 fixes: the gap between this fix's
-    // stamp and the previous one is the number that proves the feed is
-    // actually 1Hz. Sampling keeps the 200-line serial ring usable.
-    static long prevEpoch = 0;
-    static int cadenceN = 0;
-    cadenceN++;
-    if (prevEpoch > 0 && (cadenceN % 10) == 0) {
-        bufferedSerialPrintln(String("[MOCK] cadence dt=") + (due.epoch - prevEpoch) +
-                              "s queued=" + simRemaining());
-    }
-    prevEpoch = due.epoch;
+    char st[24];
+    isoFromEpoch(due.epoch, st, sizeof(st));
+    if (!feedServerFix(gps, due.latE7 / 1e7, due.lonE7 / 1e7,
+                       due.spd10 / 10.0, due.crs10 / 10.0, st))
+        return;
 
-    // Echo every 30th fix: pipeline proof, one per batch round rather
-    // than one per fix, so it costs nothing now that fixes are batched.
-    static int fixCount = 0;
-    fixCount++;
-    if (!simWander && simRunId[0] && (fixCount % 30) == 0) {
-        ServerLink echoLink;
-        if (echoLink.begin(serverBaseUrl() + "/sim/echo")) {
-            echoLink.http.addHeader("Content-Type", "application/json");
-            String body = String("{\"runId\":\"") + simRunId +
-                          String("\",\"t\":") + (long)due.epoch +
-                          String(",\"lat\":") + String(due.lat, 7) +
-                          String(",\"lon\":") + String(due.lon, 7) +
-                          String(",\"speed\":") + String(due.speed, 1) +
-                          String(",\"course\":") + String(due.course, 1) + "}";
-            echoLink.http.POST(body);
-            echoLink.http.end();
-        }
+    // One line a minute: proof the tape really is playing at 1Hz, and how
+    // much runway is left. The old cadence line cost a third of the
+    // 200-line serial ring for the same information.
+    static int played = 0;
+    if (++played % 60 == 0) {
+        bufferedSerialPrintln(String("[MOCK] played ") + played +
+                              ", left=" + simCount +
+                              (simWander ? " (walk)" : ""));
     }
 }

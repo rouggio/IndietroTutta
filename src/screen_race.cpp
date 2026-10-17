@@ -531,6 +531,11 @@ static void drawStaticLayer(const RaceProj& p, double rotEff)
         tft.drawWideLine(px, py, qx, qy, 2, hl ? RBOAT : TFT_GREEN);
     }
     char num[12];
+    // Target circles are deferred to the end: on a pile of coincident marks
+    // (e.g. W/L 1 and 3 on the same buoy) the later white ring would paint
+    // over the yellow target. The highlighted one always prevails.
+    uint8_t defer[10];
+    uint8_t deferN = 0;
     for (uint8_t i = 0; i < raceSession.markCount; i++) {
         const RaceMark& m = raceSession.marks[i];
         projToPx(p, m.lat, m.lon, px, py);
@@ -545,9 +550,12 @@ static void drawStaticLayer(const RaceProj& p, double rotEff)
         } else if (!tGate && !tLine && i == tIdx) {
             isTgt = true;
         }
-        const uint16_t col = isTgt ? RBOAT : RFG;
-        tft.drawCircle(px, py, rPx, col);
-        drawSideArrow(px, py, (int)(rPx * 0.55), m.side, col);
+        if (isTgt) {
+            if (deferN < 10) defer[deferN++] = i;
+        } else {
+            tft.drawCircle(px, py, rPx, RFG);
+            drawSideArrow(px, py, (int)(rPx * 0.55), m.side, RFG);
+        }
         // Labels sit on the mark itself; coincident marks (piles) share one
         // concatenated label ("1-4"), drawn once by the first of the group.
         bool firstOfPile = true;
@@ -572,6 +580,17 @@ static void drawStaticLayer(const RaceProj& p, double rotEff)
         // Always above the circle so it never overlaps the ring — nor a line
         // (start/finish) the mark happens to sit on.
         tft.drawString(num, px, py - rPx - 10, 2);
+    }
+    // Deferred target rings, on top of everything: the highlighted mark
+    // prevails even inside its own pile.
+    for (uint8_t d = 0; d < deferN; d++) {
+        const RaceMark& m = raceSession.marks[defer[d]];
+        projToPx(p, m.lat, m.lon, px, py);
+        int rPx = (int)(m.r / DEG_M * p.scale);
+        if (rPx < 3) rPx = 3;
+        if (rPx > 40) rPx = 40;
+        tft.drawCircle(px, py, rPx, RBOAT);
+        drawSideArrow(px, py, (int)(rPx * 0.55), m.side, RBOAT);
     }
     // Header wind readout moved to the right pane (WND row) — the arrow
     // lives there as degrees now.
@@ -986,6 +1005,26 @@ drawSmart(4, 2, 4, TL_DATUM, RFG, ban, pBan, sizeof(pBan), pBanW);
         // removed green view tag (now shown in hint)
     }
 
+    // Bad-run watchdog tag (race_run.cpp): the engine stopped the run, and
+    // the sailor has to SEE that rather than wonder why the numbers stopped
+    // moving. Red, bottom-left of the map, redrawn only on change or on a map
+    // repaint, so it never shimmers. Nothing clears it: the only way out of a
+    // frozen run is a reset, which repaints the whole page anyway.
+    if (raceRunBadRun()) {
+        static int badTagLast = -1;
+        if (badTagLast != 1 || mapRepainted) {
+            badTagLast = 1;
+            const uint8_t prevDatum = tft.getTextDatum();
+            const int bby = WIRE_Y1 - 20;
+            tft.fillRect(4, bby - 2, 76, 20, TFT_RED);
+            tft.setTextDatum(TL_DATUM);
+            tft.setTextColor(TFT_WHITE, TFT_RED);
+            tft.drawString("BAD RUN", 8, bby, 2);
+            tft.setTextColor(TFT_WHITE);
+            tft.setTextDatum(prevDatum);
+        }
+    }
+
     // Destination geometry (map boat/dash + pane cells).
     char tag[12];
     double dLat = 0.0, dLon = 0.0;
@@ -1033,11 +1072,13 @@ drawSmart(4, 2, 4, TL_DATUM, RFG, ban, pBan, sizeof(pBan), pBanW);
         char ov[16];
         tft.setTextDatum(TR_DATUM);
         tft.setTextColor(RFG, RBG);
-        if (gps.speed.isValid()) snprintf(ov, sizeof(ov), "%.1f Kn", gps.speed.knots());
-        else snprintf(ov, sizeof(ov), "--- Kn");
+        if (gps.speed.isValid()) snprintf(ov, sizeof(ov), "%4.1f Kn", gps.speed.knots());
+        else snprintf(ov, sizeof(ov), " --.- Kn");
         tft.drawString(ov, MAP_X + MAP_W - 6, MAP_Y - 24, 4);
-        if (showBrg) snprintf(ov, sizeof(ov), "%ld m", distM);
-        else snprintf(ov, sizeof(ov), "--- m");
+        // Fixed-width both: a shorter value must overwrite every pixel of a
+        // longer one (100 -> 99 left the leading "1" behind: "199 m").
+        if (showBrg) snprintf(ov, sizeof(ov), "%4ld m", distM);
+        else snprintf(ov, sizeof(ov), "  --- m");
         tft.drawString(ov, MAP_X + MAP_W - 6, MAP_Y + 4, 4);
         tft.drawString(tim, MAP_X + MAP_W - 6, WIRE_Y1 - 48, 6);
     }
@@ -1463,6 +1504,35 @@ void drawScreenRace(TinyGPSPlus &gps, bool requiresInit)
             if (gps.location.isValid()) targetDistM =
                 TinyGPSPlus::distanceBetween(gps.location.lat(), gps.location.lng(),
                                              tLat, tLon);
+            // TEMPORARY DST-jump diagnostic (user-reported +80 m jumps just
+            // before the focus engages): log ONLY anomalous single-eval
+            // jumps and target changes — quiet otherwise. Remove once settled.
+            {
+                static double lastDstShown = -1.0;
+                static char lastDstTag[12] = {0};
+                if (targetDistM >= 0) {
+                    if (lastDstTag[0] != '\0' && strcmp(tTag, lastDstTag) != 0) {
+                        char jmsg[128];
+                        snprintf(jmsg, sizeof(jmsg),
+                                 "[RACE] dst new target %s %.0f (was %s %.0f)",
+                                 tTag, targetDistM, lastDstTag, lastDstShown);
+                        bufferedSerialPrintln(jmsg);
+                    } else if (lastDstShown >= 0 && targetDistM - lastDstShown > 30.0) {
+                        char jmsg[160];
+                        snprintf(jmsg, sizeof(jmsg),
+                                 "[RACE] dst JUMP %s %.0f -> %.0f f=%.5f,%.5f t=%.5f,%.5f",
+                                 tTag, lastDstShown, targetDistM,
+                                 gps.location.lat(), gps.location.lng(), tLat, tLon);
+                        bufferedSerialPrintln(jmsg);
+                    }
+                    lastDstShown = targetDistM;
+                    strncpy(lastDstTag, tTag, sizeof(lastDstTag) - 1);
+                    lastDstTag[sizeof(lastDstTag) - 1] = '\0';
+                } else {
+                    lastDstShown = -1.0;
+                    lastDstTag[0] = '\0';
+                }
+            }
         } else {
             focusValid = false; targetDistM = -1.0; tTag[0] = '\0';
         }

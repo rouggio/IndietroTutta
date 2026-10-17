@@ -2,6 +2,7 @@
 #include "race_session.h"
 #include "serial_buffer.h"
 
+#include <Arduino.h>
 #include <Preferences.h>
 #include <TinyGPSPlus.h>
 #include <math.h>
@@ -17,23 +18,19 @@ static const float OCS_SETTLE_M = 60.0f;
 static uint8_t progIdx = 0;
 static bool started = false;
 static bool finished = false;
-// Pass recognition (spec mark-passing.md §3): angles + bow side only, no
-// ranges. Per-leg state: excursion of the true mark bearing since the leg
-// began (rounding proof), bow-side arming (wrong-way loops), triangle
-// switch (clear route), gate threading, and an anti-stuck leg reset.
-static const double PASS_EXC_DEG = 150.0; // excursion proving the rounding
-static const double SIDE_ARM_DEG = 135.0; // side engages just below it
-static const double TRI_SWITCH_DEG = 90.0; // clear-route triangle at the boat
-static const double DEAD_CONE_DEG = 20.0;  // bow/stern exemption for side
+// Pass recognition (SPEC-mark-passing.md, locked): two traverses per mark.
+// Per-leg state: entry latch (cut the entry traverse while leaving A),
+// leaving trends (EMA distance to A/B over consecutive fixes), gate thread
+// flag. No angles, no bow, no ranges on marks.
+static const double TRAV_HALF_M = 2000.0; // traverse half-length: unbounded for any course
+static const uint8_t LEAVE_N = 3;         // consecutive EMA rises = leaving
 static uint8_t legIdx = 255;      // target the leg state belongs to
-static bool legExcInit = false;
-static double legExcMin = 0.0, legExcMax = 0.0; // unwrapped smoothed extremes
-static bool haveSmoothBrg = false;
-static double smoothBrg = 0.0;    // EMA of the unwrapped mark bearing
-static double smoothDist = -1.0;  // EMA of the mark distance
-static double legMinDist = -1.0;  // smallest smoothed distance this leg
-static bool sideArmed = false;
-static bool triHeld = false;      // triangle>90 on the previous pass
+static bool entryLatched = false; // cut the entry traverse leaving A
+static bool exitLatched = false;  // cut the exit traverse toward C (side in exitSide)
+static char exitSide = ' ';       // P/S read at the exact crossing point
+static double emaDA = -1.0, emaDB = -1.0; // EMA distance to A (previous) and B (target)
+static uint8_t growA = 0, growB = 0; // consecutive EMA rises
+static bool legFresh = true;      // first evaluated fix: late join may sit past the entry
 static bool gateThreaded = false;
 static double legPrevLat = 0.0, legPrevLon = 0.0;
 static bool havePrev = false;
@@ -103,6 +100,43 @@ static bool finSawBand = false;
 // When the finish line was armed (first pass with every mark behind us), for
 // the serial diagnostic. Diagnostic only — nothing scores from it.
 static long finArmedAt = 0;
+
+// --- Run integrity watchdog (2026-10-17) --------------------------------
+// A run that has demonstrably gone wrong is STOPPED where it stands instead
+// of being watched to the end. The evidence around the failure is worth more
+// than the rest of the race: a broken run cannot be diagnosed by staring at
+// a boat that is drifting, and the serial ring rolls in ~3 minutes anyway.
+// Frozen means the engine consumes no further fix, nothing scores, nothing
+// uploads, and the race screen shows a red BAD RUN tag — so this is visible
+// on the water, not only in the log.
+static bool badRun = false;
+static char badRunWhy[32] = {0};
+// Rejected fixes in a row (see the fix gate in raceRunUpdate). A stream that
+// cannot be read is a dead end, not a course to sail.
+static uint8_t badFixRun = 0;
+// WRONG verdicts on the mark being rounded right now. One is a mistake; three
+// on the same mark means the engine failed to re-arm and will not recover on
+// its own, which is exactly the "bad run" the sailor asked to have stopped.
+static uint8_t wrongRun = 0;
+static uint8_t wrongRunMark = 255;
+
+static void raceMarkBadRun(const char* why, unsigned prog, unsigned marks,
+                           bool st, bool fin, bool oc, double lat, double lon,
+                           unsigned long ageMs)
+{
+    if (badRun) return;
+    badRun = true;
+    strncpy(badRunWhy, why, sizeof(badRunWhy) - 1);
+    badRunWhy[sizeof(badRunWhy) - 1] = '\0';
+    char msg[176];
+    snprintf(msg, sizeof(msg),
+             "[RACE] BAD RUN %s | prog=%u/%u started=%d finished=%d ocs=%d "
+             "f=(%.5f,%.5f) age=%lums wrongRun=%u@%u",
+             why, prog, marks, st ? 1 : 0, fin ? 1 : 0, oc ? 1 : 0,
+             lat, lon, ageMs, (unsigned)wrongRun, (unsigned)wrongRunMark);
+    bufferedSerialPrintln(msg);
+    bufferedSerialPrintln("[RACE] BAD RUN frozen: no further fixes scored, no upload");
+}
 // (leg rounding state lives in the block above: excursion/side/triangle.)
 
 void raceRunInit()
@@ -143,6 +177,11 @@ void raceRunReset()
     finLastSide = 0;
     finSawBand = false;
     finArmedAt = 0;
+    badRun = false;
+    badRunWhy[0] = '\0';
+    badFixRun = 0;
+    wrongRun = 0;
+    wrongRunMark = 255;
     legReset(progIdx);
     strncpy(runResult, "FINISHED", sizeof(runResult) - 1);
     scpSec = 0;
@@ -172,6 +211,8 @@ void raceRunReset()
 
 bool raceRunStarted() { return started; }
 bool raceRunFinished() { return finished; }
+bool raceRunBadRun() { return badRun; }
+const char* raceRunBadRunWhy() { return badRunWhy; }
 bool raceRunOcs() { return ocs; }
 long raceRunStartEpoch() { return startEpoch; }
 long raceRunEndEpoch() { return endEpoch; }
@@ -280,25 +321,27 @@ static double norm360(double d)
     return d;
 }
 
-// Nearest equivalent of ang to ref (unwrapped continuity for the EMA).
-static double unwrapNear(double ref, double ang)
+// Bounded segment-segment crossing in ENU meters (a touch counts).
+static bool segXingXYT(double ax, double ay, double bx, double by,
+                       double cx, double cy, double dx, double dy, double& t);
+static bool segXingXY(double ax, double ay, double bx, double by,
+                      double cx, double cy, double dx, double dy)
 {
-    double d = ang - ref;
-    while (d < -180.0) d += 360.0;
-    while (d > 180.0) d -= 360.0;
-    return ref + d;
+    double t = 0.0;
+    return segXingXYT(ax, ay, bx, by, cx, cy, dx, dy, t);
 }
 
-// Angle at the boat between points A and B, folded to 0..180.
-static double triAngle(double lat, double lon,
-                       double aLat, double aLon, double bLat, double bLon)
+// Same, also returning t (0..1 along A→B) for the exact crossing point.
+static bool segXingXYT(double ax, double ay, double bx, double by,
+                       double cx, double cy, double dx, double dy, double& t)
 {
-    const double b1 = TinyGPSPlus::courseTo(lat, lon, aLat, aLon);
-    const double b2 = TinyGPSPlus::courseTo(lat, lon, bLat, bLon);
-    double d = fabs(b1 - b2);
-    while (d >= 360.0) d -= 360.0;
-    if (d > 180.0) d = 360.0 - d;
-    return d;
+    const double d1x = bx - ax, d1y = by - ay;
+    const double d2x = dx - cx, d2y = dy - cy;
+    const double denom = d1x * d2y - d1y * d2x;
+    if (fabs(denom) < 1e-12) return false;
+    t = ((cx - ax) * d2y - (cy - ay) * d2x) / denom;
+    const double u = ((cx - ax) * d1y - (cy - ay) * d1x) / denom;
+    return t >= 0.0 && t <= 1.0 && u >= 0.0 && u <= 1.0;
 }
 
 // Bounded segment-segment crossing (local equirectangular meters — exact
@@ -369,23 +412,25 @@ static bool nextTargetPoint(uint8_t i, double& lat, double& lon)
 static void legReset(uint8_t idx)
 {
     legIdx = idx;
-    legExcInit = false;
-    legExcMin = 0.0;
-    legExcMax = 0.0;
-    haveSmoothBrg = false;
-    smoothBrg = 0.0;
-    smoothDist = -1.0;
-    legMinDist = -1.0;
-    sideArmed = false;
-    triHeld = false;
+    entryLatched = false;
+    exitLatched = false;
+    exitSide = ' ';
+    emaDA = -1.0;
+    emaDB = -1.0;
+    growA = 0;
+    growB = 0;
+    legFresh = true;
     gateThreaded = false;
     havePrev = false;
+    // Point start with no line geometry (mark 0): there is no entry line to
+    // cut, so the approach is latched from the start.
+    if (idx == 0 && !raceSession.startLine.valid) entryLatched = true;
 }
 
 // Score the pass: split + event + forward advance + leg reset. The finish
 // arm/finish paths are the same as ever (todo 16: line cross only).
-// kind: "mark" (exc+tri logged), "gate" (tri only), "pin" (start-pin skip).
-static void scorePass(uint8_t doneIdx, long now, const char* kind, double exc, double tri)
+// kind: "mark" (detail = cut side P/S), "gate", "pin" (start-pin skip).
+static void scorePass(uint8_t doneIdx, long now, const char* kind, char detail)
 {
     splits[doneIdx] = now - startEpoch;
     splitSet[doneIdx] = true;
@@ -409,11 +454,11 @@ static void scorePass(uint8_t doneIdx, long now, const char* kind, double exc, d
     } else {
         char msg[80];
         if (kind && strcmp(kind, "gate") == 0)
-            snprintf(msg, sizeof(msg), "[RACE] passed mark %d (gate tri=%.0f)", doneIdx + 1, tri);
+            snprintf(msg, sizeof(msg), "[RACE] passed mark %d (gate)", doneIdx + 1);
         else if (kind && strcmp(kind, "pin") == 0)
             snprintf(msg, sizeof(msg), "[RACE] passed mark %d (pin skip)", doneIdx + 1);
         else
-            snprintf(msg, sizeof(msg), "[RACE] passed mark %d exc=%.0f tri=%.0f", doneIdx + 1, exc, tri);
+            snprintf(msg, sizeof(msg), "[RACE] passed mark %d (cut %c)", doneIdx + 1, detail);
         bufferedSerialPrintln(msg);
     }
     legReset(progIdx);
@@ -487,6 +532,75 @@ void raceRunUpdate(TinyGPSPlus& gps)
     const long gun = raceGunEpoch();
 
     if (gun <= 0) return; // practice not started / race gun unknown
+
+    // Frozen by the watchdog: consume nothing, score nothing, change nothing.
+    // The last state IS the evidence, and it has to survive the read-out.
+    if (badRun) return;
+
+    // --- Fix sanity gate (diagnostic) -----------------------------------
+    // A teleporting fix carries no information and corrupts everything
+    // downstream (a 40 m jump across a traverse reads as a cut on the wrong
+    // side). Two things were wrong with the first version, both fixed here:
+    //
+    // 1. THRESHOLD. It used 2x speed — ~29 m at 28 kn and 1 Hz — which sits
+    //    inside the spread of the feed's OWN gaps (40-56 m), so it rejected
+    //    ordinary fixes. 4x speed with a 60 m floor is far above a normal
+    //    step and far below a real teleport (hundreds of metres).
+    // 2. IT LATCHED. It returned BEFORE moving the anchor, so one dropped fix
+    //    made the next gap larger, which was dropped too: in race 181 the
+    //    engine stopped consuming fixes 11 s after the finish armed and never
+    //    scored it, while the screen kept showing the old target as the boat
+    //    sailed on. A rejected fix now RE-ANCHORS: the jump never reaches the
+    //    pass logic, but the next fix is measured from where the boat is.
+    {
+        static double rejLat = 0.0, rejLon = 0.0;
+        static unsigned long rejMs = 0;
+        static unsigned long lastStepMs = 0;
+        const unsigned long mnow = millis();
+        // The same fix can reach the engine twice (the 200 ms screen pass
+        // revisits it); the second visit would measure a zero-length step and
+        // score the very fix the first visit rejected. Same coordinates
+        // within 400 ms of a rejection = the same fix, still rejected.
+        if (rejMs != 0 && (mnow - rejMs) < 400 &&
+            fabs(lat - rejLat) < 1e-9 && fabs(lon - rejLon) < 1e-9) {
+            rejMs = mnow;
+            return;
+        }
+        if (havePrev && lastStepMs != 0) {
+            double dt = (mnow - lastStepMs) / 1000.0;
+            if (dt < 0.5) dt = 0.5;
+            if (dt > 10.0) dt = 10.0;
+            const double sog = gps.speed.isValid() ? gps.speed.knots() * 0.51444
+                                                   : 6.0;
+            double maxStep = 4.0 * sog * dt;
+            if (maxStep < 60.0) maxStep = 60.0;
+            const double step = TinyGPSPlus::distanceBetween(
+                legPrevLat, legPrevLon, lat, lon);
+            if (step > maxStep) {
+                legPrevLat = lat;
+                legPrevLon = lon;
+                havePrev = true;
+                rejLat = lat;
+                rejLon = lon;
+                rejMs = mnow;
+                lastStepMs = mnow;
+                if (badFixRun < 255) badFixRun++;
+                char jmsg[96];
+                snprintf(jmsg, sizeof(jmsg),
+                         "[RACE] fix rejected d=%.0f over %.1fs (limit %.0f) run=%u",
+                         step, dt, maxStep, (unsigned)badFixRun);
+                bufferedSerialPrintln(jmsg);
+                if (badFixRun >= 8) {
+                    raceMarkBadRun("fix stream unusable", progIdx,
+                                   raceSession.markCount, started, finished,
+                                   ocs, lat, lon, gps.location.age());
+                }
+                return;
+            }
+            badFixRun = 0;
+        }
+        lastStepMs = mnow;
+    }
 
     // (Passes score in the mark section below — single event, no deferral.)
 
@@ -668,6 +782,13 @@ void raceRunUpdate(TinyGPSPlus& gps)
             finSawBand = false;
             finLastSide = 0;
             finMinDist = 1e9;
+            // Clean slate for the crossing SEGMENT too: legPrev still holds
+            // the fix from the last rounding, hundreds of metres back, and a
+            // segment drawn from there could score a cross the instant the
+            // line arms. The crossing starts from where the boat is now.
+            legPrevLat = lat;
+            legPrevLon = lon;
+            havePrev = true;
         }
         // Bounded side flip across the finish line.
         double ax, ay, bx, by;
@@ -699,7 +820,21 @@ void raceRunUpdate(TinyGPSPlus& gps)
                                       " armedFor=" + (now - finArmedAt) + "s");
             }
         }
-        if (near && finLastSide != 0 && side != 0 && side != finLastSide) {
+        // PRIMARY: the finish is a crossing of the line SEGMENT, scored on the
+        // segment between the last two ACCEPTED fixes — the same exact rule
+        // the marks use (segXing, not a proximity threshold). The band +
+        // side-flip below needs a sample to land inside 150 m of the line; a
+        // feed gap hops that band and the crossing is then invisible (race
+        // 181: the boat crossed, the line was armed, nothing scored). A
+        // segment that straddles the line cannot be hopped.
+        if (havePrev && segXing(legPrevLat, legPrevLon, lat, lon,
+                                fin->latA, fin->lonA, fin->latB, fin->lonB)) {
+            finished = true;
+            endEpoch = now;
+            uploadPending = true;
+            logEvent("FINISH", now, "seg");
+            logPass("[RACE] finished (line cross, segment)", now);
+        } else if (near && finLastSide != 0 && side != 0 && side != finLastSide) {
             // Score the finish on the crossing edge so the session terminates
             // the moment the boat crosses — waiting for "trailing fixes" only
             // delayed status/upload (user sees the boat sail past the line
@@ -723,32 +858,32 @@ void raceRunUpdate(TinyGPSPlus& gps)
             logEvent("FINISH", now, "pass");
             logPass("[RACE] finished (past line, no clean cross)", now);
         }
+        // The finish leg consumes fixes too: keep the crossing segment live
+        // for the next pass. This block returns before the mark block that
+        // normally maintains legPrev, so without this the segment would never
+        // advance past the arming fix.
+        legPrevLat = lat;
+        legPrevLon = lon;
+        havePrev = true;
         if (side != 0) finLastSide = side;
         return;
     }
 
-    // --- Pass recognition (spec §3-5): angles + bow side, no ranges. ---
+    // --- Pass recognition (SPEC-mark-passing.md, locked): two traverses. ---
     if (legIdx != progIdx) legReset(progIdx);
     {
         const RaceMark& cur = raceSession.marks[progIdx];
         // Start pins are not roundings: sail past them, never score them.
         if (cur.type == RaceMarkStart || cur.type == RaceMarkNone) {
-            scorePass(progIdx, now, "pin", -1, -1);
+            scorePass(progIdx, now, "pin", ' ');
             legPrevLat = lat;
             legPrevLon = lon;
             havePrev = true;
             return;
         }
         const bool isGate = (cur.type == RaceMarkGate && gateSibling(progIdx) >= 0);
-        double tx, ty; // this target's reference point (mark or pair center)
-        if (isGate) targetPoint(progIdx, tx, ty);
-        else { tx = cur.lat; ty = cur.lon; }
-        double nx, ny; // next-target point (triangle far arm)
-        const bool haveNext = nextTargetPoint(progIdx, nx, ny);
-        const double tri = haveNext ? triAngle(lat, lon, tx, ty, nx, ny) : 180.0;
-
         if (isGate) {
-            // Thread the pair, then leave on a bearing that clears it.
+            // Cut the pair segment: that IS the gate pass.
             double gax, gay, gbx, gby;
             const int sib = gateSibling(progIdx);
             gax = cur.lat; gay = cur.lon;
@@ -761,99 +896,175 @@ void raceRunUpdate(TinyGPSPlus& gps)
                 logEvent("ENTER", now, evv);
                 bufferedSerialPrintln("[RACE] gate threaded");
             }
-            const bool clears = !segXing(lat, lon, nx, ny, gax, gay, gbx, gby);
-            if (tri > TRI_SWITCH_DEG) triHeld = true; else triHeld = false;
-            if (gateThreaded && clears && triHeld && haveNext) {
-                scorePass(progIdx, now, "gate", -1, tri);
+            if (gateThreaded) {
+                scorePass(progIdx, now, "gate", ' ');
                 legPrevLat = lat;
                 legPrevLon = lon;
                 havePrev = true;
                 return;
             }
         } else {
-            // Excursion of the smoothed true bearing: the rounding proof.
-            const double raw = norm360(TinyGPSPlus::courseTo(lat, lon, tx, ty));
-            if (!haveSmoothBrg) {
-                smoothBrg = raw;
-                legExcMin = legExcMax = raw;
-                haveSmoothBrg = true;
-            } else {
-                const double u = unwrapNear(smoothBrg, raw);
-                smoothBrg = 0.6 * smoothBrg + 0.4 * u;
-                if (smoothBrg < legExcMin) legExcMin = smoothBrg;
-                if (smoothBrg > legExcMax) legExcMax = smoothBrg;
-            }
-            const double exc = legExcMax - legExcMin;
-            const double rawD = TinyGPSPlus::distanceBetween(lat, lon, tx, ty);
-            if (smoothDist < 0) smoothDist = rawD;
-            else smoothDist = 0.5 * smoothDist + 0.5 * rawD;
-            if (legMinDist < 0 || smoothDist < legMinDist) legMinDist = smoothDist;
-            // Side engages only once nearly proven round: the approach
-            // (tacks included) stays free, wrong-way loops still fault.
-            if (!sideArmed && exc >= SIDE_ARM_DEG) {
-                sideArmed = true;
-                char amsg[48];
-                snprintf(amsg, sizeof(amsg), "[RACE] side armed exc=%.0f", exc);
-                bufferedSerialPrintln(amsg);
-            }
-            const bool judgeSide = sideArmed && cur.type == RaceMarkSingle &&
-                (cur.side == 'P' || cur.side == 'S') &&
-                gps.course.isValid();
-            if (judgeSide) {
-                const double cog = gps.course.deg();
-                double rel = norm360(raw - cog);
-                const bool deadZone = rel < DEAD_CONE_DEG || rel > 360.0 - DEAD_CONE_DEG ||
-                    (rel > 160.0 && rel < 200.0);
-                if (!deadZone) {
-                    const char sailed = rel > 180.0 ? 'P' : 'S';
-                    if (sailed != cur.side) {
-                        char wv[16];
-                        snprintf(wv, sizeof(wv), "%c!%c", cur.side, sailed);
-                        logEvent("WRONG", now, wv);
-                        wrongFlag = true;
-                        char wmsg[80];
-                        snprintf(wmsg, sizeof(wmsg),
-                            "[RACE] wrong side %c!%c rel=%.0f brg=%.0f cog=%.0f",
-                            cur.side, sailed, rel, raw, cog);
-                        bufferedSerialPrintln(wmsg);
-                        legReset(progIdx); // the re-round re-proves itself
-                        legPrevLat = lat;
-                        legPrevLon = lon;
-                        havePrev = true;
-                        return;
-                    }
-                }
-            }
-            // Two consecutive triangle reads: one noisy fix near the mark
-            // must not flip the target.
-            if (tri > TRI_SWITCH_DEG) {
-                if (triHeld) {
-                    if (exc >= PASS_EXC_DEG) {
-                        scorePass(progIdx, now, "mark", exc, tri);
-                        legPrevLat = lat;
-                        legPrevLon = lon;
-                        havePrev = true;
-                        return;
-                    }
+            // A = previous node (start-line centre for mark 0), B = this
+            // mark, C = next node (next mark/centre or finish centre).
+            // Work in ENU meters about B: axes, traverses, sides, trends.
+            double alat, alon;
+            if (progIdx == 0) {
+                if (raceSession.startLine.valid) {
+                    alat = (raceSession.startLine.latA + raceSession.startLine.latB) / 2.0;
+                    alon = (raceSession.startLine.lonA + raceSession.startLine.lonB) / 2.0;
                 } else {
-                    triHeld = true;
+                    alat = cur.lat;
+                    alon = cur.lon; // degenerate A: entry pre-latched in legReset
                 }
             } else {
-                triHeld = false;
-                // Anti-stuck: left the area facing elsewhere — the next
-                // visit is a new approach, not a continuation.
-                if (legMinDist > 0 && smoothDist > 2.0 * legMinDist && tri < 60.0) {
-                    char rmsg[80];
-                    snprintf(rmsg, sizeof(rmsg),
-                        "[RACE] re-approach d=%.0f min=%.0f tri=%.0f, leg reset",
-                        smoothDist, legMinDist, tri);
-                    bufferedSerialPrintln(rmsg);
+                targetPoint(progIdx - 1, alat, alon);
+            }
+            double clat, clon;
+            const bool haveNext = nextTargetPoint(progIdx, clat, clon);
+            double Ax, Ay, Cx, Cy, P1x, P1y;
+            toBoatFrame(cur.lat, cur.lon, alat, alon, Ax, Ay);
+            if (haveNext) {
+                toBoatFrame(cur.lat, cur.lon, clat, clon, Cx, Cy);
+            } else {
+                Cx = -Ax;
+                Cy = -Ay; // no exit geometry: assume the reversal
+            }
+            toBoatFrame(cur.lat, cur.lon, lat, lon, P1x, P1y);
+            double P0x = P1x, P0y = P1y;
+            if (havePrev) toBoatFrame(cur.lat, cur.lon, legPrevLat, legPrevLon, P0x, P0y);
+            const double dA = sqrt((P1x - Ax) * (P1x - Ax) + (P1y - Ay) * (P1y - Ay));
+            const double dB = sqrt(P1x * P1x + P1y * P1y);
+            if (emaDA < 0.0) {
+                emaDA = dA;
+                emaDB = dB;
+            } else {
+                if (dA > emaDA) {
+                    if (growA < 255) growA++;
+                } else if (dA < emaDA) {
+                    growA = 0;
+                }
+                if (dB > emaDB) {
+                    if (growB < 255) growB++;
+                } else if (dB < emaDB) {
+                    growB = 0;
+                }
+                emaDA = 0.5 * emaDA + 0.5 * dA;
+                emaDB = 0.5 * emaDB + 0.5 * dB;
+            }
+            const bool leavingA = growA >= LEAVE_N;
+            const bool leavingB = growB >= LEAVE_N;
+            // Axes: entry A→B, exit B→C. Degenerate A (== B): no entry line.
+            const double iL = sqrt(Ax * Ax + Ay * Ay);
+            const double oL = sqrt(Cx * Cx + Cy * Cy);
+            const double uix = iL > 1.0 ? -Ax / iL : 0.0;
+            const double uiy = iL > 1.0 ? -Ay / iL : 0.0;
+            const double uox = oL > 1.0 ? Cx / oL : (iL > 1.0 ? -uix : 0.0);
+            const double uoy = oL > 1.0 ? Cy / oL : (iL > 1.0 ? -uiy : 1.0);
+            const bool haveEntry = iL > 1.0;
+            // Late join: the leg opens past the entry line already.
+            if (legFresh && haveEntry && !entryLatched && (P1x * uix + P1y * uiy) > 0.0) {
+                entryLatched = true;
+                bufferedSerialPrintln("[RACE] entry assumed (late join)");
+            }
+            legFresh = false;
+            // Entry: cut the entry traverse while leaving A.
+            if (havePrev && haveEntry && !entryLatched && leavingA &&
+                segXingXY(P0x, P0y, P1x, P1y, -uiy * TRAV_HALF_M, uix * TRAV_HALF_M,
+                          uiy * TRAV_HALF_M, -uix * TRAV_HALF_M) &&
+                (P1x - P0x) * uix + (P1y - P0y) * uiy > 0.0) {
+                entryLatched = true;
+                bufferedSerialPrintln("[RACE] entry latched");
+            }
+            // Back to A: re-crossing the entry traverse away from B (and not
+            // out through the exit) cancels the approach; a new one
+            // re-proves itself. Trend-based cancelling broke Windward-Leeward:
+            // the whole downwind leg sails back toward A, which is the
+            // correct course, not a retreat.
+            const bool exitCross =
+                segXingXY(P0x, P0y, P1x, P1y, -uoy * TRAV_HALF_M, uox * TRAV_HALF_M,
+                          uoy * TRAV_HALF_M, -uox * TRAV_HALF_M) &&
+                (P1x - P0x) * uox + (P1y - P0y) * uoy > 0.0;
+            if (havePrev && entryLatched && !exitCross &&
+                segXingXY(P0x, P0y, P1x, P1y, -uiy * TRAV_HALF_M, uix * TRAV_HALF_M,
+                          uiy * TRAV_HALF_M, -uix * TRAV_HALF_M) &&
+                (P1x - P0x) * uix + (P1y - P0y) * uiy < 0.0) {
+                entryLatched = false;
+                bufferedSerialPrintln("[RACE] latch cleared (back to A)");
+            }
+            // Exit: cut the exit traverse toward C. The crossing latches at
+            // once (exact point, exact side); the score fires when leaving B
+            // confirms it. Same-fix gating raced the trend: the straddle is
+            // gone by the time three rises accumulate, and the pass died.
+            // The latch always takes the LATEST toward-C cut: on a reversal
+            // the approach ends ON the shared line, and jitter straddles it
+            // northward before the rounding — that stale side must not win
+            // over the true exit cut.
+            if (exitCross) {
+                double xt = 0.0;
+                double qx = P1x, qy = P1y;
+                if (segXingXYT(P0x, P0y, P1x, P1y, -uoy * TRAV_HALF_M, uox * TRAV_HALF_M,
+                               uoy * TRAV_HALF_M, -uox * TRAV_HALF_M, xt)) {
+                    qx = P0x + (P1x - P0x) * xt;
+                    qy = P0y + (P1y - P0y) * xt;
+                }
+                // Side of the cut: right of the axis facing C = P (CCW).
+                const char cut = (qx * uoy + qy * -uox) > 0.0 ? 'P' : 'S';
+                if (!exitLatched || cut != exitSide) {
+                    exitLatched = true;
+                    exitSide = cut;
+                    char emsg[48];
+                    snprintf(emsg, sizeof(emsg), "[RACE] exit latched cut %c", exitSide);
+                    bufferedSerialPrintln(emsg);
+                }
+            }
+            // Turned back through the exit before leaving: cancel the cut.
+            if (havePrev && exitLatched &&
+                segXingXY(P0x, P0y, P1x, P1y, -uoy * TRAV_HALF_M, uox * TRAV_HALF_M,
+                          uoy * TRAV_HALF_M, -uox * TRAV_HALF_M) &&
+                (P1x - P0x) * uox + (P1y - P0y) * uoy < 0.0) {
+                exitLatched = false;
+                exitSide = ' ';
+                bufferedSerialPrintln("[RACE] exit cancelled (back to B)");
+            }
+            if (entryLatched && exitLatched && leavingB) {
+                const char sailed = exitSide;
+                if ((cur.side == 'P' || cur.side == 'S') && sailed != cur.side) {
+                    char wv[16];
+                    snprintf(wv, sizeof(wv), "%c!%c", cur.side, sailed);
+                    logEvent("WRONG", now, wv);
+                    wrongFlag = true;
+                    char wmsg[64];
+                    snprintf(wmsg, sizeof(wmsg),
+                             "[RACE] wrong side %c!%c (cut %c)",
+                             cur.side, sailed, sailed);
+                    bufferedSerialPrintln(wmsg);
+                    // Three wrongs on the SAME mark is not a mistake, it is
+                    // the engine failing to re-arm — stop the run right here
+                    // rather than watch it fail for another three minutes.
+                    if (wrongRunMark == progIdx) {
+                        if (wrongRun < 255) wrongRun++;
+                    } else {
+                        wrongRunMark = progIdx;
+                        wrongRun = 1;
+                    }
+                    if (wrongRun >= 3) {
+                        raceMarkBadRun("3 wrongs on one mark", progIdx,
+                                       raceSession.markCount, started, finished,
+                                       ocs, lat, lon, gps.location.age());
+                        return;
+                    }
                     legReset(progIdx);
+                    entryLatched = true; // arrival proven: the re-round needs only a clean exit
                     legPrevLat = lat;
                     legPrevLon = lon;
                     havePrev = true;
                     return;
                 }
+                scorePass(progIdx, now, "mark", sailed);
+                legPrevLat = lat;
+                legPrevLon = lon;
+                havePrev = true;
+                return;
             }
         }
         legPrevLat = lat;

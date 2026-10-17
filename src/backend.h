@@ -27,6 +27,10 @@ bool backendAbandonFailed();
 // trust the network. Gates the race screen entry.
 bool backendOnlineFresh();
 
+// True ONCE after a newly assigned session arrived (todo 30). The UI loop
+// asks and, if the sailor is on MAIN, opens the race screen for them.
+bool backendTakeRacePageRequest();
+
 void backendInit(TinyGPSPlus* gps);
 
 void backendLoop(TinyGPSPlus &gps);
