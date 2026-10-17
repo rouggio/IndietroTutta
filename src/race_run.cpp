@@ -401,8 +401,15 @@ static bool nextTargetPoint(uint8_t i, double& lat, double& lon)
     }
     const RaceSeg* fin = nullptr;
     if (finishIsLine(fin)) {
+        // Both are CENTRE coordinates. This used to read
+        // `lon = (fin->latA + fin->latB) / 2.0`, i.e. a longitude built from
+        // the line's latitudes: the last mark is the only one that takes C
+        // from here, so it was the only mark judged against a nonsense exit
+        // traverse (an axis pointing ~90 deg east instead of down the leg),
+        // and it scored early — while the boat was still on the approach —
+        // which is what made the auto zoom leave before the rounding.
         lat = (fin->latA + fin->latB) / 2.0;
-        lon = (fin->latA + fin->latB) / 2.0;
+        lon = (fin->lonA + fin->lonB) / 2.0;
         return true;
     }
     return false;

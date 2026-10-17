@@ -49,6 +49,16 @@ static void drawFrameChrome()
 static const int AUTO_DIST_OPTIONS[] = {10, 50, 100, 200};
 static const uint8_t AUTO_DIST_N = 4;
 static int autoDistM = -1;
+// Auto-mode clearance hold. The engine advances progIdx at the clear-route
+// event, i.e. the instant the pass is scored — and for a rounding that is
+// still ON the buoy, so dropping the zoom on that edge (the old behaviour)
+// cut it before the boat had actually got round the mark, which on the last
+// mark looked like the view abandoning it mid-turn. Keep the zoom pinned to
+// the point being rounded until the boat is clear of it by this much, then
+// hand back to the overview and let the normal distance rule re-engage.
+static const double AUTO_CLEAR_MARGIN_M = 30.0; // added to the mark's radius
+static const double AUTO_CLEAR_MIN_M = 60.0;    // never release closer than this
+static const double AUTO_CLEAR_MAX_M = 150.0;   // a huge radius must not pin the view
 static uint8_t focusMode = 0; // 0 map,1 target,2 auto
 static bool focusEnabled = false;
 static bool focusNext = false;
@@ -56,6 +66,20 @@ static double targetDistM = -1.0;
 static bool focusValid = false;
 static double focusLat = 0.0, focusLon = 0.0;
 static char autoHoldTag[12] = {0};
+// The point the zoom was centred on during the PREVIOUS pass — i.e. the mark
+// being rounded when a pass advances progIdx. Captured before the new target
+// overwrites focusLat/focusLon (nextDestination has already switched by the
+// time the pass is seen).
+static double prevFocusLat = 0.0, prevFocusLon = 0.0;
+// Active clearance hold: keep zooming on (lat,lon) until the boat is
+// autoClearR metres from it (see AUTO_CLEAR_*).
+static bool autoClearHold = false;
+static double autoClearLat = 0.0, autoClearLon = 0.0, autoClearR = 0.0;
+// Was the zoom ON during the PREVIOUS pass? The auto block above re-qualifies
+// the NEW target before the pass is even looked at, and the new leg is
+// usually out of range, so focusEnabled is already false by then: the
+// clearance hold has to ask what the view was doing a pass earlier.
+static bool prevZoomOn = false;
 
 static void autoDistEnsure()
 {
@@ -1500,6 +1524,11 @@ void drawScreenRace(TinyGPSPlus &gps, bool requiresInit)
     if (raceSession.valid) {
         double tLat = 0, tLon = 0;
         if (nextDestination(gps, tLat, tLon, tTag, sizeof(tTag))) {
+            // Remember where the zoom was pointed before this pass's target
+            // takes over: a pass switches progIdx to the NEXT leg, but the
+            // rounding of the mark just taken is not over yet (see the
+            // clearance hold below).
+            if (focusValid) { prevFocusLat = focusLat; prevFocusLon = focusLon; }
             focusLat = tLat; focusLon = tLon; focusValid = true;
             if (gps.location.isValid()) targetDistM =
                 TinyGPSPlus::distanceBetween(gps.location.lat(), gps.location.lng(),
@@ -1557,14 +1586,63 @@ void drawScreenRace(TinyGPSPlus &gps, bool requiresInit)
         focusEnabled = false; autoHoldTag[0] = '\0';
     }
     if (focusMode == 0) autoHoldTag[0] = '\0';
-    // A scored switch leaves the zoom: the new leg re-engages by distance.
+    // A scored switch does NOT leave the zoom any more: the engine advances
+    // progIdx at the clear-route event, which for a rounding is still at the
+    // buoy (on the last mark that cut the view off mid-turn). Pin the zoom to
+    // the point that was being rounded and release it only once the boat is
+    // clear of that mark; then the overview returns and the new leg (the
+    // finish line included) re-engages by distance as usual.
     static uint8_t lastFocusProg = 255;
     const uint8_t nowProg = raceProgIdx();
     if (lastFocusProg != nowProg) {
+        const uint8_t prevProg = lastFocusProg;
         lastFocusProg = nowProg;
-        if (focusMode == 2) { focusEnabled = false; autoHoldTag[0] = '\0'; }
+        if (focusMode == 2 && nowProg > prevProg && prevProg < raceSession.markCount) {
+            if (prevZoomOn) {
+                autoClearHold = true;
+                autoClearLat = prevFocusLat;
+                autoClearLon = prevFocusLon;
+                double cr = (double)raceSession.marks[prevProg].r + AUTO_CLEAR_MARGIN_M;
+                if (cr < AUTO_CLEAR_MIN_M) cr = AUTO_CLEAR_MIN_M;
+                if (cr > AUTO_CLEAR_MAX_M) cr = AUTO_CLEAR_MAX_M;
+                autoClearR = cr;
+                char cmsg[96];
+                snprintf(cmsg, sizeof(cmsg),
+                         "[RACE] auto zoom held on mark %u until clear (%.0fm)",
+                         (unsigned)(prevProg + 1), autoClearR);
+                bufferedSerialPrintln(cmsg);
+            } else {
+                autoClearHold = false;
+                autoHoldTag[0] = '\0';
+            }
+        } else if (focusMode == 2) {
+            focusEnabled = false;
+            autoHoldTag[0] = '\0';
+            autoClearHold = false;
+        }
+    }
+    if (focusMode != 2) autoClearHold = false;
+    if (autoClearHold) {
+        if (autoHoldTag[0] != '\0') {
+            // The NEW target already qualified by distance (legs shorter than
+            // the threshold, e.g. a scaled test course): no reason to hold.
+            autoClearHold = false;
+        } else {
+            double d = -1.0;
+            if (gps.location.isValid()) d = TinyGPSPlus::distanceBetween(
+                gps.location.lat(), gps.location.lng(), autoClearLat, autoClearLon);
+            if (d >= 0.0 && d <= autoClearR) {
+                focusLat = autoClearLat; focusLon = autoClearLon;
+                focusValid = true;
+                focusEnabled = true;
+            } else {
+                autoClearHold = false; // rounded and gone: back to the overview
+                focusEnabled = false;
+            }
+        }
     }
     focusNext = focusEnabled;
+    prevZoomOn = focusEnabled; // what a pass next time must hold on to
     static bool lastFocusEnabled = false;
     const bool focusSwitch = (focusEnabled != lastFocusEnabled);
     lastFocusEnabled = focusEnabled;
