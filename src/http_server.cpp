@@ -615,7 +615,7 @@ static void handleServer()
     if (server.method() == HTTP_POST) {
         if (server.hasArg("mode")) {
             const String m = server.arg("mode");
-            serverSetMode((m == "dev" || m == "1") ? 1 : 0);
+            serverApplyMode((m == "dev" || m == "1") ? 1 : 0);
         }
         if (server.hasArg("host")) {
             String h = server.arg("host");

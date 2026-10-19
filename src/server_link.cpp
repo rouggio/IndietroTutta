@@ -1,5 +1,7 @@
 #include "server_link.h"
 #include "config.h"
+#include "gps_mock.h"
+#include "serial_buffer.h"
 
 #include <Preferences.h>
 
@@ -27,6 +29,20 @@ void serverSetMode(int mode)
     if (!prefs.begin("srv", false)) return;
     prefs.putInt("mode", (mode == 1) ? 1 : 0);
     prefs.end();
+}
+
+void serverApplyMode(int mode)
+{
+    serverSetMode(mode);
+    // PROD is a real deployment and the mock fix feed is a dev tool: its
+    // scripted run comes from the laptop backend, and the FX row that turns it
+    // on is not even offered in PROD. Switching modes therefore settles the
+    // pair from either entry point (CONFIG row or portal /server) — a boat
+    // left on MOCK in PROD has no fix at all, real or scripted.
+    if (mode == 0 && gpsMockActive()) {
+        gpsMockSet(false);
+        bufferedSerialPrintln("[SERVER] PROD -> FX source forced to REAL");
+    }
 }
 
 void serverSetDevHost(const String& host)

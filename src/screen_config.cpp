@@ -3,6 +3,7 @@
 #include <WiFi.h>
 
 #include "config_store.h"
+#include "gps_mock.h"
 #include "ota.h"
 #include "screens.h"
 #include "serial_buffer.h"
@@ -24,15 +25,24 @@ enum ConfigRow {
     ROW_BEEP = 3,
     ROW_BOOTSOUND = 4,
     ROW_GUNSOUND = 5,
+    ROW_FX = 6,   // dev only: flips the fix source real GPS <-> mock
     ROW_COUNT
 };
 
-// Six rows at 22px keep the detail line on screen (font 2 is 16px tall):
-// rows occupy 68..190, the detail sits at 192..208, the hint bar at 214.
-static const int ROW_Y0 = 68;
-static const int ROW_DY = 22;
-static const int DETAIL_Y = 192;
+// Seven rows at 21px (font 2 is 16px tall): rows occupy 64..206 and the hint
+// bar rule sits at 214. The enum order IS the display order, so the visible
+// list stays a prefix of it and an index needs no remapping — the one
+// conditional row is last, and PROD simply offers one row fewer.
+static const int ROW_Y0 = 64;
+static const int ROW_DY = 21;
 static const int WIPE_HEIGHT = 148;
+
+// The FX (fix source) row is a dev-mode tool: in PROD the fix is always the
+// real GPS, so there is nothing to flip and the row is not offered.
+static inline int visibleRowCount()
+{
+    return serverMode() == 1 ? ROW_COUNT : ROW_COUNT - 1;
+}
 
 static int selRow = ROW_OTA;
 static bool needsRedraw = true;
@@ -54,6 +64,11 @@ void drawScreenConfig(bool requiresInit)
 {
     if (requiresInit) {
         tft.fillScreen(BG);
+        // Entering the screen always puts the highlight back on the first
+        // entry: the last row you touched is rarely the one you came back for,
+        // and a remembered index also has to be re-validated against a row set
+        // that shrinks in PROD.
+        selRow = ROW_OTA;
         needsRedraw = true;
     }
 
@@ -65,11 +80,16 @@ void drawScreenConfig(bool requiresInit)
 
     // ---- Selectable rows ----
     if (needsRedraw) {
-        // Wipe the rows AND the detail line, which sits below the last row
-        // at DETAIL_Y. Stops just short of the hint bar at y=214.
+        // A row can vanish under the selection when the server mode is flipped
+        // (on screen via ROW_SERVER, or from the portal): never leave the
+        // highlight on a row that is no longer drawn.
+        if (selRow >= visibleRowCount()) selRow = visibleRowCount() - 1;
+
+        // Wipe the whole row block in one go, stopping just short of the hint
+        // bar at y=214 (60..208 covers the last row at 64 + 6*21 = 190..206).
         tft.fillRect(0, 60, tft.width(), WIPE_HEIGHT, BG);
 
-        for (int i = 0; i < ROW_COUNT; i++) {
+        for (int i = 0; i < visibleRowCount(); i++) {
             int y = ROW_Y0 + i * ROW_DY;
             bool selected = (i == selRow);
 
@@ -91,6 +111,9 @@ void drawScreenConfig(bool requiresInit)
             else if (i == ROW_GUNSOUND)
                 row += String("Gun cue     : ") +
                        (gunSoundOn ? "ON" : "OFF");
+            else if (i == ROW_FX)
+                row += String("FX source   : ") +
+                       (gpsMockActive() ? "MOCK" : "REAL");
             else
                 row += String("Speed unit  : ") + speedLabel();
 
@@ -124,7 +147,7 @@ void screenConfigButton(Button button, ButtonEvent event)
 
     // Right short: move the selection
     if (button == Button::Right && event == ButtonEvent::ShortPress) {
-        selRow = (selRow + 1) % ROW_COUNT;
+        selRow = (selRow + 1) % visibleRowCount();
         needsRedraw = true;
         return;
     }
@@ -148,7 +171,7 @@ void screenConfigButton(Button button, ButtonEvent event)
             persistConfig();
         } else if (selRow == ROW_SERVER) {
             const int next = (serverMode() == 1) ? 0 : 1;
-            serverSetMode(next);
+            serverApplyMode(next); // also settles the fix source (see header)
             bufferedSerialPrintln(String("[CONFIG] Server -> ") + serverBaseUrl());
             // server keys persist in their own NVS namespace, not cfg blob
         } else if (selRow == ROW_BEEP) {
@@ -174,6 +197,16 @@ void screenConfigButton(Button button, ButtonEvent event)
                 "[CONFIG] Gun cue enabled" :
                 "[CONFIG] Gun cue disabled");
             if (next) soundGun(false);  // audible confirmation
+        } else if (selRow == ROW_FX) {
+            // One flag, two meanings: it is the fix SOURCE (UART vs the
+            // scripted backend feed) and the top bar's FX tile colour. Same
+            // switch the portal's /mock drives, so the row and the portal can
+            // never disagree — gpsMockSet() updates the 5s NVS cache inline.
+            const bool next = !gpsMockActive();
+            gpsMockSet(next);
+            bufferedSerialPrintln(next ?
+                "[CONFIG] FX source -> MOCK (scripted backend feed)" :
+                "[CONFIG] FX source -> REAL (GPS UART)");
         } else {
             config.speedUnit = (config.speedUnit + 1) % SPEED_UNITS;
             bufferedSerialPrintln("[CONFIG] Speed unit changed");

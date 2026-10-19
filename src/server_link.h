@@ -12,6 +12,11 @@ int serverMode();          // 0 = prod, 1 = dev
 String serverDevHost();    // e.g. "192.168.0.2:3000", may be empty
 void serverSetMode(int mode);
 void serverSetDevHost(const String& host);
+// Mode switch as a user performs it (CONFIG row, portal /server). PROD also
+// forces the fix source back to the real GPS: the mock feed is a dev tool
+// whose scripted runs live on the laptop backend, so MOCK in PROD would leave
+// the boat with no fix at all. Both switch paths go through here.
+void serverApplyMode(int mode);
 String serverBaseUrl();    // https://prod or http://<devHost>
 bool serverUseTLS();       // false in dev mode with a host set
 

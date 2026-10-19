@@ -23,14 +23,29 @@ static const uint16_t RDIM = 0x8410; // neutral gray
 static const uint16_t RBOAT = TFT_YELLOW;
 static const uint16_t MENU_GRAY = 0x7BEF; // CONFIG gray: menu reference color
 
-// Frame: full-bleed N/W/E border, south edge +4. Left viewport holds the
-// map (below the header); right viewport (1/5 width) holds the values.
-static const int HDR_H = 28;
+// Frame: full-bleed N/W/E border, south edge +4.
+//
+// Layout rule (todo 37): the map is ONE rectangle and it owns every pixel
+// inside it. All chrome — the readout rows, the banners — lives in the header
+// band above WIRE_TOP, and the map's fill, its fit box and, in time, its clip
+// all reference WIRE_TOP/WIRE_Y1 so the three can never disagree on "where the
+// map is". Nothing is drawn over the sailing picture except a deliberate
+// alert (a banner, the BAD RUN tag), which is transient and outranks the
+// geometry.
+//
+// Header: two font-4 rows of 26px. Row 1 = committee banner (left) + speed
+// (right); row 2 = distance to the destination (left) + race clock (right).
+// The distance and the clock used to live INSIDE the map (top-right and
+// bottom-right, the clock in font 6) and the clock's box alone masked ~11% of
+// the fit box — including the leeward half of the start line in the overview,
+// which is what the sailor looks at before the gun.
+static const int HDR_H = 56;          // two 26px text rows
+static const int HDR_ROW1_Y = 4;      // row 1 glyph top (banner + SPD)
+static const int HDR_ROW2_Y = 30;     // row 2 glyph top (DST + TIME)
 static const int MAP_X = 0;
-static const int MAP_Y = 30;
-static const int MAP_W = 320;   // full screen width (no side pane)
-static const int WIRE_TOP = 30; // wire fills from below the header...
-static const int WIRE_Y1 = 208; // ...to the frame south (strip is gone)
+static const int MAP_W = 320;          // full screen width (no side pane)
+static const int WIRE_TOP = HDR_H + 2; // map top: the map owns from here down
+static const int WIRE_Y1 = 208;        // ...to the frame south (strip is gone)
 static const int FRAME_SOUTH = 213;
 // Right values pane: 1/5 width, six mini-labeled rows filling the height.
 static const int PANE_X = 256;
@@ -637,15 +652,16 @@ static void drawRaceMap(TinyGPSPlus& gps, bool full)
 {
     if (!raceSession.valid) {
         if (full) {
-            // Clear the map AND the whole right pane: stale course/pane
-            // pixels must not survive the empty state. The rect used to
-            // start at WIRE_TOP (y=30) while the pane starts at PANE_TOP
-            // (y=1), so the pane's top rows (SPD/BRG) survived the drop as
-            // ghost pixels despite the comment claiming both were cleared.
+            // Clear the map AND the header: stale course pixels must not
+            // survive the empty state, and the header now carries the readouts
+            // (todo 37), so it has to come down with the map. Starting at
+            // WIRE_TOP would leave SPD/DST/TIME floating over the "no session"
+            // message. PANE_TOP is the legacy name for the row just inside the
+            // frame, i.e. 1.
             tft.fillRect(0, PANE_TOP, 320, WIRE_Y1 - PANE_TOP, RBG);
             drawFrameChrome();
-            // The clear wiped the header banner and the view tag too, and
-            // both are change-detected, so their caches must be reset or
+            // The clear wiped the header banner and the readouts too, and all
+            // of them are change-detected, so their caches must be reset or
             // they simply never come back.
             resetRaceText();
             const int cx = MAP_X + MAP_W / 2;
@@ -709,13 +725,10 @@ static void drawRaceMap(TinyGPSPlus& gps, bool full)
     }
     if (full) {
         tft.fillRect(MAP_X, WIRE_TOP, MAP_W, WIRE_Y1 - WIRE_TOP, RBG);
-        // That fill just wiped the DST/TIME overlay boxes (SPD lives above the
-        // map, at y=6, and survives), so forget their extents: erasing against
-        // a box that is no longer there would scratch the fresh map pixels.
-        // The text itself comes back on this same pass - drawReadoutTR always
-        // draws, so it needs no reset to reappear.
-        ovDstW = 0;
-        ovTimW = 0;
+        // This fill stops at WIRE_TOP, i.e. below the header: it no longer
+        // touches the readouts (that is the point of todo 37), so their cached
+        // extents stay valid and the erase keeps working normally. Nothing
+        // needs forgetting here any more.
         drawFrameChrome();
         drawStaticLayer(p, rotEff);
         oldRotEff = rotEff;
@@ -844,10 +857,9 @@ static void drawSmart(int x, int y, uint8_t font, int datum, uint16_t color,
     last[lastLen - 1] = '\0';
 }
 
-// Race-map overlay readouts (SPD / DST / TIME). This is drawSmart WITHOUT the
-// identical-string skip, on purpose: those three sit inside the map's own
-// repaint (drawRaceMap fills MAP_Y..WIRE_Y1 and wipes them), and a cached
-// "already drawn" alone would hide a readout until its value next changed.
+// Race-screen readouts (SPD / DST / TIME). This is drawSmart WITHOUT the
+// identical-string skip, on purpose: the readouts are cheap and a cached
+// "already drawn" alone would hide one until its value next changed.
 // Redrawing every pass is what the old opaque overlay did anyway.
 //
 // What it adds is the ERASE. An opaque drawString erases exactly the NEW
@@ -858,10 +870,14 @@ static void drawSmart(int x, int y, uint8_t font, int datum, uint16_t color,
 // string by 9px at an unchanged character count - and if the discarded glyph
 // had ink there, it survives. Blank from the first differing glyph to the end
 // of the previous box, then draw over it.
-static void drawReadoutTR(int x, int y, uint8_t font, const char* txt,
-                          char* last, size_t lastLen, int16_t& lastW)
+//
+// (Todo 37 moved all three out of the map and into the header, so the boxes no
+// longer sit on race pixels at all: they are anchored against the header's own
+// edges, which is what makes datum-anchored erasing safe here.)
+static void drawReadout(int x, int y, uint8_t font, uint8_t datum, const char* txt,
+                        char* last, size_t lastLen, int16_t& lastW)
 {
-    tft.setTextDatum(TR_DATUM);
+    tft.setTextDatum(datum);
     if (lastW > 0 && strcmp(txt, last) != 0) {
         size_t keep = 0;
         while (last[keep] && txt[keep] && last[keep] == txt[keep]) keep++;
@@ -874,12 +890,28 @@ static void drawReadoutTR(int x, int y, uint8_t font, const char* txt,
         pre[keep] = '\0';
         const int prefixW = tft.textWidth(pre, font);
         const int eraseW = lastW - prefixW; // previous box, right of the shared prefix
-        if (eraseW > 0) tft.fillRect(x - lastW + prefixW, y, eraseW, fontPxH(font), RBG);
+        // Left edge of the previous box: a right-datum string grows leftwards.
+        const int ex = (datum == TR_DATUM) ? x - lastW : x;
+        if (eraseW > 0) tft.fillRect(ex + prefixW, y, eraseW, fontPxH(font), RBG);
     }
     tft.setTextColor(RFG, RBG);
     lastW = tft.drawString(txt, x, y, font);
     strncpy(last, txt, lastLen - 1);
     last[lastLen - 1] = '\0';
+}
+
+// The speed and the clock sit against the header's right edge; the distance
+// against its left edge (under the banner), so the two header rows read as a
+// 2x2 block: banner | SPD over DST | TIME.
+static inline void drawReadoutTR(int x, int y, uint8_t font, const char* txt,
+                                 char* last, size_t lastLen, int16_t& lastW)
+{
+    drawReadout(x, y, font, TR_DATUM, txt, last, lastLen, lastW);
+}
+static inline void drawReadoutTL(int x, int y, uint8_t font, const char* txt,
+                                 char* last, size_t lastLen, int16_t& lastW)
+{
+    drawReadout(x, y, font, TL_DATUM, txt, last, lastLen, lastW);
 }
 
 static char pBan[12] = {0};
@@ -982,6 +1014,12 @@ static void resetRaceText()
 {
     // Called on full clears so change-detect redraws everything next pass.
     pBan[0] = 0; pBanW = 0;
+    // The header readouts are wiped by the same clears, and they are
+    // change-detected caches too: leave a stale extent here and the next
+    // erase would blank a box that no longer exists.
+    ovSpd[0] = 0; ovSpdW = 0;
+    ovDst[0] = 0; ovDstW = 0;
+    ovTim[0] = 0; ovTimW = 0;
     pLabS[0] = 0; pLabSW = 0;
     pLabB[0] = 0; pLabBW = 0;
     pLabD[0] = 0; pLabDW = 0;
@@ -1053,34 +1091,14 @@ static void drawRaceText(TinyGPSPlus& gps)
     // Banner: top-LEFT (was centred). Left-datum keeps drawSmart's erase box
 // anchored at the string origin, which is what the suffix-only erase
 // expects — a centred datum has to recompute the box from the old width.
-drawSmart(4, 2, 4, TL_DATUM, RFG, ban, pBan, sizeof(pBan), pBanW);
+drawSmart(MAP_X + 4, HDR_ROW1_Y, 4, TL_DATUM, RFG, ban, pBan, sizeof(pBan), pBanW);
 
-    // View-type indicator (RR cycles north-up → bearing-up → best-fit).
-    //
-    // Change-detected, and that is the whole point: drawLabel1() is the
-    // manual GLCD renderer, which paints glyphs one drawPixel() at a time.
-    // Calling it unconditionally on every 200ms pass made the tag
-    // shimmer as those pixels interleaved with the panel redraws. It now
-    // runs only when viewMode actually changes.
-    static const char* vwTag[3] = { "N-UP", "BRG-UP", "FIT" };
-    // Bottom-right of the map viewport. It used to sit top-left, where the
-    // countdown banner now lives. Right-aligned against the viewport
-    // divider (x=255), one row above the wire's south edge.
-    static const int VW_TAG_R = 252;
-    static const int VW_TAG_Y = 199;
-    static int vwTagLast = -1;
-    if (vwTagLast != (viewMode % 3) || mapRepainted) {
-        if (vwTagLast >= 0) {
-            // Erase the previous tag. Font 1 is a fixed 5x7 cell, so the
-            // box is derived from the string actually drawn — a hardcoded
-            // width cropped "BRG-UP" because it assumed the shorter labels.
-            const int w = (int)strlen(vwTag[vwTagLast]) * 6 + 2;
-            tft.fillRect(VW_TAG_R - w, VW_TAG_Y, w, 9, RBG);
-        }
-        vwTagLast = viewMode % 3;
-        const int tw = (int)strlen(vwTag[vwTagLast]) * 6;
-        // removed green view tag (now shown in hint)
-    }
+    // The N-UP/BRG-UP/FIT view tag lives in the hint bar now. Its old in-map
+    // draw was removed but its ghost-erase was not, so the block went on
+    // blanking a black rect inside the map's bottom-right (the corner the
+    // clock used to cover) on every view-mode change: a scar with nothing
+    // behind it. Deleted with the layout change that moved the readouts out of
+    // the map — nothing but the map writes inside the map rect.
 
     // Bad-run watchdog tag (race_run.cpp): the engine stopped the run, and
     // the sailor has to SEE that rather than wonder why the numbers stopped
@@ -1141,23 +1159,38 @@ drawSmart(4, 2, 4, TL_DATUM, RFG, ban, pBan, sizeof(pBan), pBanW);
     } else if (raceSession.valid && gun > 0) {
         snprintf(tim, sizeof(tim), "WAIT");
     } else {
-        snprintf(tim, sizeof(tim), "--:--");
+        tim[0] = '\0'; // no clock to report: blank, not a placeholder
     }
 
-    // Overlay indicators: SPD/DST top-right, TIME bottom-right. All three go
-    // through drawReadoutTR, not a bare drawString: an opaque draw only erases
-    // the new (often narrower) string's box, which is how the leading glyph of
-    // the previous value survived as ghost pixels (todo 34).
-    {
+    // Readouts, all of them inside the header band (todo 37). Row 1 keeps the
+    // speed against the right edge, beside the banner; row 2 carries the
+    // distance to the destination (left, under the banner) and the race clock
+    // (right, under the speed). Nothing is drawn over the map any more: the
+    // clock's font-6 box used to cover ~11% of the fit box, the leeward half
+    // of the start line included. All three go through drawReadout*, not a
+    // bare drawString: an opaque draw only erases the new (often narrower)
+    // string's box, which is how the leading glyph of the previous value
+    // survived as ghost pixels (todo 34).
+    //
+    // A modal overlay (menu / course picker) stands them down: it paints a box
+    // across the header after this runs, so an unconditional redraw would keep
+    // punching the clock and the distance back through the overlay's own
+    // border. Closing an overlay is a full redraw, which resets these caches.
+    if (!courseOpen && !menuOpen) {
         char ov[16];
-        const int ox = MAP_X + MAP_W - 6;
+        const int xr = MAP_X + MAP_W - 6; // right edge of the header
+        const int xl = MAP_X + 4;         // left edge of the header
         if (gps.speed.isValid()) snprintf(ov, sizeof(ov), "%4.1f Kn", gps.speed.knots());
-        else snprintf(ov, sizeof(ov), " --.- Kn");
-        drawReadoutTR(ox, MAP_Y - 24, 4, ov, ovSpd, sizeof(ovSpd), ovSpdW);
-        if (showBrg) snprintf(ov, sizeof(ov), "%4ld m", distM);
-        else snprintf(ov, sizeof(ov), "  --- m");
-        drawReadoutTR(ox, MAP_Y + 4, 4, ov, ovDst, sizeof(ovDst), ovDstW);
-        drawReadoutTR(ox, WIRE_Y1 - 48, 6, tim, ovTim, sizeof(ovTim), ovTimW);
+        else ov[0] = '\0'; // no fix yet: blank, same rule as distance/clock
+        drawReadoutTR(xr, HDR_ROW1_Y, 4, ov, ovSpd, sizeof(ovSpd), ovSpdW);
+        // Nothing to report means nothing drawn — speed, distance and clock
+        // alike: the " --.- Kn"/"--- m"/"--:--" placeholders read as values at
+        // a glance from a helm. An empty string makes drawReadout blank the
+        // whole previous box, which is the only correct way to remove one.
+        if (showBrg) snprintf(ov, sizeof(ov), "%ld m", distM);
+        else ov[0] = '\0';
+        drawReadoutTL(xl, HDR_ROW2_Y, 4, ov, ovDst, sizeof(ovDst), ovDstW);
+        drawReadoutTR(xr, HDR_ROW2_Y, 4, tim, ovTim, sizeof(ovTim), ovTimW);
     }
 
     // Hint bar: texts change length across modes now, so repaint on change
@@ -1497,8 +1530,15 @@ void drawScreenRace(TinyGPSPlus &gps, bool requiresInit)
         lastResetCourseKey = key;
         raceRunReset();
         // A course change can follow an overlay or the empty state that wiped
-        // the pane without resetting its caches ? force the text/pane repaint
-        // (resetRaceText clears the value caches and paneClean).
+        // the header without resetting its caches, so force the text repaint.
+        //
+        // resetRaceText() forgets the boxes it describes, so the pixels must go
+        // with it: the map's own full repaint only covers WIRE_TOP downwards,
+        // so without this clear the next banner/readout draw lands with no
+        // erase at all and leaves the tail of the previous string standing.
+        // That is the panel artifact where "ABANDON " was followed by "GO" and
+        // read as "GOANDON" - the cached extent was forgotten, the ink was not.
+        tft.fillRect(0, PANE_TOP, MAP_W, WIRE_TOP - PANE_TOP, RBG);
         resetRaceText();
     }
     raceRunUpdate(gps);
@@ -1700,7 +1740,7 @@ void drawScreenRace(TinyGPSPlus &gps, bool requiresInit)
     const bool focusSwitch = (focusEnabled != lastFocusEnabled);
     lastFocusEnabled = focusEnabled;
     if (focusSwitch) {
-        tft.fillRect(0, MAP_Y, MAP_W, WIRE_Y1 - MAP_Y, RBG);
+        tft.fillRect(MAP_X, WIRE_TOP, MAP_W, WIRE_Y1 - WIRE_TOP, RBG);
         mapDirty = true;
     }
     if (!courseOpen) {
