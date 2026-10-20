@@ -25,24 +25,17 @@ enum ConfigRow {
     ROW_BEEP = 3,
     ROW_BOOTSOUND = 4,
     ROW_GUNSOUND = 5,
-    ROW_FX = 6,   // dev only: flips the fix source real GPS <-> mock
+    ROW_FX = 6,   // flips the fix source real GPS <-> mock
     ROW_COUNT
 };
 
 // Seven rows at 21px (font 2 is 16px tall): rows occupy 64..206 and the hint
-// bar rule sits at 214. The enum order IS the display order, so the visible
-// list stays a prefix of it and an index needs no remapping — the one
-// conditional row is last, and PROD simply offers one row fewer.
+// bar rule sits at 214. The enum order IS the display order and every row is
+// always offered — the list used to lose FX in PROD, which put "set the fix
+// source" out of reach on a prod-mounted boat that wants a scripted run.
 static const int ROW_Y0 = 64;
 static const int ROW_DY = 21;
 static const int WIPE_HEIGHT = 148;
-
-// The FX (fix source) row is a dev-mode tool: in PROD the fix is always the
-// real GPS, so there is nothing to flip and the row is not offered.
-static inline int visibleRowCount()
-{
-    return serverMode() == 1 ? ROW_COUNT : ROW_COUNT - 1;
-}
 
 static int selRow = ROW_OTA;
 static bool needsRedraw = true;
@@ -65,9 +58,7 @@ void drawScreenConfig(bool requiresInit)
     if (requiresInit) {
         tft.fillScreen(BG);
         // Entering the screen always puts the highlight back on the first
-        // entry: the last row you touched is rarely the one you came back for,
-        // and a remembered index also has to be re-validated against a row set
-        // that shrinks in PROD.
+        // entry: the last row you touched is rarely the one you came back for.
         selRow = ROW_OTA;
         needsRedraw = true;
     }
@@ -80,16 +71,11 @@ void drawScreenConfig(bool requiresInit)
 
     // ---- Selectable rows ----
     if (needsRedraw) {
-        // A row can vanish under the selection when the server mode is flipped
-        // (on screen via ROW_SERVER, or from the portal): never leave the
-        // highlight on a row that is no longer drawn.
-        if (selRow >= visibleRowCount()) selRow = visibleRowCount() - 1;
-
         // Wipe the whole row block in one go, stopping just short of the hint
         // bar at y=214 (60..208 covers the last row at 64 + 6*21 = 190..206).
         tft.fillRect(0, 60, tft.width(), WIPE_HEIGHT, BG);
 
-        for (int i = 0; i < visibleRowCount(); i++) {
+        for (int i = 0; i < ROW_COUNT; i++) {
             int y = ROW_Y0 + i * ROW_DY;
             bool selected = (i == selRow);
 
@@ -147,7 +133,7 @@ void screenConfigButton(Button button, ButtonEvent event)
 
     // Right short: move the selection
     if (button == Button::Right && event == ButtonEvent::ShortPress) {
-        selRow = (selRow + 1) % visibleRowCount();
+        selRow = (selRow + 1) % ROW_COUNT;
         needsRedraw = true;
         return;
     }
@@ -171,7 +157,7 @@ void screenConfigButton(Button button, ButtonEvent event)
             persistConfig();
         } else if (selRow == ROW_SERVER) {
             const int next = (serverMode() == 1) ? 0 : 1;
-            serverApplyMode(next); // also settles the fix source (see header)
+            serverApplyMode(next);
             bufferedSerialPrintln(String("[CONFIG] Server -> ") + serverBaseUrl());
             // server keys persist in their own NVS namespace, not cfg blob
         } else if (selRow == ROW_BEEP) {

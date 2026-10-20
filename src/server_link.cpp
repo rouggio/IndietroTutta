@@ -1,7 +1,5 @@
 #include "server_link.h"
 #include "config.h"
-#include "gps_mock.h"
-#include "serial_buffer.h"
 
 #include <Preferences.h>
 
@@ -34,15 +32,13 @@ void serverSetMode(int mode)
 void serverApplyMode(int mode)
 {
     serverSetMode(mode);
-    // PROD is a real deployment and the mock fix feed is a dev tool: its
-    // scripted run comes from the laptop backend, and the FX row that turns it
-    // on is not even offered in PROD. Switching modes therefore settles the
-    // pair from either entry point (CONFIG row or portal /server) — a boat
-    // left on MOCK in PROD has no fix at all, real or scripted.
-    if (mode == 0 && gpsMockActive()) {
-        gpsMockSet(false);
-        bufferedSerialPrintln("[SERVER] PROD -> FX source forced to REAL");
-    }
+    // A mode switch does NOT touch the fix source any more. It used to force
+    // REAL on PROD because the FX row was hidden there, so a boat switched to
+    // PROD with MOCK on had no fix at all — but that also silently reverted a
+    // choice the skipper had just made on the panel (and it is what turned
+    // mock racing against the cloud into a portal-only trick). The FX row is
+    // offered in both modes now, so the source is the skipper's to set and it
+    // is visible on screen when it is MOCK.
 }
 
 void serverSetDevHost(const String& host)

@@ -178,7 +178,11 @@ before touching any pass/score/target logic.**
   `OFFLINE` session on purpose. With nothing to show, the page's own empty state
   says so. `sys.onlineFresh` in `/status` is a **diagnostic only** now. Losing the
   link MID-session never ejects either.
-- CONFIG: `R` select row, `RR` apply, `LL` force OTA now.
+- CONFIG: `R` select row, `RR` apply, `LL` force OTA now. Seven rows in **both**
+  server modes — `OTA on boot, Server, Speed unit, Key beep, Boot sound, Gun cue,
+  FX source` (todo 51 removed the PROD-only hide of the last one, and a mode
+  switch no longer forces the fix source back to REAL). Rows are drawn from
+  `ROW_COUNT`, so an index needs no remapping; there is no shrinking list.
 - Every page switch full-black clear; ghost-clear readouts in speed.
 - NO fillRect/fillScreen/clear on the 200ms refresh path — it flickers. Overwrite
   text in place with space padding instead, e.g. `" " + val + " "` (both sides
@@ -193,6 +197,9 @@ before touching any pass/score/target logic.**
   missing grid/labels) — verify that class of bug on the PANEL, not the grab. Font 1
   (GLCD) drawn into a `TFT_eSprite` faults intermittently → small labels use
   `drawLabel1()`/`drawLabel1C()` in `canvas.h` (manual GLCD via `drawPixel`).
+  A capture re-renders the CURRENT page with `requiresInit`, which has one side
+  effect that bites scripts: the CONFIG screen resets its highlight to the first
+  row, so count `R` presses from `OTA on boot` after every grab.
 - Race screen states: **empty / pre-start / racing / finished**. On the finish
   edge the screen snapshots the result (todo 38): `FINISHED` in green in the
   banner slot and the elapsed time frozen in the header, both held **after the
