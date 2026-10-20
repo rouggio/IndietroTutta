@@ -239,22 +239,19 @@ static void handleSetupPrompt()
     html += "</select>";
 
     // -----------------------------------------------------
-    // Speed unit
+    // Speed unit: NOT on the portal any more (user request)
     // -----------------------------------------------------
-
-    static const char* speedUnitLabels[SPEED_UNITS] = { "kn", "km/h", "mph" };
-
-    html += "<label>Speed unit</label>"
-            "<select name='speedUnit'>";
-
-    for (int u = 0; u < SPEED_UNITS; ++u)
-    {
-        html += "<option value='" + String(u) + "'";
-        if (config.speedUnit == u) html += " selected";
-        html += ">" + String(speedUnitLabels[u]) + "</option>";
-    }
-
-    html += "</select>";
+    //
+    // The unit is a DEVICE setting, not a network setting: it lives on the
+    // CONFIG screen (row "Speed unit : kn") where the skipper changes it
+    // with the two buttons, next to the other boat preferences (beep, gun
+    // cue). The portal keeps the things you set from a phone on the shore
+    // — WiFi, name, timezone, OTA on boot — and leaves the boat's own
+    // preferences to the boat.
+    //
+    // /save still parses "speedUnit" if it shows up (a cached page from an
+    // older firmware can post it), but the field is gone from the form, so
+    // the stored unit survives a portal save untouched.
 
     // -----------------------------------------------------
     // OTA on boot
