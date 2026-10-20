@@ -129,20 +129,24 @@ before touching any pass/score/target logic.**
     the boat is clear of it, then falls back to Map for the new leg. Code:
     `focusMode` 0/1/2, NVS `race`/`viewMode`, hint `R Map` / `R Tgt` /
     `R Auto`.
-  - **`RR` (long) = bearing mode.** Two states, **north-up ↔ heading-up**.
-    **North-up** = true north up (`N` tag). **Heading-up** = the direction
-    toward the next destination is up (`BRG` tag — it is
+  - **`RR` (long) = bearing mode.** Three states, **north-up → heading-up →
+    wide**. **North-up** = true north up (`N`). **Heading-up** = the direction
+    toward the next destination is up (`BRG` — it is
     `courseTo(boat, destination)`, the *bearing to the mark*, not the boat's
     COG; the two agree while you are steering at the mark, and the mark's
-    bearing is what the chart should point at). Code: `viewMode` 0/1, RAM
-    only.
+    bearing is what the chart should point at). **Wide** (todo 48) = the
+    course's own orientation: `wideRotation()` tries every 5° and keeps the fit
+    with the largest scale, so the whole course stays on screen while the
+    picture grows to fill the window (on a N-S course in the 320×150 frame that
+    is twice the zoom of the north-up fit). In Target/Auto framing the span is
+    fixed, every angle scores the same, so wide resolves to north-up. Code:
+    `viewMode` 0/1/2, RAM only.
   - The two axes are **orthogonal**: any view can be north-up or heading-up,
     and the hint shows the states **in effect**, not the next action.
   - **Do not say** "focus view" for the bearing axis, "overview" for a fourth
-    mode, or **"FIT"/"best-fit" at all**. Best-fit was a third bearing state
-    (`viewMode == 2`, 0°/90° whichever fills the screen) that the two-state
-    `% 2` cycle left **unreachable** — `screen_race.cpp:880` and the comment
-    at 181-182 are dead and should be deleted, never restored.
+    mode, or **"FIT"/"best-fit"**. That dead third state (`viewMode == 2`,
+    0°/90° whichever filled the screen, left unreachable by the old `% 2`
+    cycle) is now implemented properly as **wide** — use that word.
   - Naming trap: in `screen_race.cpp` the code's **`viewMode` is the bearing
     axis** and **`focusMode` is the view axis** — the opposite of the words
     above. Read the enum, not the name.
@@ -217,6 +221,16 @@ before touching any pass/score/target logic.**
   `buoyDiam / 2 / DEG_M * p.scale` with a 2 px floor and a 6 px cap, **one per
   physical buoy** (a pile shares the label's coincident-position test).
   Red is therefore the page's **buoy + alert** colour, not alert-only.
+- **The target highlight and the target destination are TWO code paths and must
+  stay in lockstep** (todo 49). `raceTarget()` paints the ring/line highlight;
+  `nextDestination()` paints the destination stub, the pane distance and the
+  heading-up bearing. Both must answer the same four questions: pre-start =
+  start, racing = `marks[progIdx]`, **every mark scored = the finish LINE**
+  (armed — only a line cross ends the run), finished = finish.
+  `raceTarget()` was missing the third case, so after the last mark it clamped
+  to `markCount - 1` and the ring sat on the last mark for the whole final leg
+  while the stub, the `FINISH` tag and heading-up had already switched. Any new
+  target state goes into both functions.
 - The **map scale** (todo 45) is map chrome, drawn LAST in `drawStaticLayer` so
   a course line never cuts it: the map's **bottom-right corner is the zero**
   (`zeroX = MAP_W - 4`, 2 px of air before the frame), the bar runs left from
@@ -228,6 +242,19 @@ before touching any pass/score/target logic.**
   `RDIM` like the rest of the chrome, and the label **must use font 2** (font 1
   digits are broken on the sprite). Panel-verified: 100 m/73 px overview,
   20 m/46 px next-target.
+- **Every map segment is clipped to the rect the map owns** (todo 36).
+  `drawStaticLayer` projects the course in whatever view is active, and the
+  projection is **not** bounded by the window — Target forces a 0.0003° span,
+  heading-up rotates the fit box — so an unclipped leg is a page-long chord
+  across the header readouts, the frame and the hint bar. `clipToMap()` runs
+  Liang–Barsky against `MAP_X .. MAP_X+MAP_W-1` × `WIRE_TOP .. WIRE_Y1-1` and
+  returns false for a segment wholly outside; wide lines pass `inset` 1-2
+  because they are drawn centred on the segment. `circleOnMap()` (+12 px: the
+  round arrows stand outside the ring) culls marks, their labels and the
+  deferred target ring — a circle centred in the header band is not clipped by
+  the rect, it **paints** there. The boat's destination stub is clamped with
+  `clampToWire()` like the COG stub. Any new map geometry goes through one of
+  the two.
 - **The dirty map path is only valid while the CAMERA is unchanged** (todo 46).
   `drawStaticLayer()` *paints but never clears*, so it is only "identical
   pixels" for a fixed projection. The map repaints fully only on a session
@@ -236,10 +263,16 @@ before touching any pass/score/target logic.**
   fixed, the origin moves — and `focusEnabled` never toggles there) would leave
   the previous projection's labels, circles and legs standing. `drawRaceMap`
   therefore fingerprints the camera (`p.lat0/lon0` in screen px + `p.scale`)
-  and forces one full repaint when it moves. **Rotation is excluded on purpose**
-  — heading-up changes it every pass and the 1 Hz rotating throttle owns that
-  case. Mark labels are also clamped to `WIRE_TOP + 9`: anything drawn above the
-  map's clear rect can never be erased again (the hole todo 35 found).
+  and forces one full repaint when it moves. **The rotation test must run
+  BEFORE the fingerprint and gate it** (`camMoved && !rotating`): the fit origin
+  is computed in rotated space, so in heading-up the fingerprint otherwise
+  promotes every pass to `full` and the 1 Hz rotating throttle never runs — a
+  full wipe at the 200 ms pass rate, which is what "heading-up flickers" was.
+  Its epsilon is **2.0°**, not 0.1 (0.1 is under GPS noise: 2 m of jitter 30 m
+  out swings the bearing ~4°), so a boat holding a course does not re-fill the
+  map at all. Mark labels are also clamped to `WIRE_TOP + 9`: anything drawn
+  above the map's clear rect can never be erased again (the hole todo 35
+  found).
 - **A REPAINT MUST NEVER RESET THE RUN** (todo 47). `requiresInit` is true for
   every `redrawCurrentPage()` (R, closing a menu, OTA), and `raceRunStarted()`
   only means "the START was **scored**" — so gating a reset on

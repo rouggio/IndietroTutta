@@ -178,8 +178,10 @@ static void viewModeSave()
 
 static const double DEG_M = 111320.0;
 
-// View state (RAM only). RR cycles: 0 north-up, 1 bearing-up (next
-// destination up), 2 best-fit (0°/90° whichever fills the screen).
+// View state (RAM only). RR cycles the BEARING: 0 north-up, 1 bearing-up
+// (next destination up), 2 WIDE — the course's own orientation, chosen to fill
+// a 320x150 window. In Target/Auto framing the span is fixed, so no rotation
+// can help and wide resolves to north-up.
 static uint8_t viewMode = 0;
 
 static int lastRaceCourseKey = -1; // sessionId+version fingerprint
@@ -316,6 +318,27 @@ static void projToPx(const RaceProj& p, double lat, double lon, int& x, int& y)
     y = (int)(p.oy - (nr - p.rcy) * p.scale);
 }
 
+// Todo 48, "wide": pick the rotation that fits the course best in a landscape
+// window. The overview fits the course's bounding box, and a frame twice as
+// wide as it is tall wastes half of itself whenever the course runs the other
+// way — a diagonal course wastes both ways. Search the full circle in 5 deg
+// steps and keep the orientation with the LARGEST scale, so the whole course
+// stays on screen while the picture grows to the biggest one the frame allows.
+// buildProjection is pure arithmetic over the course's own points (marks, start
+// and finish lines — never the boat), so the chosen angle depends on the course
+// alone: it cannot drift or jitter while sailing, and 5 deg costs cos(5) =
+// 0.4% of the scale at worst.
+static double wideRotation()
+{
+    double best = 0.0, bestScale = -1.0;
+    for (int a = 0; a < 180; a += 5) {
+        RaceProj q;
+        buildProjection(q, (double)a);
+        if (q.ok && q.scale > bestScale) { bestScale = q.scale; best = (double)a; }
+    }
+    return best;
+}
+
 // Little rounding-side arrow on P/S marks (any type, gates included):
 // half-arc on the side the arrow implies (P = west half CCW, S = east half
 // CW) with a barb at the tip. Repainted identically with the static layer.
@@ -431,12 +454,33 @@ static void raceTarget(uint8_t& idx, bool& isLine, uint8_t& lineIdx,
         if (raceSession.markCount) idx = raceSession.markCount - 1;
         return;
     }
-    idx = raceProgIdx();
     if (raceSession.markCount == 0) {
         idx = 255;
         return;
     }
-    if (idx >= raceSession.markCount) idx = raceSession.markCount - 1;
+    idx = raceProgIdx();
+    // Every mark scored but the run is not finished yet: the finish LINE is
+    // armed (scorePass sets progIdx = markCount and only a line cross ends it,
+    // race_run.cpp). This branch used to be missing, so the highlight clamped
+    // to the LAST mark and stayed on it all the way down to the finish, while
+    // the destination stub and the pane already said FINISH — the target ring
+    // and the boat's actual target disagreed for the whole last leg. Mirror
+    // nextDestination() exactly: finishSameAsStart lights the start line
+    // (lineIdx 0), a distinct finish is lineIdx 1.
+    if (idx >= raceSession.markCount) {
+        if (raceSession.finishSameAsStart) {
+            if (raceSession.startLine.valid) {
+                isLine = true;
+                lineIdx = 0;
+                return;
+            }
+        } else if (raceSession.finishLine.valid) {
+            isLine = true;
+            lineIdx = 1;
+            return;
+        }
+        idx = raceSession.markCount - 1; // no line to light: keep the last mark
+    }
     const RaceMark& m = raceSession.marks[idx];
     if (m.type == RaceMarkGate && m.gate[0]) {
         gatePair = true;
@@ -665,6 +709,57 @@ static void drawScaleBar(const RaceProj& p)
     tft.setTextDatum(MC_DATUM);
 }
 
+// --- Map-rect clip (todo 36) -------------------------------------------------
+// The static layer projects the course in whatever view is active and then
+// draws it, but the geometry is not bounded by the map: in Target view the
+// span is forced to 0.0003 deg around the target, and in heading-up the fit
+// box itself rotates, so most of the course falls outside the window and a
+// mark-to-mark leg becomes a page-long chord running over the header readouts
+// and across the frame. Clip every segment against the rectangle the map owns
+// (WIRE_TOP..WIRE_Y1) with Liang-Barsky, and reject wholly-outside geometry
+// before it costs a single SPI byte.
+// `inset` shrinks the rect: a wide line is drawn centred on the segment, so a
+// 3px start line clipped exactly on the border would still leave a row in the
+// header band.
+static bool clipToMap(int& x0, int& y0, int& x1, int& y1, int inset = 0)
+{
+    const double left = MAP_X + inset, right = MAP_X + MAP_W - 1 - inset;
+    const double top = WIRE_TOP + inset, bottom = WIRE_Y1 - 1 - inset;
+    const double dx = (double)(x1 - x0), dy = (double)(y1 - y0);
+    double t0 = 0.0, t1 = 1.0;
+    const double p[4] = {-dx, dx, -dy, dy};
+    const double q[4] = {(double)x0 - left, right - (double)x0,
+                         (double)y0 - top, bottom - (double)y0};
+    for (int i = 0; i < 4; i++) {
+        if (p[i] == 0.0) {
+            if (q[i] < 0.0) return false; // parallel to this edge, outside it
+            continue;
+        }
+        const double r = q[i] / p[i];
+        if (p[i] < 0.0) {
+            if (r > t1) return false;
+            if (r > t0) t0 = r;
+        } else {
+            if (r < t0) return false;
+            if (r < t1) t1 = r;
+        }
+    }
+    const int nx0 = (int)lround((double)x0 + t0 * dx);
+    const int ny0 = (int)lround((double)y0 + t0 * dy);
+    const int nx1 = (int)lround((double)x0 + t1 * dx);
+    const int ny1 = (int)lround((double)y0 + t1 * dy);
+    x0 = nx0; y0 = ny0; x1 = nx1; y1 = ny1;
+    return true;
+}
+
+// A mark is worth drawing only if its circle (plus the round arrows standing
+// ~2*rPx/5 outside it) meets the map rect at all.
+static bool circleOnMap(int cx, int cy, int r)
+{
+    return cx + r >= MAP_X && cx - r < MAP_X + MAP_W &&
+           cy + r >= WIRE_TOP && cy - r < WIRE_Y1;
+}
+
 // Static course layer: legs, segments, circles, numbers, header wind.
 // Identical pixels every time — safe to repaint over dirty regions.
 static void drawStaticLayer(const RaceProj& p, double rotEff)
@@ -673,7 +768,7 @@ static void drawStaticLayer(const RaceProj& p, double rotEff)
     for (uint8_t i = 0; i + 1 < raceSession.markCount; i++) {
         projToPx(p, raceSession.marks[i].lat, raceSession.marks[i].lon, px, py);
         projToPx(p, raceSession.marks[i + 1].lat, raceSession.marks[i + 1].lon, qx, qy);
-        tft.drawLine(px, py, qx, qy, RDIM);
+        if (clipToMap(px, py, qx, qy)) tft.drawLine(px, py, qx, qy, RDIM);
     }
     uint8_t tIdx = 255;
     bool tLine = false;
@@ -686,14 +781,16 @@ static void drawStaticLayer(const RaceProj& p, double rotEff)
         projToPx(p, s.latA, s.lonA, px, py);
         projToPx(p, s.latB, s.lonB, qx, qy);
         const bool hl = tLine && tLineIdx == 0;
-        tft.drawWideLine(px, py, qx, qy, 3, hl ? RBOAT : TFT_GREEN);
+        if (clipToMap(px, py, qx, qy, 2))
+            tft.drawWideLine(px, py, qx, qy, 3, hl ? RBOAT : TFT_GREEN);
     }
     if (raceSession.finishLine.valid && !raceSession.finishSameAsStart) {
         const RaceSeg& s = raceSession.finishLine;
         projToPx(p, s.latA, s.lonA, px, py);
         projToPx(p, s.latB, s.lonB, qx, qy);
         const bool hl = tLine && tLineIdx == 1;
-        tft.drawWideLine(px, py, qx, qy, 2, hl ? RBOAT : TFT_GREEN);
+        if (clipToMap(px, py, qx, qy, 1))
+            tft.drawWideLine(px, py, qx, qy, 2, hl ? RBOAT : TFT_GREEN);
     }
     char num[12];
     // Target circles are deferred to the end: on a pile of coincident marks
@@ -707,6 +804,10 @@ static void drawStaticLayer(const RaceProj& p, double rotEff)
         int rPx = (int)(m.r / DEG_M * p.scale);
         if (rPx < 3) rPx = 3;
         if (rPx > 40) rPx = 40;
+        // Marks outside the window are skipped whole (todo 36): a circle
+        // centred in the header band is not clipped by the rect, it paints
+        // there. +12 covers the round arrows, which stand outside the ring.
+        const bool onMap = circleOnMap(px, py, rPx + 12);
         // Coincident marks (piles) are ONE physical buoy, and two things now
         // depend on that: the label draws once (its !firstOfPile skip below) and
         // the buoy dot draws once (todo 43). The circles still draw per mark.
@@ -727,11 +828,11 @@ static void drawStaticLayer(const RaceProj& p, double rotEff)
         }
         if (isTgt) {
             if (deferN < 10) defer[deferN++] = i;
-        } else {
+        } else if (onMap) {
             tft.drawCircle(px, py, rPx, RFG);
             drawRoundArrows(px, py, rPx, m.side, RFG);
         }
-        if (firstOfPile) {
+        if (firstOfPile && onMap) {
             // Todo 43: the buoy ITSELF, at true scale. The circle above is the
             // rounding radius (30 m by default) - 60 m across - while a real
             // racing buoy is 1-5 m, so "how far off the buoy am I" had no
@@ -749,6 +850,7 @@ static void drawStaticLayer(const RaceProj& p, double rotEff)
             tft.fillCircle(px, py, bR, TFT_RED);
         }
         if (!firstOfPile) continue;
+        if (!onMap) continue; // label would land outside the rect (todo 36)
         num[0] = '\0';
         bool first = true;
         for (uint8_t j = i; j < raceSession.markCount; j++) {
@@ -805,6 +907,7 @@ static void drawStaticLayer(const RaceProj& p, double rotEff)
         int rPx = (int)(m.r / DEG_M * p.scale);
         if (rPx < 3) rPx = 3;
         if (rPx > 40) rPx = 40;
+        if (!circleOnMap(px, py, rPx + 12)) continue; // todo 36
         tft.drawCircle(px, py, rPx, RBOAT);
         // Same heads at the same radius as the white pass, so the yellow ones
         // land exactly on the white ones: the highlight follows the circle by
@@ -878,23 +981,12 @@ static void drawRaceMap(TinyGPSPlus& gps, bool full)
         if (brg < 0) brg += 360.0;
         if (brg >= 360.0) brg -= 360.0;
         rotEff = brg;
+    } else if (viewMode == 2) {
+        rotEff = wideRotation();
     }
 
     RaceProj p;
-    if (viewMode == 2) {
-        RaceProj p0, p90;
-        buildProjection(p0, 0.0);
-        buildProjection(p90, 90.0);
-        if (p90.ok && (!p0.ok || p90.scale > p0.scale)) {
-            p = p90;
-            rotEff = 90.0;
-        } else {
-            p = p0;
-            rotEff = 0.0;
-        }
-    } else {
-        buildProjection(p, rotEff);
-    }
+    buildProjection(p, rotEff);
     if (!p.ok) return;
 
     // Todo 46: the dirty path below erases the boat and dashes, then REPAINTS
@@ -904,19 +996,29 @@ static void drawRaceMap(TinyGPSPlus& gps, bool full)
     // moves), and no focus switch happens there (focusEnabled never toggles), so
     // nothing asked for a clear: the old mark labels, circles and legs stayed
     // standing beside the new view. Fingerprint the camera — origin and scale —
-    // and force one full repaint whenever it moves. Rotation is deliberately NOT
-    // in the fingerprint: it changes on every pass in heading-up mode and the
-    // throttled branch below already owns that case.
+    // and force one full repaint whenever it moves. Rotation itself is not
+    // compared here (the throttled branch below owns it), but the origin it
+    // produces must be: see the ordering note.
+    // Rotating views can't use dirty updates (the whole frame turns): throttle
+    // them to 1Hz full redraws instead. Decide this FIRST: the fit origin is
+    // computed in ROTATED space, so every heading change moves p.lat0/lon0 —
+    // if the fingerprint below were allowed to read that as "the camera moved"
+    // it would promote every rotating pass to `full` and the throttle would
+    // never run (the map was cleared and repainted at the 200ms pass rate, up
+    // to 5x/s, which is what heading-up flicker was). The epsilon is degrees of
+    // bearing-to-destination: 0.1 was noise-level (2 m of GPS jitter 30 m out
+    // moves the bearing by ~4 deg), 2 deg is under what the eye can see on a
+    // still picture and above what a boat holding a course produces.
+    static const double ROT_EPS_DEG = 2.0;
+    const bool rotating = fabs(rotEff - oldRotEff) > ROT_EPS_DEG;
+
     static double lastLat0 = 1e9, lastLon0 = 1e9, lastScale = 0.0;
     const bool camMoved =
         fabs(p.lat0 - lastLat0) * p.scale > 0.5 ||
         fabs((p.lon0 - lastLon0) * p.cosLat) * p.scale > 0.5 ||
         fabs(p.scale - lastScale) > lastScale * 0.001;
-    if (camMoved) full = true;
+    if (camMoved && !rotating) full = true;
 
-    // Rotating views can't use dirty updates (the whole frame turns):
-    // throttle them to 1Hz full redraws instead.
-    const bool rotating = fabs(rotEff - oldRotEff) > 0.1;
     if (!full && rotating) {
         if (millis() - lastMapDraw < 1000) return;
         full = true;
@@ -973,6 +1075,10 @@ static void drawRaceMap(TinyGPSPlus& gps, bool full)
             } else {
                 ex = dx; ey = dy;
             }
+            // The stub must not cross the window border either (todo 36): the
+            // target can sit outside the rect in Focus/heading-up, and this is
+            // the only line that starts at the boat rather than at a mark.
+            clampToWire(bx, by, ex, ey);
         }
         ang = gps.course.isValid() ? (gps.course.deg() - rotEff) : 0.0;
         // Second stub (todo 39): where the boat is ACTUALLY going. Same length
@@ -1469,7 +1575,7 @@ drawSmart(MAP_X + 4, HDR_ROW1_Y, 4, TL_DATUM, finBanner ? TFT_GREEN : RFG, ban, 
     } else {
         snprintf(hintL, sizeof(hintL), "L Next  LL Menu");
         const char* viewName = focusMode == 0 ? "Map" : focusMode == 1 ? "Tgt" : "Auto";
-        const char* bearName = (viewMode % 2 == 0) ? "N" : "BRG";
+        const char* bearName = viewMode == 0 ? "N" : viewMode == 1 ? "BRG" : "Wide";
         snprintf(hintR, sizeof(hintR), "R %s RR %s", viewName, bearName);
     }
     if (strcmp(hintL, lastHintL) != 0 || strcmp(hintR, lastHintR) != 0) {
@@ -2156,9 +2262,11 @@ void screenRaceButton(Button button, ButtonEvent event)
         redrawCurrentPage();
         return;
     }
-    // Right long: toggle bearing (N-up <-> bearing-up).
+    // Right long: cycle the bearing — north-up, heading-up, wide (todo 48).
+    // `redrawCurrentPage()` forces the repaint, so a new orientation shows up
+    // immediately instead of waiting for the 1 Hz rotation throttle.
     if (button == Button::Right && event == ButtonEvent::LongPress) {
-        viewMode = (viewMode + 1) % 2;
+        viewMode = (uint8_t)((viewMode + 1) % 3);
         redrawCurrentPage();
         return;
     }
