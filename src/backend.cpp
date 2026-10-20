@@ -524,15 +524,15 @@ static void healthTask(void *param)
 {
     (void)param;
     unsigned long lastHealthCheck = 0;
-    bool firstCheck = true; // hit the backend at once: the race screen
-                            // entry gate needs a fresh health, not a 30s wait
+    bool firstCheck = true; // hit the backend at once so the link tiles are
+                            // honest and a session arrives without a 30s wait
     for (;;) {
         const unsigned long now = millis();
         // Until the very first successful health we know nothing about the
-        // link, and the race-screen entry gate (backendOnlineFresh) refuses
-        // to open while lastHealthOkMs is still 0. Retry fast in that window
-        // only: it is bounded by the first success, so this costs nothing
-        // afterwards.
+        // link. Retry fast in that window only: it is bounded by the first
+        // success, so this costs nothing afterwards. (It used to exist for the
+        // race-screen entry gate; the gate is gone — todo 42 — but a boat that
+        // boots at the start line still benefits from finding the link fast.)
         const unsigned long bootHealthInterval = 1000;
         const unsigned long healthInterval =
             raceSessionLive() ? HEALTH_LIVE_INTERVAL

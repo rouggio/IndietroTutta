@@ -34,7 +34,7 @@ bool raceRunFinished();
 bool raceRunBadRun();
 const char* raceRunBadRunWhy();
 bool raceRunOcs();        // crossed early, awaiting proper re-cross
-long raceRunStartEpoch(); // gun-cross moment, 0 when none
+long raceRunStartEpoch(); // clock base: the GUN of this race, 0 when none
 long raceRunEndEpoch();   // finish moment, 0 when unfinished
 long raceGunEpoch();      // effective gun (race session or practice), 0 if none
 

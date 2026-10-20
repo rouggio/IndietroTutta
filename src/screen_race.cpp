@@ -21,6 +21,38 @@ static const uint16_t RBG = TFT_BLACK;
 static const uint16_t RFG = TFT_WHITE;
 static const uint16_t RDIM = 0x8410; // neutral gray
 static const uint16_t RBOAT = TFT_YELLOW;
+// Second dynamic segment (todo 39): the boat's own course over ground. Cyan is
+// the one bright colour this screen does not already spend — yellow is the
+// boat, the mark circles and the target stub, green the course lines, red every
+// alert — so the two stubs are distinguishable without a legend.
+static const uint16_t RCOG = TFT_CYAN;
+// Below this the COG is noise: gps.course is direction of TRAVEL (there is no
+// compass on the device), so at rest it wanders around the mast. The stub is
+// then simply absent instead of pointing somewhere that means nothing.
+static const double COG_MIN_KN = 0.5;
+// Both dynamic stubs: the length is what tells them apart at a glance as much
+// as the colour. The destination stub is 2/3 of the COG stub's length
+// (2026-10-20, user) — 40 * 2/3 = 26.7, kept as 27 px.
+static const int STUB_PX = 40;      // the boat's own COG
+static const int STUB_DEST_PX = 27; // toward the destination
+
+// Finished-race hold (todo 38). The backend stops pushing a session the moment
+// it derives `finished` — i.e. right after our run uploads — and the page then
+// falls to its empty state, which clears the header too: the sailor's time used
+// to die with the session it belonged to. So on the finish edge the screen
+// snapshots the result and keeps the header alive (FINISHED banner + the frozen
+// elapsed time) until the next run/session, or until the page is left.
+// RAM only, on purpose: a reboot has no race to report.
+static bool finHold = false;
+static long finHoldSession = -1; // the session the held result belongs to
+static long finHoldElapsed = 0;  // gun -> finish, seconds
+
+void raceFinishHoldClear()
+{
+    finHold = false;
+    finHoldSession = -1;
+    finHoldElapsed = 0;
+}
 static const uint16_t MENU_GRAY = 0x7BEF; // CONFIG gray: menu reference color
 
 // Frame: full-bleed N/W/E border, south edge +4.
@@ -416,6 +448,8 @@ static bool oldWasDot = false;
 static bool oldHaveBoat = false;
 static int oldDash[4] = {0, 0, 0, 0};
 static bool oldHaveDash = false;
+static int oldCog[2] = {0, 0};
+static bool oldHaveCog = false;
 static bool dynOk = false;
 static double oldRotEff = 0.0;
 
@@ -614,11 +648,40 @@ static void drawStaticLayer(const RaceProj& p, double rotEff)
             strncat(num, tmp, sizeof(num) - strlen(num) - 1);
             first = false;
         }
-        tft.setTextDatum(MC_DATUM);
-        tft.setTextColor(i == 0 ? RFG : RDIM, RBG);
+        // Todo 40: the label is drawn per index, not as one string, so inside a
+        // pile the index the ring is on is legible: "1-3" reads as **1**-3
+        // upwind and 1-**3** on the way back. Colour only (yellow digits, the
+        // same RBOAT as the ring) — a box would move the label and cost an erase
+        // path of its own — and the whole string is still centred as one block,
+        // so its position never shifts as the target moves. A gate target
+        // highlights BOTH of its indices, exactly as both rings light up.
         // Always above the circle so it never overlaps the ring — nor a line
         // (start/finish) the mark happens to sit on.
-        tft.drawString(num, px, py - rPx - 10, 2);
+        const int ly = py - rPx - 10;
+        int lx = px - tft.textWidth(num, 2) / 2;
+        bool firstRun = true;
+        for (uint8_t j = i; j < raceSession.markCount; j++) {
+            const RaceMark& pj = raceSession.marks[j];
+            if (pj.lat != m.lat || pj.lon != m.lon) continue;
+            if (!firstRun) {
+                tft.setTextDatum(ML_DATUM);
+                tft.setTextColor(RDIM, RBG);
+                tft.drawString("-", lx, ly, 2);
+                lx += tft.textWidth("-", 2);
+            }
+            const bool jTgt =
+                (tGate && pj.type == RaceMarkGate && pj.gate[0] &&
+                 strcmp(pj.gate, tGateId) == 0) ||
+                (!tGate && !tLine && j == tIdx);
+            char idx[4];
+            snprintf(idx, sizeof(idx), "%d", j + 1);
+            tft.setTextDatum(ML_DATUM);
+            tft.setTextColor(jTgt ? RBOAT : RDIM, RBG);
+            tft.drawString(idx, lx, ly, 2);
+            lx += tft.textWidth(idx, 2);
+            firstRun = false;
+        }
+        tft.setTextDatum(MC_DATUM);
     }
     // Deferred target rings, on top of everything: the highlighted mark
     // prevails even inside its own pile.
@@ -668,7 +731,14 @@ static void drawRaceMap(TinyGPSPlus& gps, bool full)
             const int cy = WIRE_TOP + (WIRE_Y1 - WIRE_TOP) / 2;
             tft.setTextDatum(MC_DATUM);
             tft.setTextColor(RFG, RBG);
-            tft.drawString("No session available", cx, cy - 30, 2);
+            if (finHold) {
+                // The race is over and the backend has taken the session away;
+                // the header still carries the result (todo 38), so this must
+                // not claim there was never a session.
+                tft.drawString("Race finished", cx, cy - 30, 2);
+            } else {
+                tft.drawString("No session available", cx, cy - 30, 2);
+            }
             drawLabel1C(cx, cy + 2, "Start a practice session from menu", RDIM);
             drawLabel1C(cx, cy + 18, "or await committee instructions", RDIM);
             // The view tag sits inside the cleared area; force it back.
@@ -743,7 +813,8 @@ static void drawRaceMap(TinyGPSPlus& gps, bool full)
     // draw the new dash + boat. Skipped entirely when nothing moved.
     int px = 0, py = 0;
     int bx = -1, by = -1, dx = -1, dy = -1, ex = -1, ey = -1;
-    bool haveBoat = false, haveDash = false, isDot = false;
+    int cogX = -1, cogY = -1;
+    bool haveBoat = false, haveDash = false, isDot = false, haveCog = false;
     double ang = 0.0;
     if (gps.location.isValid()) {
         projToPx(p, gps.location.lat(), gps.location.lng(), px, py);
@@ -759,7 +830,7 @@ static void drawRaceMap(TinyGPSPlus& gps, bool full)
             // Short fixed stub (~1 cm) toward the checkpoint, not the whole leg.
             const double vx = dx - bx, vy = dy - by;
             const double len = hypot(vx, vy);
-            const int stub = 40; // px
+            const int stub = STUB_DEST_PX;
             if (len > stub) {
                 ex = (int)(bx + vx / len * stub);
                 ey = (int)(by + vy / len * stub);
@@ -768,18 +839,43 @@ static void drawRaceMap(TinyGPSPlus& gps, bool full)
             }
         }
         ang = gps.course.isValid() ? (gps.course.deg() - rotEff) : 0.0;
+        // Second stub (todo 39): where the boat is ACTUALLY going. Same length
+        // and dash pattern as the yellow destination stub, in cyan, so the pair
+        // reads "steering this way / need to go that way" at a glance.
+        if (gps.course.isValid() && gps.speed.isValid() &&
+            gps.speed.knots() >= COG_MIN_KN) {
+            const double a = ang * M_PI / 180.0;
+            cogX = (int)(bx + sin(a) * STUB_PX);
+            cogY = (int)(by - cos(a) * STUB_PX);
+            // The COG points anywhere — up into the header band included, which
+            // the destination stub can never do (its target is inside the fit
+            // box). Shorten it at the race window's border (todo 37's rect),
+            // then hard-clamp as a net for the boat-sitting-on-the-border case,
+            // where the ray leaves at t == 0 and clampToWire declines to act.
+            clampToWire(bx, by, cogX, cogY);
+            if (cogX < MAP_X + 5) cogX = MAP_X + 5;
+            else if (cogX > MAP_X + MAP_W - 5) cogX = MAP_X + MAP_W - 5;
+            if (cogY < WIRE_TOP + 5) cogY = WIRE_TOP + 5;
+            else if (cogY > WIRE_Y1 - 5) cogY = WIRE_Y1 - 5;
+            haveCog = true;
+        }
     }
     if (!dynOk) {
         // Fresh draw, nothing to erase.
     } else if (haveBoat == oldHaveBoat && (!haveBoat ||
                (bx == oldBx && by == oldBy && ang == oldAng && isDot == oldWasDot &&
                 haveDash == oldHaveDash && (!haveDash ||
-                 (ex == oldDash[0] && ey == oldDash[1]))))) {
+                 (ex == oldDash[0] && ey == oldDash[1])) &&
+                haveCog == oldHaveCog && (!haveCog ||
+                 (cogX == oldCog[0] && cogY == oldCog[1]))))) {
         return; // nothing moved
     } else {
         // Erase old dash + old boat, then restore identical static pixels.
         if (oldHaveDash) {
             drawDashed(oldBx, oldBy, oldDash[0], oldDash[1], RBG);
+        }
+        if (oldHaveCog) {
+            drawDashed(oldBx, oldBy, oldCog[0], oldCog[1], RBG);
         }
         if (oldHaveBoat) {
             if (oldWasDot) {
@@ -796,6 +892,9 @@ static void drawRaceMap(TinyGPSPlus& gps, bool full)
     if (haveDash) {
         drawDashed(bx, by, ex, ey, RBOAT);
     }
+    if (haveCog) {
+        drawDashed(bx, by, cogX, cogY, RCOG);
+    }
     if (haveBoat) {
         if (isDot) {
             tft.drawCircle(bx, by, 4, RBOAT);
@@ -806,6 +905,7 @@ static void drawRaceMap(TinyGPSPlus& gps, bool full)
     oldBx = bx; oldBy = by; oldAng = ang; oldWasDot = isDot;
     oldHaveBoat = haveBoat; oldHaveDash = haveDash;
     oldDash[0] = ex; oldDash[1] = ey; oldDash[2] = 0; oldDash[3] = 0;
+    oldCog[0] = cogX; oldCog[1] = cogY; oldHaveCog = haveCog;
     dynOk = true;
 }
 
@@ -1061,10 +1161,34 @@ static void drawRaceText(TinyGPSPlus& gps)
     lastGpsNow = now;
     const long gun = raceGunEpoch();
 
+    // Snapshot the finish on its edge (todo 38) — see the state block above.
+    // The run is the only thing that knows the result, and it is reset when the
+    // session goes away, so this has to happen BEFORE that.
+    if (raceRunFinished() && raceRunEndEpoch() > 0 && raceRunStartEpoch() > 0) {
+        if (!finHold) {
+            finHold = true;
+            finHoldSession = raceSession.valid ? raceSession.sessionId : -1;
+            finHoldElapsed = raceRunEndEpoch() - raceRunStartEpoch();
+        }
+    } else if (finHold && raceRunStarted()) {
+        finHold = false; // a new run is under way: the last result is history
+    } else if (finHold && raceSession.valid && finHoldSession >= 0 &&
+               raceSession.sessionId != finHoldSession) {
+        finHold = false; // a different session arrived: new race, new picture
+    }
+
     // Header: committee banners only (the countdown lives in the pane now).
     char ban[12];
+    // The held finish is the resting state after the line, but an 8s committee
+    // signal still interrupts it — a DSQ/SCP has to be seen — and FINISHED
+    // comes back on its own when the signal expires.
+    const bool finBanner = finHold && !(millis() < sigUntil && sigMsg[0]);
     if (millis() < sigUntil && sigMsg[0]) {
         snprintf(ban, sizeof(ban), "%-8.8s", sigMsg);
+    } else if (finBanner) {
+        // A finished race outranks the countdown/OCS/transients: the gun is
+        // gone, and this is the line the sailor is looking at.
+        snprintf(ban, sizeof(ban), "FINISHED ");
     } else if (raceSession.valid && gun > 0 && now > 0 && now < gun && gun - now <= 60000) {
         // Countdown takes the banner from one minute out (below signals,
         // above transients): the eyes are on the header, not the pane, as
@@ -1091,7 +1215,7 @@ static void drawRaceText(TinyGPSPlus& gps)
     // Banner: top-LEFT (was centred). Left-datum keeps drawSmart's erase box
 // anchored at the string origin, which is what the suffix-only erase
 // expects — a centred datum has to recompute the box from the old width.
-drawSmart(MAP_X + 4, HDR_ROW1_Y, 4, TL_DATUM, RFG, ban, pBan, sizeof(pBan), pBanW);
+drawSmart(MAP_X + 4, HDR_ROW1_Y, 4, TL_DATUM, finBanner ? TFT_GREEN : RFG, ban, pBan, sizeof(pBan), pBanW);
 
     // The N-UP/BRG-UP/FIT view tag lives in the hint bar now. Its old in-map
     // draw was removed but its ghost-erase was not, so the block went on
@@ -1140,7 +1264,11 @@ drawSmart(MAP_X + 4, HDR_ROW1_Y, 4, TL_DATUM, RFG, ban, pBan, sizeof(pBan), pBan
     }
     // Compact time string for the pane (header countdown moved here).
     char tim[10];
-    if (raceSession.valid && gun > 0 && now > 0) {
+    if (finHold) {
+        // The held result (todo 38): frozen at the finish, and it survives the
+        // session being dropped by the backend — which is the whole point.
+        snprintf(tim, sizeof(tim), "+%2ld:%02ld", finHoldElapsed / 60, finHoldElapsed % 60);
+    } else if (raceSession.valid && gun > 0 && now > 0) {
         if (now < gun) {
             const long rem = gun - now;
             snprintf(tim, sizeof(tim), " %2ld:%02ld", rem / 60, rem % 60);
@@ -1187,8 +1315,8 @@ drawSmart(MAP_X + 4, HDR_ROW1_Y, 4, TL_DATUM, RFG, ban, pBan, sizeof(pBan), pBan
         // alike: the " --.- Kn"/"--- m"/"--:--" placeholders read as values at
         // a glance from a helm. An empty string makes drawReadout blank the
         // whole previous box, which is the only correct way to remove one.
-        if (showBrg) snprintf(ov, sizeof(ov), "%ld m", distM);
-        else ov[0] = '\0';
+        if (showBrg && !finHold) snprintf(ov, sizeof(ov), "%ld m", distM);
+        else ov[0] = '\0'; // finished: the distance back to the line is noise
         drawReadoutTL(xl, HDR_ROW2_Y, 4, ov, ovDst, sizeof(ovDst), ovDstW);
         drawReadoutTR(xr, HDR_ROW2_Y, 4, tim, ovTim, sizeof(ovTim), ovTimW);
     }

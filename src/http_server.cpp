@@ -696,8 +696,9 @@ static void handleStatus()
     // Estimate only: the core tone task owns the real playback timing, so
     // this tracks when we queued a script, not what the buzzer is doing.
     sys["soundPlaying"] = soundPlaying();
-    // Race-screen entry gate: false means /health has not succeeded in the
-    // last 60s, so the race screen refuses to open.
+    // Link freshness: true when /health succeeded in the last 60s. Diagnostic
+    // only — the race screen no longer gates entry on it (todo 42): the cached
+    // session is enough to sail, and the run upload retries until it lands.
     sys["onlineFresh"] = backendOnlineFresh();
     // Which screen is showing. Without it the portal cannot tell whether a
     // scripted test is even running: the mock feed sails the boat regardless

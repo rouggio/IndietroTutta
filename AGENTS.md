@@ -68,7 +68,10 @@ at x+20 with a drawn degree ring at x+26) — all four redraw only on change
 (prev -1/-2 sentinels), one-off fillRect
 wipe only on speed-width change; POS line removed),
 `screen_race.*` shared RACE/PRAC screen (map viewport = left 4/5; wireframe +
-boat triangle/edge-dot + ~1 cm dashed yellow stub toward the next mark; right pane =
+boat triangle/edge-dot + ~1 cm dashed yellow stub toward the next mark (2/3 the
+length of the COG stub) + a cyan dashed stub along the boat's own COG (`gps.course`,
+only above 0.5 kn, clipped to the map rect — it can point into the header band);
+right pane =
 6 equal rows from the very top, labels via `drawLabel1`, values font-2 right-aligned,
 WND row = wind arrow + whole-knot speed; mark numbers drawn above the circles;
 N-UP/BRG-UP/FIT view tag; empty state clears map+pane and shows a 3-line message;
@@ -97,6 +100,11 @@ ST7789 is write-only — `#define tft (*gCanvas)`; font 1 on a sprite faults,
 so capture uses font 2 for the race pane labels),
 `config_store.*` NVS ns `wifi` blob `cfg` + `wifi_%d_ssid/pass`.
 (Race engine now lives in `race_session.*` + `race_run.*` + `race_courses.*` + `screen_race.*`.)
+**The race clock base is the GUN, never the line crossing:** every start path in
+`race_run.cpp` sets `startEpoch = gun`, so the panel clock, `splits[]` and the
+uploaded `elapsedSec` are all gun-relative (a late or OCS-returning start costs
+what it lost). The START **event** still lands on the crossing — that is what the
+spec scores.
 **Mark-passing law: `SPEC-mark-passing.md` at the repo root — LOCKED, read it
 before touching any pass/score/target logic.**
 
@@ -128,9 +136,12 @@ before touching any pass/score/target logic.**
   local session (transient `OFFLINE`). **Repeat** raises ABANDON on the
   current session then re-creates the remembered one re-anchored at the boat
   (it re-fetches the library first when the RAM pool was wiped by a reboot).
-- The race screen only OPENS when `/health` succeeded in the last 60s
-  (`backendOnlineFresh()`, `sys.onlineFresh` in `/status`); otherwise `L` shows
-  a `NO NETWORK` note and stays put. Losing the link MID-session never ejects.
+- The race screen **always opens** — there is no link gate (todo 42 removed it).
+  The session is cached in NVS (kept while offline), the run upload retries until
+  it lands, and a practice start whose `POST /sessions` fails keeps a local
+  `OFFLINE` session on purpose. With nothing to show, the page's own empty state
+  says so. `sys.onlineFresh` in `/status` is a **diagnostic only** now. Losing the
+  link MID-session never ejects either.
 - CONFIG: `R` select row, `RR` apply, `LL` force OTA now.
 - Every page switch full-black clear; ghost-clear readouts in speed.
 - NO fillRect/fillScreen/clear on the 200ms refresh path — it flickers. Overwrite
@@ -141,11 +152,25 @@ before touching any pass/score/target logic.**
   missing grid/labels) — verify that class of bug on the PANEL, not the grab. Font 1
   (GLCD) drawn into a `TFT_eSprite` faults intermittently → small labels use
   `drawLabel1()`/`drawLabel1C()` in `canvas.h` (manual GLCD via `drawPixel`).
+- Race screen states: **empty / pre-start / racing / finished**. On the finish
+  edge the screen snapshots the result (todo 38): `FINISHED` in green in the
+  banner slot and the elapsed time frozen in the header, both held **after the
+  backend drops the finished session** (it returns `session:null` seconds after
+  the run uploads) until a new run/session arrives or the page is left
+  (`raceFinishHoldClear()` from `screens.cpp`). The distance readout blanks while
+  held. Banner precedence: signal (8 s) → FINISHED → countdown → OCS → transient.
 - Race screen: full-screen overlays (menu, course browse/options) are removed via
   `redrawCurrentPage()`; a REAL session change closes them too, and
   `resetRaceText()` runs on `courseChanged` so the pane (grid+labels) always repaints.
   `gGrabbing` (set during a `/screen` capture) skips side effects (race-run reset,
   menu auto-close).
+- Map labels: coincident marks share one label ("1-3") and it is drawn **per
+  index** (todo 40) — the target's own index in `RBOAT`, every other index
+  `RDIM`, `-` separators dim. The whole string is measured with `textWidth()`
+  and centred once, so the label's position never shifts as the target moves;
+  `ML_DATUM` is used for the runs and `MC_DATUM` restored after. A gate target
+  highlights **both** indices, and a lone mark's label highlights too — there is
+  no separate "pile" case.
 - **`courseChanged` must mean "the session changed", never "a repaint was
   forced".** `lastRaceCourseKey` used to be reset to a `-2` sentinel inside
   `if (requiresInit)` to force a map redraw, so the very next pass read as a
@@ -175,7 +200,9 @@ before touching any pass/score/target logic.**
   and the serial full of `[BACKEND] slow pass 3000ms+` (each mock fix + `POST /gps` to a
   cold free instance takes seconds). On the local DEV backend it works all session. Reboot
   before a UI-debugging stretch, or point the device at DEV; a real fix would be streaming
-  the page in 320×40 bands (12.8 KB per sprite) instead of one big sprite.
+  the page in 320×40 bands (12.8 KB per sprite) instead of one big sprite. The grab is an
+  **8bpp RGB332** sprite: colours are quantised (e.g. `RDIM` 0x8410 comes back as a nearby
+  palette value), so a pixel probe must match by tolerance, never by exact RGB565.
 - Portal always up: open AP `IndietroTutta`, DNS → `192.168.4.1` → `/config`.
   Routes: `/config /save /wifi/remove /reset (wipe all!) /reboot /status /health /serial /mock?on=1|0 /nogo (GET current; POST /nogo?deg=<total width 10..180> — no-go arc width, own NVS key, shown in /status) /ota (POST immediate check vs current server) /server?mode=prod|dev&host=<ip:port> (GET=current) /btn?b=L|R&e=R|RR (remote button) /screen (RGB565 BE 320x240 grab: re-renders the current page into an off-screen 8bpp sprite and streams it, since the ST7789 can't be read back; `scripts/grab_screen.py` → PNG)`. All unauthenticated.
 - **`sys.page` in `/status`** (`main|race|diagnostics|config`): the mock feed

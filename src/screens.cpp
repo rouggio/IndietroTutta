@@ -81,38 +81,19 @@ void drawScreen(TinyGPSPlus &gps, bool requiresInit, ScreenPage page) {
   }
 }
 
-// Entry gate: the race screen lives on server state (session geometry,
-// signals, the course library), so it is only opened when the network is
-// really there — a recent successful health, not just "AP up". Losing the
-// link MID-session is fine: the cached session keeps the screen alive, the
-// gate only guards entry.
-// The refusal is a short overlay on whatever page is showing; when it
-// expires the page is repainted in full so no pixels are left behind.
-static char noteMsg[16] = {0};
-static unsigned long noteUntil = 0;
-
-static void showNote(const char* msg)
-{
-    strncpy(noteMsg, msg, sizeof(noteMsg) - 1);
-    noteMsg[sizeof(noteMsg) - 1] = '\0';
-    noteUntil = millis() + 2000;
-}
-
-static void drawNote()
-{
-    if (!noteUntil) return;
-    if ((long)(millis() - noteUntil) >= 0) {
-        noteUntil = 0;
-        noteMsg[0] = '\0';
-        // Force a full repaint to wipe the overlay band.
-        prevPage = (page == PageMain) ? PageDiagnostics : PageMain;
-        return;
-    }
-    tft.fillRect(0, 0, tft.width(), 28, TFT_BLACK);
-    tft.setTextDatum(TC_DATUM);
-    tft.setTextColor(TFT_RED);
-    tft.drawString(noteMsg, tft.width() / 2, 14, 2);
-}
+// There is deliberately NO entry gate on the race screen (todo 42). It used to
+// refuse to open unless /health had succeeded in the last 60s, and it said so by
+// filling the top 28 px band with a red "NO NETWORK" strip on every 200 ms pass
+// for two seconds, then forcing a full page repaint to erase it - the band the
+// page's own header owns, wiped and redrawn five times a second.
+//
+// The screen never needed the link: the session is cached in NVS (and kept while
+// offline), the run upload retries until it lands, and even a practice start
+// whose POST /sessions fails keeps a local OFFLINE session on purpose. So the
+// device is built to sail offline and only the entry gate disagreed.
+// "Nothing to show" is handled by the race page's own empty state, drawn once by
+// the draw path that owns those pixels; link staleness is reported by the
+// top-bar WiFi/data tiles, which never lie and never strobe.
 
 static const char* pageName(ScreenPage p)
 {
@@ -133,15 +114,9 @@ void nextScreen() {
     page = (ScreenPage)(((int)page + 1) % ((int)PageConfig + 1));
   } while (page == PageDiagnostics || page == PageConfig);
   bufferedSerialPrintln(String("[PAGE] nextScreen -> ") + pageName(page));
-  if (page == PageRace && !backendOnlineFresh()) {
-    static unsigned long lastRefusal = 0;
-    if (millis() - lastRefusal > 5000) { // don't spam the ring buffer
-        lastRefusal = millis();
-        bufferedSerialPrintln("[RACE] entry blocked: health not fresh");
-    }
-    showNote("NO NETWORK");
-    return; // stay put: the race screen needs a live backend
-  }
+  // Leaving the race page drops the finished-race hold (todo 38): the result is
+  // for the sailor standing on the line, not a permanent memorial.
+  if (page != PageRace) raceFinishHoldClear();
   tft.fillScreen(TFT_BLACK);
 }
 
@@ -149,6 +124,7 @@ void setCurrentPage(ScreenPage p) {
     if (p < PageMain || p > PageConfig) return;
     page = p;
     bufferedSerialPrintln(String("[PAGE] setCurrentPage -> ") + pageName(page));
+    if (p != PageRace) raceFinishHoldClear(); // same rule as nextScreen (todo 38)
     // Clear immediately: no stale pixels may survive a page
     // switch, even before the next redraw pass.
     prevPage = (p == PageMain) ? PageDiagnostics : PageMain;
@@ -196,6 +172,5 @@ void screenLoop(TinyGPSPlus &gps) {
             page
         );
         prevPage = page;
-        drawNote();
     }
 }

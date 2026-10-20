@@ -709,7 +709,16 @@ void raceRunUpdate(TinyGPSPlus& gps)
             if (near && hasGunSide && lastSide != 0 && side != 0 &&
                 side != lastSide && side != gunSide) {
                 started = true; // proper re-cross after the gun
-                startEpoch = now;
+                // The clock counts from the GUN, not from this crossing.
+                // Elapsed time in a fleet race is measured from the gun, so a
+                // late start (or an OCS boat that had to come back and re-cross)
+                // costs exactly the time it lost. The START event stays on the
+                // crossing - that is what the spec scores - only the base moves.
+                // It also makes the three start paths agree: the two "late"
+                // paths below already counted from the gun, so the same race
+                // used to record two different elapsed times depending on
+                // whether the crossing happened to be sampled.
+                startEpoch = gun;
                 if (ocs) {
                     ocs = false;
                     logEvent("RECROSS", now, "line");
