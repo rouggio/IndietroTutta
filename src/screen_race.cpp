@@ -67,20 +67,40 @@ static const uint16_t MENU_GRAY = 0x7BEF; // CONFIG gray: menu reference color
 // alert (a banner, the BAD RUN tag), which is transient and outranks the
 // geometry.
 //
-// Header: two font-4 rows of 26px. Row 1 = committee banner (left) + speed
-// (right); row 2 = distance to the destination (left) + race clock (right).
+// Header: ONE font-4 row of 26px, split into three cells of the same width —
+// DST | SPD | TIME — separated by 1px rules. The banner used to share this
+// band (row 1 = banner + speed, row 2 = distance + clock); it now owns the
+// bottom band (see BAND_*), which handed the map the second row's 26px back.
 // The distance and the clock used to live INSIDE the map (top-right and
 // bottom-right, the clock in font 6) and the clock's box alone masked ~11% of
 // the fit box — including the leeward half of the start line in the overview,
 // which is what the sailor looks at before the gun.
-static const int HDR_H = 56;          // two 26px text rows
-static const int HDR_ROW1_Y = 4;      // row 1 glyph top (banner + SPD)
-static const int HDR_ROW2_Y = 30;     // row 2 glyph top (DST + TIME)
+static const int HDR_H = 30;           // one 26px text row + 4px top inset
+static const int HDR_ROW1_Y = 4;       // glyph top of the row
+static const int HDR_CY = HDR_ROW1_Y + 13; // MC_DATUM centre of a font-4 value
 static const int MAP_X = 0;
 static const int MAP_W = 320;          // full screen width (no side pane)
 static const int WIRE_TOP = HDR_H + 2; // map top: the map owns from here down
 static const int WIRE_Y1 = 208;        // ...to the frame south (strip is gone)
 static const int FRAME_SOUTH = 213;
+// The grid's bottom rule. It closes the three cells AND is the map area's top
+// border: the map fill starts at WIRE_TOP, so this row is never painted over.
+static const int HDR_RULE_Y = WIRE_TOP - 1;  // 31
+// The grid: three cells across 320px. 320 is not divisible by 3, so the odd
+// pixel goes to the two OUTER cells (107 | 106 | 107): symmetric, and 106px is
+// enough for the widest value each cell can hold ("15.7 Kn" ~83px, "+99:59"
+// ~90px), so a readout never touches a rule.
+static const int CELL_EDGE[4] = {0, 107, 213, 320};
+static const int CELL_CX[3] = {53, 160, 266}; // DST | SPD | TIME centres
+// Bottom band (the hint region, far bottom): it holds the HINTS or the BANNER,
+// never both — the banner is the alert you must not miss (FINISHED, OCS, GO,
+// the gun countdown, a committee signal), so while it is up the hints step
+// aside and they come back when it goes. 26px tall, i.e. exactly one font-4
+// line under the frame's south rule; the font-2 hints keep their baseline.
+static const int BAND_Y = FRAME_SOUTH + 1;  // 214
+static const int BAND_H = 26;               // 214..239
+static const int BAND_HINT_Y = 239;         // BL baseline of the hint pair
+static const int BAND_BANNER_Y = BAND_Y;    // TC top of a font-4 banner
 // Right values pane: 1/5 width, six mini-labeled rows filling the height.
 static const int PANE_X = 256;
 static const int PANE_W = 64;
@@ -92,7 +112,14 @@ static inline int paneRowY(int r) { return PANE_TOP + (r * PANE_H) / 6; }
 static void drawFrameChrome()
 {
     tft.drawRect(0, 0, 320, FRAME_SOUTH, RDIM);
-    // no side-pane divider: full-width map
+    // The header grid: two vertical rules closing three equal cells, and a
+    // horizontal rule along their bottom (todo 50). The horizontal one doubles
+    // as the map area's top border. Chrome, like the frame: drawn once per full
+    // repaint, and every readout erases only inside its own cell, so the rules
+    // survive the 200ms path untouched.
+    for (int i = 1; i < 3; i++)
+        tft.drawFastVLine(CELL_EDGE[i], 1, HDR_RULE_Y, RDIM);
+    tft.drawFastHLine(0, HDR_RULE_Y, 320, RDIM);
 }
 
 static const int AUTO_DIST_OPTIONS[] = {10, 50, 100, 200};
@@ -926,7 +953,7 @@ static void drawStaticLayer(const RaceProj& p, double rotEff)
 
 static void resetRaceText(); // defined below; the empty state clears and needs it
 
-// Overlay readout caches (see drawReadoutTR): the last string drawn and its
+// Overlay readout caches (see drawReadoutC): the last string drawn and its
 // exact pixel width, so a box that shrinks can blank its own leftover first.
 static char ovSpd[16] = {0}; static int16_t ovSpdW = 0;
 static char ovDst[16] = {0}; static int16_t ovDstW = 0;
@@ -968,8 +995,8 @@ static void drawRaceMap(TinyGPSPlus& gps, bool full)
         dynOk = false;
         return;
     }
-    // Effective rotation: 0 north-up, bearing-to-destination up, or best
-    // screen fit (0°/90° whichever fills more). Falls back to north-up
+    // Effective rotation: 0 north-up, bearing-to-destination up, or wide — the
+    // course's own orientation from wideRotation(). Falls back to north-up
     // whenever the fix/destination is missing.
     double rotEff = 0.0;
     double destLat = 0.0, destLon = 0.0;
@@ -1180,6 +1207,7 @@ static void drawSmart(int x, int y, uint8_t font, int datum, uint16_t color,
     // confined to a couple of characters.
     int ex = x, ey = y;
     if (datum == TC_DATUM) ex = x - lastW / 2;
+    else if (datum == MC_DATUM) { ex = x - lastW / 2; ey = y - h / 2; }
     else if (datum == TR_DATUM) ex = x - lastW;
     else if (datum == BL_DATUM) ey = y - h;
     else if (datum == BR_DATUM) { ex = x - lastW; ey = y - h; }
@@ -1187,6 +1215,18 @@ static void drawSmart(int x, int y, uint8_t font, int datum, uint16_t color,
     if (lastW > 0) {
         size_t keep = 0;
         while (last[keep] && txt[keep] && last[keep] == txt[keep]) keep++;
+        // A CENTRED string also shifts sideways when its length changes, and
+        // the suffix erase cannot reach the strip that leaves behind on the old
+        // LEFT edge: the countdown going "GUN 1'00''" -> "GUN 59''" is two
+        // glyphs shorter, so the new text starts ~14px right of the old one and
+        // the old "G" stayed standing to the left of it. Blank that strip too;
+        // it is exactly the shift, so it runs only on a length change (once or
+        // twice per countdown), never once a second.
+        if (datum == TC_DATUM || datum == MC_DATUM) {
+            const int newW = tft.textWidth(txt, font);
+            if (newW < lastW && ex < x - newW / 2)
+                tft.fillRect(ex, ey, (x - newW / 2) - ex, h, RBG);
+        }
         // textWidth() of the shared prefix, so the erase starts exactly
         // where the first differing glyph begins.
         const int prefixW = tft.textWidth(String(last).substring(0, keep).c_str(), font);
@@ -1199,61 +1239,36 @@ static void drawSmart(int x, int y, uint8_t font, int datum, uint16_t color,
     last[lastLen - 1] = '\0';
 }
 
-// Race-screen readouts (SPD / DST / TIME). This is drawSmart WITHOUT the
-// identical-string skip, on purpose: the readouts are cheap and a cached
-// "already drawn" alone would hide one until its value next changed.
-// Redrawing every pass is what the old opaque overlay did anyway.
+// Race-screen readouts (DST / SPD / TIME), one CENTRED value per cell of the
+// header grid. This is drawSmart WITHOUT the identical-string skip, on purpose:
+// the readouts are cheap and a cached "already drawn" alone would hide one
+// until its value next changed. Redrawing every pass is what the old opaque
+// overlay did anyway.
 //
 // What it adds is the ERASE. An opaque drawString erases exactly the NEW
-// string's box, so a box that shrinks in PIXELS leaves the old left edge
-// standing as ghost pixels. Character padding cannot prevent that: in font 4
-// the digits are tabular (advance 14) but a space advances 5, so dropping the
-// leading digit out of "%4ld m" ("1000 m" -> " 999 m") shortens the rendered
-// string by 9px at an unchanged character count - and if the discarded glyph
-// had ink there, it survives. Blank from the first differing glyph to the end
-// of the previous box, then draw over it.
-//
-// (Todo 37 moved all three out of the map and into the header, so the boxes no
-// longer sit on race pixels at all: they are anchored against the header's own
-// edges, which is what makes datum-anchored erasing safe here.)
-static void drawReadout(int x, int y, uint8_t font, uint8_t datum, const char* txt,
-                        char* last, size_t lastLen, int16_t& lastW)
+// string's box, so a box that shrinks in PIXELS leaves the old edge standing as
+// ghost pixels (in font 4 the digits are tabular, advance 14, so the shift is
+// real pixels). The old edge-anchored layout could blank only the changing
+// SUFFIX because a left/right datum keeps the other edge still; a centred box
+// moves on BOTH sides, so shortening "15.7 Kn" to "9.9 Kn" would shift the left
+// edge right by ~20px and leave the first glyphs of the old value behind. Clear
+// the UNION of the old and new boxes instead: it never leaves the cell (the
+// widest value is ~90px in a 106px cell) and it only runs when the string
+// changes, which is the same rule the suffix eraser followed.
+static void drawReadoutC(int x, int y, uint8_t font, const char* txt,
+                         char* last, size_t lastLen, int16_t& lastW)
 {
-    tft.setTextDatum(datum);
+    tft.setTextDatum(MC_DATUM);
+    const int h = fontPxH(font);
     if (lastW > 0 && strcmp(txt, last) != 0) {
-        size_t keep = 0;
-        while (last[keep] && txt[keep] && last[keep] == txt[keep]) keep++;
-        // Width of the shared prefix from a stack buffer: the speed readout
-        // changes ~10x a second and must not churn the heap (a String would,
-        // and the heap here is the one /screen capture starves on).
-        char pre[20];
-        if (keep > sizeof(pre) - 1) keep = sizeof(pre) - 1;
-        memcpy(pre, last, keep);
-        pre[keep] = '\0';
-        const int prefixW = tft.textWidth(pre, font);
-        const int eraseW = lastW - prefixW; // previous box, right of the shared prefix
-        // Left edge of the previous box: a right-datum string grows leftwards.
-        const int ex = (datum == TR_DATUM) ? x - lastW : x;
-        if (eraseW > 0) tft.fillRect(ex + prefixW, y, eraseW, fontPxH(font), RBG);
+        const int newW = tft.textWidth(txt, font);
+        const int w = (lastW > newW ? lastW : newW) + 2;
+        tft.fillRect(x - w / 2, y - h / 2, w, h, RBG);
     }
     tft.setTextColor(RFG, RBG);
     lastW = tft.drawString(txt, x, y, font);
     strncpy(last, txt, lastLen - 1);
     last[lastLen - 1] = '\0';
-}
-
-// The speed and the clock sit against the header's right edge; the distance
-// against its left edge (under the banner), so the two header rows read as a
-// 2x2 block: banner | SPD over DST | TIME.
-static inline void drawReadoutTR(int x, int y, uint8_t font, const char* txt,
-                                 char* last, size_t lastLen, int16_t& lastW)
-{
-    drawReadout(x, y, font, TR_DATUM, txt, last, lastLen, lastW);
-}
-static inline void drawReadoutTL(int x, int y, uint8_t font, const char* txt,
-                                 char* last, size_t lastLen, int16_t& lastW)
-{
-    drawReadout(x, y, font, TL_DATUM, txt, last, lastLen, lastW);
 }
 
 static char pBan[12] = {0};
@@ -1275,6 +1290,10 @@ static bool paneClean = false;
 // Hint bar texts (lengths vary by mode: repaint band on change).
 static char lastHintL[16] = {0};
 static char lastHintR[16] = {0};
+// What the bottom band is currently showing: 0 nothing/unknown, 1 hints,
+// 2 banner. A change of MODE clears the band; a change of banner TEXT does
+// not (drawSmart erases the suffix only).
+static uint8_t lastBandMode = 0;
 
 // Last GPS epoch seen on this page (buttons have no gps handle).
 static long lastGpsNow = 0;
@@ -1375,6 +1394,8 @@ static void resetRaceText()
     pLabW[0] = 0; pLabWW = 0;
     pWnd[0] = 0; pWndW = 0;
     lastHintL[0] = 0; lastHintR[0] = 0;
+    lastBandMode = 0;
+    pBan[0] = 0; pBanW = 0;
     paneClean = false;
 }
 
@@ -1392,6 +1413,21 @@ static void raceSampleFix(TinyGPSPlus& gps)
     // FROM).
     lastGpsCourse = gps.course.isValid() ? (int)(gps.course.deg() + 0.5) % 360 : -1;
     lastFixAt = millis();
+}
+
+// Race-screen clock notation: sailing minutes and seconds — `'` and `''` —
+// instead of the `:` separator, e.g. "+2'21''". Under a minute the minute part
+// is dropped but the seconds stay marked: "-46''". The sign is part of the
+// string, so the TIME cell is a signed race clock: negative to the gun,
+// positive after it.
+static void fmtRaceClock(char* out, size_t n, char sign, long secs)
+{
+    if (secs < 0) secs = 0;
+    char sgn[2] = {sign, 0};
+    const long m = secs / 60;
+    const long s = secs % 60;
+    if (m > 0) snprintf(out, n, "%s%ld'%02ld''", sgn, m, s);
+    else snprintf(out, n, "%s%ld''", sgn, secs);
 }
 
 static void drawRaceText(TinyGPSPlus& gps)
@@ -1419,7 +1455,8 @@ static void drawRaceText(TinyGPSPlus& gps)
         finHold = false; // a different session arrived: new race, new picture
     }
 
-    // Header: committee banners only (the countdown lives in the pane now).
+    // Banner precedence: committee signal (8s) > held FINISHED > countdown >
+    // OCS > 2s transient. It renders in the bottom band (todo 50).
     char ban[12];
     // The held finish is the resting state after the line, but an 8s committee
     // signal still interrupts it — a DSQ/SCP has to be seen — and FINISHED
@@ -1433,16 +1470,22 @@ static void drawRaceText(TinyGPSPlus& gps)
         snprintf(ban, sizeof(ban), "FINISHED ");
     } else if (raceSession.valid && gun > 0 && now > 0 && now < gun && gun - now <= 60000) {
         // Countdown takes the banner from one minute out (below signals,
-        // above transients): the eyes are on the header, not the pane, as
-        // the gun approaches. M:SS throughout, so the last ten read as the
-        // tail of one countdown rather than a second, differently-formatted
-        // one ("GUN 0:09", not "GUN 9").
+        // above transients): the eyes are on the band as the gun approaches.
+        // Sailing notation throughout (fmtRaceClock), and ONE MINUTE OR LESS
+        // DROPS THE MINUTE PART ("GUN 46''"): the last minute is the part read
+        // tick by tick, and a zero minute is a character nobody counts. The
+        // TIME cell follows the same two rules.
         const long left = gun - now;
         // `left` is SECONDS: divide by 60, not 60000. (Scaling by 1000
         // here is a silent trap — it made every countdown render as
-        // "GUN 0:00" while the pane's TIME cell, which divides by 60,
+        // "GUN 0:00" while the TIME cell, which divides by 60,
         // showed the right value, so the two disagreed on screen.)
-        snprintf(ban, sizeof(ban), "GUN %ld:%02ld", left / 60, left % 60);
+        // Same notation as the TIME cell, minus the sign (a countdown is never
+        // "elapsed"): "GUN 1'30''", and bare seconds in the last minute —
+        // "GUN 46''".
+        char body[12];
+        fmtRaceClock(body, sizeof(body), '\0', left);
+        snprintf(ban, sizeof(ban), "GUN %s", body);
     } else if (raceSession.valid && gun > 0 && now >= gun && !raceRunStarted() && raceRunOcs()) {
         // OCS lives on the BANNER now, so the TIME cell can keep running
         // (elapsed since the gun) instead of being overwritten with a
@@ -1454,17 +1497,11 @@ static void drawRaceText(TinyGPSPlus& gps)
     } else {
         ban[0] = '\0';
     }
-    // Banner: top-LEFT (was centred). Left-datum keeps drawSmart's erase box
-// anchored at the string origin, which is what the suffix-only erase
-// expects — a centred datum has to recompute the box from the old width.
-drawSmart(MAP_X + 4, HDR_ROW1_Y, 4, TL_DATUM, finBanner ? TFT_GREEN : RFG, ban, pBan, sizeof(pBan), pBanW);
+    // The banner is no longer drawn here: it owns the bottom band, together
+    // with the hints (see the band block at the end of this function).
 
-    // The N-UP/BRG-UP/FIT view tag lives in the hint bar now. Its old in-map
-    // draw was removed but its ghost-erase was not, so the block went on
-    // blanking a black rect inside the map's bottom-right (the corner the
-    // clock used to cover) on every view-mode change: a scar with nothing
-    // behind it. Deleted with the layout change that moved the readouts out of
-    // the map — nothing but the map writes inside the map rect.
+    // The view states live in the hint bar (and now share the bottom band with
+    // the banner, todo 50). Nothing but the map writes inside the map rect.
 
     // Bad-run watchdog tag (race_run.cpp): the engine stopped the run, and
     // the sailor has to SEE that rather than wonder why the numbers stopped
@@ -1504,27 +1541,30 @@ drawSmart(MAP_X + 4, HDR_ROW1_Y, 4, TL_DATUM, finBanner ? TFT_GREEN : RFG, ban, 
         distM = (long)dist > 9999 ? 9999 : (long)dist;
         showBrg = true;
     }
-    // Compact time string for the pane (header countdown moved here).
-    char tim[10];
+    // Compact race clock for the TIME cell: sailing notation (fmtRaceClock),
+    // SIGNED ONLY WHILE COUNTING DOWN: negative to the gun, and unsigned once
+    // the race is running (a "+" on every elapsed second was pure noise).
+    char tim[14];
     if (finHold) {
         // The held result (todo 38): frozen at the finish, and it survives the
         // session being dropped by the backend — which is the whole point.
-        snprintf(tim, sizeof(tim), "+%2ld:%02ld", finHoldElapsed / 60, finHoldElapsed % 60);
+        fmtRaceClock(tim, sizeof(tim), '\0', finHoldElapsed);
     } else if (raceSession.valid && gun > 0 && now > 0) {
         if (now < gun) {
-            const long rem = gun - now;
-            snprintf(tim, sizeof(tim), " %2ld:%02ld", rem / 60, rem % 60);
+            // Negative until the gun: the countdown reads as "time to go" and
+            // the same cell flips to "0'11''" past the gun without changing
+            // shape. Under a minute it is seconds only ("-46''") — see
+            // fmtRaceClock.
+            fmtRaceClock(tim, sizeof(tim), '-', gun - now);
         } else if (!raceRunStarted()) {
             // Past the gun but not away cleanly. Keep the clock running
             // from the gun — OCS is announced on the banner, so this cell
             // stays a time (it used to read "OCS"/"GO" and went blank as
             // a clock while the boat was still OCS).
-            const long el = now - gun;
-            snprintf(tim, sizeof(tim), "+%2ld:%02ld", el / 60, el % 60);
+            fmtRaceClock(tim, sizeof(tim), '\0', now - gun);
         } else {
             const long base = raceRunFinished() && raceRunEndEpoch() > 0 ? raceRunEndEpoch() : now;
-            const long el = base - raceRunStartEpoch();
-            snprintf(tim, sizeof(tim), "+%2ld:%02ld", el / 60, el % 60);
+            fmtRaceClock(tim, sizeof(tim), '\0', base - raceRunStartEpoch());
         }
     } else if (raceSession.valid && gun > 0) {
         snprintf(tim, sizeof(tim), "WAIT");
@@ -1532,15 +1572,13 @@ drawSmart(MAP_X + 4, HDR_ROW1_Y, 4, TL_DATUM, finBanner ? TFT_GREEN : RFG, ban, 
         tim[0] = '\0'; // no clock to report: blank, not a placeholder
     }
 
-    // Readouts, all of them inside the header band (todo 37). Row 1 keeps the
-    // speed against the right edge, beside the banner; row 2 carries the
-    // distance to the destination (left, under the banner) and the race clock
-    // (right, under the speed). Nothing is drawn over the map any more: the
-    // clock's font-6 box used to cover ~11% of the fit box, the leeward half
-    // of the start line included. All three go through drawReadout*, not a
-    // bare drawString: an opaque draw only erases the new (often narrower)
-    // string's box, which is how the leading glyph of the previous value
-    // survived as ghost pixels (todo 34).
+    // Readouts: ONE row, three equal cells — DST | SPD | TIME — inside the
+    // header band, each value centred in its cell (todo 50). Nothing is drawn
+    // over the map: the clock's old font-6 box covered ~11% of the fit box, the
+    // leeward half of the start line included. All three go through
+    // drawReadoutC, not a bare drawString: an opaque draw only erases the new
+    // (often narrower) string's box, which is how the leading glyph of the
+    // previous value survived as ghost pixels (todo 34).
     //
     // A modal overlay (menu / course picker) stands them down: it paints a box
     // across the header after this runs, so an unconditional redraw would keep
@@ -1548,23 +1586,29 @@ drawSmart(MAP_X + 4, HDR_ROW1_Y, 4, TL_DATUM, finBanner ? TFT_GREEN : RFG, ban, 
     // border. Closing an overlay is a full redraw, which resets these caches.
     if (!courseOpen && !menuOpen) {
         char ov[16];
-        const int xr = MAP_X + MAP_W - 6; // right edge of the header
-        const int xl = MAP_X + 4;         // left edge of the header
-        if (gps.speed.isValid()) snprintf(ov, sizeof(ov), "%4.1f Kn", gps.speed.knots());
-        else ov[0] = '\0'; // no fix yet: blank, same rule as distance/clock
-        drawReadoutTR(xr, HDR_ROW1_Y, 4, ov, ovSpd, sizeof(ovSpd), ovSpdW);
-        // Nothing to report means nothing drawn — speed, distance and clock
+        // Nothing to report means nothing drawn — distance, speed and clock
         // alike: the " --.- Kn"/"--- m"/"--:--" placeholders read as values at
-        // a glance from a helm. An empty string makes drawReadout blank the
+        // a glance from a helm. An empty string makes the readout blank its
         // whole previous box, which is the only correct way to remove one.
         if (showBrg && !finHold) snprintf(ov, sizeof(ov), "%ld m", distM);
         else ov[0] = '\0'; // finished: the distance back to the line is noise
-        drawReadoutTL(xl, HDR_ROW2_Y, 4, ov, ovDst, sizeof(ovDst), ovDstW);
-        drawReadoutTR(xr, HDR_ROW2_Y, 4, tim, ovTim, sizeof(ovTim), ovTimW);
+        drawReadoutC(CELL_CX[0], HDR_CY, 4, ov, ovDst, sizeof(ovDst), ovDstW);
+        if (gps.speed.isValid()) snprintf(ov, sizeof(ov), "%4.1f Kn", gps.speed.knots());
+        else ov[0] = '\0'; // no fix yet: blank, same rule as distance/clock
+        drawReadoutC(CELL_CX[1], HDR_CY, 4, ov, ovSpd, sizeof(ovSpd), ovSpdW);
+        drawReadoutC(CELL_CX[2], HDR_CY, 4, tim, ovTim, sizeof(ovTim), ovTimW);
     }
 
-    // Hint bar: texts change length across modes now, so repaint on change
-    // (band clear once, then both sides).
+    // Bottom band: the banner OR the hints, never both (todo 50). Switching
+    // between them clears the band once and resets both caches — everything in
+    // here is change-detected, so a clear without a cache reset would leave the
+    // band black for ever.
+    //
+    // A banner change does NOT clear: the countdown re-renders once a second,
+    // and a full-band blank every second would flash the way the header
+    // countdown used to (see drawSmart), so the banner keeps its suffix erase.
+    const bool haveBanner = ban[0] != '\0';
+    const uint8_t bandMode = haveBanner ? 2 : 1;
     char hintL[16], hintR[16];
     if (courseOpen && courseView == 1) {
         snprintf(hintL, sizeof(hintL), "L Row  LL Back");
@@ -1578,16 +1622,26 @@ drawSmart(MAP_X + 4, HDR_ROW1_Y, 4, TL_DATUM, finBanner ? TFT_GREEN : RFG, ban, 
         const char* bearName = viewMode == 0 ? "N" : viewMode == 1 ? "BRG" : "Wide";
         snprintf(hintR, sizeof(hintR), "R %s RR %s", viewName, bearName);
     }
-    if (strcmp(hintL, lastHintL) != 0 || strcmp(hintR, lastHintR) != 0) {
-        tft.fillRect(0, 219, 320, 21, RBG);
+    if (bandMode != lastBandMode ||
+        (!haveBanner && (strcmp(hintL, lastHintL) != 0 || strcmp(hintR, lastHintR) != 0))) {
+        tft.fillRect(0, BAND_Y, MAP_W, BAND_H, RBG);
+        lastBandMode = bandMode;
+        pBan[0] = 0; pBanW = 0; // the band is black: force the banner back
+        lastHintL[0] = 0; lastHintR[0] = 0;
+    }
+    if (haveBanner) {
+        // Centred, one font-4 line: the band is 26px, exactly the glyph height.
+        drawSmart(MAP_W / 2, BAND_BANNER_Y, 4, TC_DATUM,
+                  finBanner ? TFT_GREEN : RFG, ban, pBan, sizeof(pBan), pBanW);
+    } else {
+        tft.setTextColor(RDIM, RBG);
+        tft.setTextDatum(BL_DATUM);
+        tft.drawString(hintL, 8, BAND_HINT_Y, 2);
+        tft.setTextDatum(BR_DATUM);
+        tft.drawString(hintR, tft.width() - 8, BAND_HINT_Y, 2);
         strncpy(lastHintL, hintL, sizeof(lastHintL) - 1);
         strncpy(lastHintR, hintR, sizeof(lastHintR) - 1);
     }
-    tft.setTextColor(RDIM, RBG);
-    tft.setTextDatum(BL_DATUM);
-    tft.drawString(hintL, 8, 239, 2);
-    tft.setTextDatum(BR_DATUM);
-    tft.drawString(hintR, tft.width() - 8, 239, 2);
 }
 
 // LL menu: explicit race actions (map frozen while open, box repainted on
@@ -1918,6 +1972,7 @@ void drawScreenRace(TinyGPSPlus &gps, bool requiresInit)
         // read as "GOANDON" - the cached extent was forgotten, the ink was not.
         tft.fillRect(0, PANE_TOP, MAP_W, WIRE_TOP - PANE_TOP, RBG);
         resetRaceText();
+        drawFrameChrome(); // the clear took the header grid rules with it
     }
     raceRunUpdate(gps);
     raceSignalsApply(gps);

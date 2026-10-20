@@ -184,6 +184,11 @@ before touching any pass/score/target logic.**
   text in place with space padding instead, e.g. `" " + val + " "` (both sides
   for MC_DATUM, leading space suffices for TR_DATUM). Static labels can just be
   redrawn with the same string. Full clear only on page switch / init / mode toggle.
+  `drawSmart` helps: it remembers each (x,y,datum,font) it wrote and erases the
+  **union** of the old and new boxes, so a **centred** string that shortens
+  (`GUN 1'00''` → `GUN 59''`) cannot leave its head behind — MC_DATUM moves on
+  both sides, which a right-tail erase never covered (todo 50). Same reason
+  `drawReadoutC()` exists instead of the old edge-anchored readouts.
 - `/screen` re-renders cleanly, so it HIDES incremental-redraw ghosting (stale pixels,
   missing grid/labels) — verify that class of bug on the PANEL, not the grab. Font 1
   (GLCD) drawn into a `TFT_eSprite` faults intermittently → small labels use

@@ -63,6 +63,14 @@ static bool wrongFlag = false;
 // start — edge, not state, so reconnects and mode toggles never re-fire).
 static bool gunEdge = false;
 static bool gunEdgeOcs = false;
+// The gun cue is the START SIGNAL, not the line crossing (todo 51, RRS 26):
+// it fires on the first pass at/just after the gun, and only if this device
+// actually witnessed the gun. `gunWitnessed` is set by any pass before it, so
+// a boat that joins mid-race cannot banner GO a minute later — the exact trap
+// todo 47 fixed. The window keeps a clock gap ACROSS the gun a discovery too.
+static bool gunCueDone = false;
+static bool gunWitnessed = false;
+static const long GUN_CUE_WINDOW_S = 10;
 
 // Pre-gun countdown cues (feat #8): the one-minute warning and the 10..1
 // per-second ticks. Edges off whole seconds remaining, same rationale as
@@ -189,6 +197,8 @@ void raceRunReset()
     wrongFlag = false;
     gunEdge = false;
     gunEdgeOcs = false;
+    gunCueDone = false;
+    gunWitnessed = false;
     gunMinuteCue = false;
     gunTickDue = -1;
     cueSecLeft = -1;
@@ -638,21 +648,22 @@ void raceRunUpdate(TinyGPSPlus& gps)
         }
     }
 
-    const bool wasStarted = started;
-    auto noteGunEdge = [&]() {
-        if (started && !wasStarted) {
+    // The gun cue: the START SIGNAL is the gun (RRS 26), so GO is the gun and
+    // the line crossing only SCORES the start (START event, splits, the clock
+    // base — all of which stay on this side of the change). Raised on the
+    // first pass at or just after the gun, carrying the OCS state held AT the
+    // gun, and only when this device witnessed the gun itself: a session
+    // assigned mid-race (late join) must never banner GO, which is what todo 47
+    // was about. Discovering a gun is not the gun.
+    if (!started && !gunCueDone) {
+        if (now < gun) {
+            gunWitnessed = true;
+        } else if (gunWitnessed && now - gun <= GUN_CUE_WINDOW_S) {
+            gunCueDone = true;
             gunEdge = true;
             gunEdgeOcs = ocs;
         }
-    };
-    // Only a REAL start raises the GO/OCS cue. The two catch-up paths below
-    // ("late join", "late cross") exist because the crossing was never
-    // sampled — a phone-less boat with no fix at the gun, a GPS gap on the
-    // line — so they discover a start that already happened. Bannering "GO"
-    // for a discovery put GO on the panel a minute after the gun, which reads
-    // as "the race starts now". They still set started/startEpoch (the clock
-    // is gun-based, so nothing is lost) and log the START event.
-    bool goCue = false;
+    }
 
     if (!started) {
         if (!raceSession.startLine.valid) {
@@ -663,7 +674,6 @@ void raceRunUpdate(TinyGPSPlus& gps)
                 logEvent("START", gun, "point");
                 logPass("[RACE] started (point gun)", now);
             }
-            noteGunEdge();
             return;
         }
         const int side = startSegSide(lat, lon);
@@ -717,7 +727,8 @@ void raceRunUpdate(TinyGPSPlus& gps)
             if (near && hasGunSide && lastSide != 0 && side != 0 &&
                 side != lastSide && side != gunSide) {
                 started = true; // proper re-cross after the gun
-                goCue = true;   // scored crossing: this is the real start cue
+                // The crossing SCORES the start; the GO banner belongs to the
+                // gun above, not here (todo 51).
                 // The clock counts from the GUN, not from this crossing.
                 // Elapsed time in a fleet race is measured from the gun, so a
                 // late start (or an OCS boat that had to come back and re-cross)
@@ -760,7 +771,6 @@ void raceRunUpdate(TinyGPSPlus& gps)
             }
         }
         if (side != 0) lastSide = side;
-        if (goCue) noteGunEdge();
         return;
     }
 
