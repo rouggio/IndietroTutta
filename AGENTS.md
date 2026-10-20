@@ -171,6 +171,31 @@ before touching any pass/score/target logic.**
   `ML_DATUM` is used for the runs and `MC_DATUM` restored after. A gate target
   highlights **both** indices, and a lone mark's label highlights too — there is
   no separate "pile" case.
+- Mark drawing, in z-order: **circle = the rounding radius** (`m.r`, 30 m by
+  default — NOT the buoy), **four saw-teeth on the arc = the rounding
+  direction** (todo 44), **red dot = the buoy itself** (todo 43), then the
+  deferred target ring on top. The teeth sit at 45/135/225/315, phase fixed to
+  the screen (they do not rotate with bearing-up/fit), clockwise for `S`, and
+  each is a saw-tooth whose **long side is the arc itself** (filled right up to
+  the ring, `2L / rPx` of arc, capped at 75°) with its **short side standing out
+  of the circle at the trailing end** — long = 2 × short,
+  `2*rPx/5` floored at 4 px and capped at 10 px. The tangent-based variant
+  floated off the ring, so do not go back to a straight long side. They take the
+  circle's colour (white, `RBOAT` on the target); gates get none. The red dot is
+  `buoyDiam / 2 / DEG_M * p.scale` with a 2 px floor and a 6 px cap, **one per
+  physical buoy** (a pile shares the label's coincident-position test).
+  Red is therefore the page's **buoy + alert** colour, not alert-only.
+- The **map scale** (todo 45) is map chrome, drawn LAST in `drawStaticLayer` so
+  a course line never cuts it: the map's **bottom-right corner is the zero**
+  (`zeroX = MAP_W - 4`, 2 px of air before the frame), the bar runs left from
+  it with a tick at each end, and the label sits above, right-aligned. Its
+  length must stay between **1/5 and 1/2 of the map frame's height** (30..75 px
+  at the current 150 px map) and the DISTANCE is what gets chosen, from a 1-2-5
+  sequence, largest that fits — so the label is always a round number and never
+  lies about the bar (a fixed 10 px bar would be off by 2x at the focus zoom).
+  `RDIM` like the rest of the chrome, and the label **must use font 2** (font 1
+  digits are broken on the sprite). Panel-verified: 100 m/73 px overview,
+  20 m/46 px next-target.
 - **`courseChanged` must mean "the session changed", never "a repaint was
   forced".** `lastRaceCourseKey` used to be reset to a `-2` sentinel inside
   `if (requiresInit)` to force a map redraw, so the very next pass read as a

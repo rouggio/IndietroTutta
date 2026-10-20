@@ -23,8 +23,10 @@ static const uint16_t RDIM = 0x8410; // neutral gray
 static const uint16_t RBOAT = TFT_YELLOW;
 // Second dynamic segment (todo 39): the boat's own course over ground. Cyan is
 // the one bright colour this screen does not already spend — yellow is the
-// boat, the mark circles and the target stub, green the course lines, red every
-// alert — so the two stubs are distinguishable without a legend.
+// boat, the mark circles and the target stub, green the course lines, red the
+// buoys themselves (todo 43; the first red OBJECT on this map, which used to be
+// alerts only) and red every alert — so the two stubs are distinguishable
+// without a legend.
 static const uint16_t RCOG = TFT_CYAN;
 // Below this the COG is noise: gps.course is direction of TRAVEL (there is no
 // compass on the device), so at rest it wanders around the mast. The stub is
@@ -317,26 +319,49 @@ static void projToPx(const RaceProj& p, double lat, double lon, int& x, int& y)
 // Little rounding-side arrow on P/S marks (any type, gates included):
 // half-arc on the side the arrow implies (P = west half CCW, S = east half
 // CW) with a barb at the tip. Repainted identically with the static layer.
-static void drawSideArrow(int cx, int cy, int rr, char side, uint16_t color)
+static void drawRoundArrows(int cx, int cy, int rr, char side, uint16_t color)
 {
     if (side != 'P' && side != 'S') return;
-    if (rr < 2) rr = 2;
-    const double dir = (side == 'S') ? 1.0 : -1.0;
-    int px = cx, py = cy - rr; // bearing 0 (north of buoy)
-    for (double d = 15.0; d <= 180.0; d += 15.0) {
-        const double a = dir * d * M_PI / 180.0;
-        const int nx = (int)(cx + rr * sin(a)), ny = (int)(cy - rr * cos(a));
-        tft.drawLine(px, py, nx, ny, color);
-        px = nx;
-        py = ny;
-    }
-    // Barb at the tip (south point), along travel: S-arc heads west,
-    // P-arc heads east.
-    const double hd = (side == 'S' ? 270.0 : 90.0) * M_PI / 180.0;
-    const int tx = cx, ty = cy + rr;
-    for (double s = 150.0; s <= 210.0; s += 60.0) {
-        const double w = hd + s * M_PI / 180.0;
-        tft.drawLine(tx, ty, (int)(tx + 4 * sin(w)), (int)(ty - 4 * cos(w)), color);
+    if (rr < 5) return; // no room for a tooth at all
+    // Todo 44: the rounding direction lives ON the circle, not in an arc inside
+    // it. Four teeth, at 45/135/225/315 (user decision) - the diagonals leave
+    // the top, bottom and sides clear for the label, the number and the boat -
+    // phase fixed to the SCREEN, so they do not rotate with the bearing-up or
+    // fit views: the set means "go round this way", not "where is upwind".
+    //
+    // A tooth is a solid saw-tooth whose LONG side is the ARC itself - it spans
+    // a few degrees of the circle and is filled right up to the ring, so there
+    // is no wedge of background between the tooth and the mark - with the SHORT
+    // side standing out of the circle at its trailing end (long = 2 x short).
+    // That shallow-edge-forward / steep-back profile is what reads as a
+    // direction of travel, and nothing is added inside the ring, where the buoy
+    // dot, the number and the ring live. (A straight tangent side was tried and
+    // rejected: on a 16 px radius a 12 px tangent chord leaves a visible gap of
+    // background between the tooth and the circle.)
+    const bool cw = (side == 'S'); // S rounds clockwise on screen
+    int L = (2 * rr) / 5;          // short side, px (twice the old rr/5)
+    if (L < 4) L = 4;
+    if (L > 10) L = 10;
+    double dA = (2.0 * L) / rr;    // angular width of the long side, radians
+    if (dA > 1.30) dA = 1.30;      // ~75 deg: never let neighbouring teeth meet
+    const double sgn = cw ? -1.0 : 1.0; // backwards along travel
+    for (int a = 45; a < 360; a += 90) {
+        const double t = a * M_PI / 180.0;
+        const double tb = t + sgn * dA;         // trailing end of the long side
+        const double sb = sin(tb), cb = cos(tb);
+        // Outer corner: one short side out of the circle, at the trailing end.
+        const int ox = (int)(cx + sb * (rr - 1 + L)), oy = (int)(cy - cb * (rr - 1 + L));
+        // Fan from that corner along the arc (inner edge at rr - 1, i.e. over the
+        // ring by a pixel, so no hairline of background can show through).
+        const int steps = 6;
+        int px0 = (int)(cx + sb * (rr - 1)), py0 = (int)(cy - cb * (rr - 1));
+        for (int s = 1; s <= steps; s++) {
+            const double tt = tb + (t - tb) * s / steps;
+            const int px1 = (int)(cx + (rr - 1) * sin(tt)), py1 = (int)(cy - (rr - 1) * cos(tt));
+            tft.fillTriangle(ox, oy, px0, py0, px1, py1, color);
+            px0 = px1;
+            py0 = py1;
+        }
     }
 }
 
@@ -573,6 +598,73 @@ static bool nextDestination(TinyGPSPlus& gps, double& lat, double& lon, char* ta
     return true;
 }
 
+// Todo 45: the map's own scale, read off the corner it belongs to.
+//
+// The ZERO is the map's bottom-right corner: a horizontal bar runs LEFT from
+// it and the label above it says what that bar covers. The corner is a real
+// anchor (the frame), so nothing has to float in the picture, and the bar is
+// the last thing the static layer draws, so a course line never cuts it.
+//
+// Sizing (user decision): the bar must be between 1/5 and 1/2 of the map
+// frame's height — 30..75 px, i.e. big enough to read at the helm and never
+// half the picture. The DISTANCE is what gets chosen, from a 1-2-5 sequence
+// (…10, 20, 50, 100, 200, 500, 1000…), so the label is always a round number:
+// the largest one whose bar still fits under the cap. The 1-2-5 steps are at
+// most 2.5x apart and the window is exactly 2.5x tall, so a fitting value
+// always exists (one of any adjacent pair lands inside).
+static void drawScaleBar(const RaceProj& p)
+{
+    if (p.scale <= 0) return;
+    const double mPerPx = DEG_M / p.scale;
+    const int minPx = (WIRE_Y1 - WIRE_TOP) / 5; // 30 px
+    const int maxPx = (WIRE_Y1 - WIRE_TOP) / 2; // 75 px
+    const int zeroX = MAP_W - 4;                // the frame's inner corner (2 px
+                                                // of air before the border)
+    const int zeroY = WIRE_Y1 - 3;
+    int bestPx = 0, bestM = 0;
+    double bestErr = 1e9;
+    for (uint8_t e = 0; e <= 5; e++) {          // 1 m .. 50 km
+        const double dec = pow(10.0, e);
+        for (uint8_t k = 0; k < 3; k++) {
+            const double d = dec * (k == 0 ? 1.0 : (k == 1 ? 2.0 : 5.0));
+            const double lenPx = d / mPerPx;
+            if (lenPx > maxPx) break;           // ascending: nothing bigger fits
+            if (lenPx < minPx) continue;
+            bestM = (int)d;                     // the largest that fits wins
+            bestPx = (int)(lenPx + 0.5);
+        }
+    }
+    if (!bestM) {
+        // Nothing fits the window (an extreme zoom): fall back to the closest.
+        for (uint8_t e = 0; e <= 5; e++) {
+            const double dec = pow(10.0, e);
+            for (uint8_t k = 0; k < 3; k++) {
+                const double d = dec * (k == 0 ? 1.0 : (k == 1 ? 2.0 : 5.0));
+                const double lenPx = d / mPerPx;
+                const double err = fabs(lenPx - (minPx + maxPx) / 2.0);
+                if (err < bestErr) {
+                    bestErr = err;
+                    bestM = (int)d;
+                    bestPx = (int)(lenPx + 0.5);
+                }
+            }
+        }
+    }
+    if (!bestPx) return;
+    const int farX = zeroX - bestPx;
+    // Bar with a tick at each end (the far tick is what makes it read as a
+    // measurement rather than a stray line).
+    tft.drawLine(farX, zeroY, zeroX, zeroY, RDIM);
+    tft.drawLine(farX, zeroY - 3, farX, zeroY + 1, RDIM);
+    tft.drawLine(zeroX, zeroY - 3, zeroX, zeroY + 1, RDIM);
+    char txt[12];
+    snprintf(txt, sizeof(txt), "%d m", bestM);
+    tft.setTextDatum(TR_DATUM);
+    tft.setTextColor(RDIM, RBG);
+    tft.drawString(txt, zeroX - 2, zeroY - 17, 2);
+    tft.setTextDatum(MC_DATUM);
+}
+
 // Static course layer: legs, segments, circles, numbers, header wind.
 // Identical pixels every time — safe to repaint over dirty regions.
 static void drawStaticLayer(const RaceProj& p, double rotEff)
@@ -615,6 +707,16 @@ static void drawStaticLayer(const RaceProj& p, double rotEff)
         int rPx = (int)(m.r / DEG_M * p.scale);
         if (rPx < 3) rPx = 3;
         if (rPx > 40) rPx = 40;
+        // Coincident marks (piles) are ONE physical buoy, and two things now
+        // depend on that: the label draws once (its !firstOfPile skip below) and
+        // the buoy dot draws once (todo 43). The circles still draw per mark.
+        bool firstOfPile = true;
+        for (uint8_t k = 0; k < i; k++) {
+            if (raceSession.marks[k].lat == m.lat && raceSession.marks[k].lon == m.lon) {
+                firstOfPile = false;
+                break;
+            }
+        }
         // Target object lights up yellow; everything else is white, lines
         // carry the green. Gate pairs light up together.
         bool isTgt = false;
@@ -627,16 +729,24 @@ static void drawStaticLayer(const RaceProj& p, double rotEff)
             if (deferN < 10) defer[deferN++] = i;
         } else {
             tft.drawCircle(px, py, rPx, RFG);
-            drawSideArrow(px, py, (int)(rPx * 0.55), m.side, RFG);
+            drawRoundArrows(px, py, rPx, m.side, RFG);
         }
-        // Labels sit on the mark itself; coincident marks (piles) share one
-        // concatenated label ("1-4"), drawn once by the first of the group.
-        bool firstOfPile = true;
-        for (uint8_t k = 0; k < i; k++) {
-            if (raceSession.marks[k].lat == m.lat && raceSession.marks[k].lon == m.lon) {
-                firstOfPile = false;
-                break;
-            }
+        if (firstOfPile) {
+            // Todo 43: the buoy ITSELF, at true scale. The circle above is the
+            // rounding radius (30 m by default) - 60 m across - while a real
+            // racing buoy is 1-5 m, so "how far off the buoy am I" had no
+            // picture at all. buoyDiam is the course's physical diameter and it
+            // already rides every mark in the session payload.
+            //
+            // True scale, with a floor and a cap: at overview the honest size is
+            // ~1 px (0.23 px/m for a full-size course), which would be a ghost,
+            // and in the next-target focus it is ~11 px, which for a 30 m mark
+            // would swallow the ring's interior. Between those the dot IS the
+            // buoy's size on screen.
+            int bR = (int)((m.buoyDiam / 2.0f) / DEG_M * p.scale + 0.5f);
+            if (bR < 2) bR = 2;
+            if (bR > 6) bR = 6;
+            tft.fillCircle(px, py, bR, TFT_RED);
         }
         if (!firstOfPile) continue;
         num[0] = '\0';
@@ -692,7 +802,10 @@ static void drawStaticLayer(const RaceProj& p, double rotEff)
         if (rPx < 3) rPx = 3;
         if (rPx > 40) rPx = 40;
         tft.drawCircle(px, py, rPx, RBOAT);
-        drawSideArrow(px, py, (int)(rPx * 0.55), m.side, RBOAT);
+        // Same heads at the same radius as the white pass, so the yellow ones
+        // land exactly on the white ones: the highlight follows the circle by
+        // construction (todo 44).
+        drawRoundArrows(px, py, rPx, m.side, RBOAT);
     }
     // Header wind readout moved to the right pane (WND row) — the arrow
     // lives there as degrees now.
@@ -701,6 +814,7 @@ static void drawStaticLayer(const RaceProj& p, double rotEff)
     // fillRect(8, 4, 44, 18) that kept it "clean" was removed: with the
     // countdown banner now at the top-left it punched a black hole over
     // the text on every 1Hz map repaint.
+    drawScaleBar(p);
 }
 
 static void resetRaceText(); // defined below; the empty state clears and needs it
