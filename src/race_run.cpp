@@ -645,6 +645,14 @@ void raceRunUpdate(TinyGPSPlus& gps)
             gunEdgeOcs = ocs;
         }
     };
+    // Only a REAL start raises the GO/OCS cue. The two catch-up paths below
+    // ("late join", "late cross") exist because the crossing was never
+    // sampled — a phone-less boat with no fix at the gun, a GPS gap on the
+    // line — so they discover a start that already happened. Bannering "GO"
+    // for a discovery put GO on the panel a minute after the gun, which reads
+    // as "the race starts now". They still set started/startEpoch (the clock
+    // is gun-based, so nothing is lost) and log the START event.
+    bool goCue = false;
 
     if (!started) {
         if (!raceSession.startLine.valid) {
@@ -709,6 +717,7 @@ void raceRunUpdate(TinyGPSPlus& gps)
             if (near && hasGunSide && lastSide != 0 && side != 0 &&
                 side != lastSide && side != gunSide) {
                 started = true; // proper re-cross after the gun
+                goCue = true;   // scored crossing: this is the real start cue
                 // The clock counts from the GUN, not from this crossing.
                 // Elapsed time in a fleet race is measured from the gun, so a
                 // late start (or an OCS boat that had to come back and re-cross)
@@ -751,7 +760,7 @@ void raceRunUpdate(TinyGPSPlus& gps)
             }
         }
         if (side != 0) lastSide = side;
-        noteGunEdge();
+        if (goCue) noteGunEdge();
         return;
     }
 

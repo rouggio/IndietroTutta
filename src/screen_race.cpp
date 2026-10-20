@@ -766,8 +766,12 @@ static void drawStaticLayer(const RaceProj& p, double rotEff)
         // so its position never shifts as the target moves. A gate target
         // highlights BOTH of its indices, exactly as both rings light up.
         // Always above the circle so it never overlaps the ring — nor a line
-        // (start/finish) the mark happens to sit on.
-        const int ly = py - rPx - 10;
+        // (start/finish) the mark happens to sit on. Clamped to the map's top
+        // edge: in Target view a mark near the top would otherwise put its
+        // label up in the header band, where the map's own clear rect cannot
+        // erase it (that is how a stale label survived a view change).
+        int ly = py - rPx - 10;
+        if (ly < WIRE_TOP + 9) ly = WIRE_TOP + 9;
         int lx = px - tft.textWidth(num, 2) / 2;
         bool firstRun = true;
         for (uint8_t j = i; j < raceSession.markCount; j++) {
@@ -893,6 +897,23 @@ static void drawRaceMap(TinyGPSPlus& gps, bool full)
     }
     if (!p.ok) return;
 
+    // Todo 46: the dirty path below erases the boat and dashes, then REPAINTS
+    // the static layer — which paints but never clears, so it is only "identical
+    // pixels" while the PROJECTION is unchanged. In Target view every mark
+    // switch re-centres the fit on the new target (the span is fixed, the origin
+    // moves), and no focus switch happens there (focusEnabled never toggles), so
+    // nothing asked for a clear: the old mark labels, circles and legs stayed
+    // standing beside the new view. Fingerprint the camera — origin and scale —
+    // and force one full repaint whenever it moves. Rotation is deliberately NOT
+    // in the fingerprint: it changes on every pass in heading-up mode and the
+    // throttled branch below already owns that case.
+    static double lastLat0 = 1e9, lastLon0 = 1e9, lastScale = 0.0;
+    const bool camMoved =
+        fabs(p.lat0 - lastLat0) * p.scale > 0.5 ||
+        fabs((p.lon0 - lastLon0) * p.cosLat) * p.scale > 0.5 ||
+        fabs(p.scale - lastScale) > lastScale * 0.001;
+    if (camMoved) full = true;
+
     // Rotating views can't use dirty updates (the whole frame turns):
     // throttle them to 1Hz full redraws instead.
     const bool rotating = fabs(rotEff - oldRotEff) > 0.1;
@@ -915,6 +936,7 @@ static void drawRaceMap(TinyGPSPlus& gps, bool full)
         // needs forgetting here any more.
         drawFrameChrome();
         drawStaticLayer(p, rotEff);
+        lastLat0 = p.lat0; lastLon0 = p.lon0; lastScale = p.scale;
         oldRotEff = rotEff;
         lastMapDraw = millis();
         dynOk = false;
@@ -1757,7 +1779,15 @@ void drawScreenRace(TinyGPSPlus &gps, bool requiresInit)
         tft.fillScreen(RBG);
         mapDirty = true; // force a full map redraw after the clear
         resetRaceText();
-        if (!gGrabbing && !raceRunStarted()) raceRunReset(); // keep running run
+        // A REPAINT MUST NEVER RESET THE RUN. This used to call
+        // raceRunReset() whenever !raceRunStarted(), and `started` only
+        // becomes true once the START is SCORED — so any redraw before that
+        // moment (R, closing a menu, a page switch, the OTA redraw) threw away
+        // the pre-start side memory (gunSide/hasGunSide/lastSide/approachSide/
+        // ocs). The clean-crossing test needs exactly that memory, so the boat
+        // could never score its start and fell through to the 60s "late join"
+        // escape: the GO banner then appeared a minute after the gun. Session
+        // changes own the reset, right below.
     }
     // courseChanged means the SESSION changed under us — that is what closes
     // an open overlay. It must NOT be triggered by a forced repaint: a full

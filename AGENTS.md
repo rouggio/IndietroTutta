@@ -115,8 +115,40 @@ before touching any pass/score/target logic.**
   DIAGNOSTICS + CONFIG excluded.
 - MAIN: `L` next, `LL`→CONFIG, `R` toggles the ring view N-up ↔ bearing-up
   (RAM; boat triangle to the top, wind bearing-relative, N at true north),
-  `RR`→DIAGNOSTICS. RACE: `L` next, `RR` cycles N-UP → BRG → FIT,
-  `LL`→MENU. DIAGNOSTICS/CONFIG: `L` back to MAIN.
+  `RR`→DIAGNOSTICS. RACE: `L` next, `R` cycles the **view** Map → Target →
+  Auto, `RR` toggles the **bearing** north-up ↔ heading-up, `LL`→MENU.
+  DIAGNOSTICS/CONFIG: `L` back to MAIN.
+- **Terminology, race screen — canonical, use these words in code comments,
+  docs and bug reports** (the on-screen hint is the same vocabulary:
+  `R <view> RR <bearing>`, e.g. `R Tgt RR N`):
+  - **`R` (short) = view mode.** Three states, **Map → Target → Auto**.
+    **Map** = the whole course fitted to the window — *overview* is a synonym.
+    **Target** = the next destination centred at a fixed zoom — *focus* is a
+    synonym. **Auto** = Target engages by distance (`autoDistM`,
+    10/50/100/200 m, NVS) and **holds the zoom on the mark just rounded** until
+    the boat is clear of it, then falls back to Map for the new leg. Code:
+    `focusMode` 0/1/2, NVS `race`/`viewMode`, hint `R Map` / `R Tgt` /
+    `R Auto`.
+  - **`RR` (long) = bearing mode.** Two states, **north-up ↔ heading-up**.
+    **North-up** = true north up (`N` tag). **Heading-up** = the direction
+    toward the next destination is up (`BRG` tag — it is
+    `courseTo(boat, destination)`, the *bearing to the mark*, not the boat's
+    COG; the two agree while you are steering at the mark, and the mark's
+    bearing is what the chart should point at). Code: `viewMode` 0/1, RAM
+    only.
+  - The two axes are **orthogonal**: any view can be north-up or heading-up,
+    and the hint shows the states **in effect**, not the next action.
+  - **Do not say** "focus view" for the bearing axis, "overview" for a fourth
+    mode, or **"FIT"/"best-fit" at all**. Best-fit was a third bearing state
+    (`viewMode == 2`, 0°/90° whichever fills the screen) that the two-state
+    `% 2` cycle left **unreachable** — `screen_race.cpp:880` and the comment
+    at 181-182 are dead and should be deleted, never restored.
+  - Naming trap: in `screen_race.cpp` the code's **`viewMode` is the bearing
+    axis** and **`focusMode` is the view axis** — the opposite of the words
+    above. Read the enum, not the name.
+  - Main-screen ring is a different thing with a confusingly similar label:
+    its `R` toggles N-up ↔ bearing-up where bearing-up puts **the boat's own
+    COG** at the top. The race screen's heading-up points at the *destination*.
 - RACE MENU `RACE/PRACTICE MENU` — rows are BUILT from live state
   (`buildMenuRows`), so you can never be offered an action that makes no
   sense: **Start** only with no session, **Repeat** only when a course is
@@ -196,6 +228,35 @@ before touching any pass/score/target logic.**
   `RDIM` like the rest of the chrome, and the label **must use font 2** (font 1
   digits are broken on the sprite). Panel-verified: 100 m/73 px overview,
   20 m/46 px next-target.
+- **The dirty map path is only valid while the CAMERA is unchanged** (todo 46).
+  `drawStaticLayer()` *paints but never clears*, so it is only "identical
+  pixels" for a fixed projection. The map repaints fully only on a session
+  change (`mapFull = mapDirty || courseChanged`), so a camera move with no
+  session change (Target view re-centres on each mark switch — the span is
+  fixed, the origin moves — and `focusEnabled` never toggles there) would leave
+  the previous projection's labels, circles and legs standing. `drawRaceMap`
+  therefore fingerprints the camera (`p.lat0/lon0` in screen px + `p.scale`)
+  and forces one full repaint when it moves. **Rotation is excluded on purpose**
+  — heading-up changes it every pass and the 1 Hz rotating throttle owns that
+  case. Mark labels are also clamped to `WIRE_TOP + 9`: anything drawn above the
+  map's clear rect can never be erased again (the hole todo 35 found).
+- **A REPAINT MUST NEVER RESET THE RUN** (todo 47). `requiresInit` is true for
+  every `redrawCurrentPage()` (R, closing a menu, OTA), and `raceRunStarted()`
+  only means "the START was **scored**" — so gating a reset on
+  `!raceRunStarted()` wiped the whole pre-start memory
+  (`gunSide`/`hasGunSide`/`lastSide`/`approachSide`/`ocs`) on any redraw before
+  the crossing. The clean-crossing test needs exactly that memory, so the boat
+  could not score its start and fell to the 60 s "late join" escape. Session
+  changes own the reset (`courseChanged && key != lastResetCourseKey`); a
+  repaint owns none.
+- **The GO/OCS banner is an EVENT, not a gun cue** (todo 47). It is raised by
+  `raceGunEdge()` when `started` flips false→true, and it must stay that way:
+  `noteGunEdge()` is reached only from a **real** start — the scored line
+  crossing (`goCue`) or the point-start gun. The "late join" / "late cross"
+  catch-up paths (no fix at the gun, GPS gap on the line) still set
+  `started`/`startEpoch` — the clock is gun-based, so nothing is lost — and log
+  the START event, but they must not banner: a discovery is not a start, and
+  showing GO at gun+65 reads as "the race begins now".
 - **`courseChanged` must mean "the session changed", never "a repaint was
   forced".** `lastRaceCourseKey` used to be reset to a `-2` sentinel inside
   `if (requiresInit)` to force a map redraw, so the very next pass read as a
