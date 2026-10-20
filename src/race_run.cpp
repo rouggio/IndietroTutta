@@ -28,8 +28,25 @@ static uint8_t legIdx = 255;      // target the leg state belongs to
 static bool entryLatched = false; // cut the entry traverse leaving A
 static bool exitLatched = false;  // cut the exit traverse toward C (side in exitSide)
 static char exitSide = ' ';       // P/S read at the exact crossing point
+// When each latch was taken (wall clock). The score needs the exit cut to come
+// AFTER the arrival: nothing resets the leg between two approaches (a mock tape
+// restart, a rejected-fix jump), and a stale exit latch left over from the
+// previous attempt would otherwise satisfy the score one fix after the new
+// entry latch — a pass credited ~25 s before the boat rounded (todo 53).
+static long entryAt = 0, exitAt = 0;
 static double emaDA = -1.0, emaDB = -1.0; // EMA distance to A (previous) and B (target)
 static uint8_t growA = 0, growB = 0; // consecutive EMA rises
+// The GIRO (SPEC 3.2): the bearing from the boat to B must SWING, and the
+// sign of the swing is the declared direction (P = CCW = the bearing falls,
+// S = CW = it rises). This is what tells a boat going AROUND the buoy from one
+// that comes near and turns back — the two look identical to the entry
+// traverse alone, because a giro wider than 180 degrees crosses it a second
+// time by construction. Counted on the smoothed bearing with a noise
+// deadband, read on several fixes in a row like leavingA/leavingB (SPEC 6).
+static double giroBearing = -999.0;  // smoothed bearing boat -> B
+static uint8_t giroCCW = 0, giroCW = 0; // consecutive swings each way
+static const uint8_t GIRO_N = 3;      // consecutive swings = a giro in progress
+static const double GIRO_DB_DEG = 2.0; // deadband: GPS bearing noise, no verdict
 static bool legFresh = true;      // first evaluated fix: late join may sit past the entry
 static bool gateThreaded = false;
 static double legPrevLat = 0.0, legPrevLon = 0.0;
@@ -432,10 +449,15 @@ static void legReset(uint8_t idx)
     entryLatched = false;
     exitLatched = false;
     exitSide = ' ';
+    entryAt = 0;
+    exitAt = 0;
     emaDA = -1.0;
     emaDB = -1.0;
     growA = 0;
     growB = 0;
+    giroBearing = -999.0;
+    giroCCW = 0;
+    giroCW = 0;
     legFresh = true;
     gateThreaded = false;
     havePrev = false;
@@ -988,6 +1010,34 @@ void raceRunUpdate(TinyGPSPlus& gps)
             }
             const bool leavingA = growA >= LEAVE_N;
             const bool leavingB = growB >= LEAVE_N;
+            // GIRO: is the boat going around B, and which way? Bearing from
+            // the boat to B, smoothed; consecutive falls = CCW (P), rises =
+            // CW (S). A deadband keeps GPS noise from counting, and the swing
+            // is read on consecutive fixes like the distance trends above.
+            {
+                const double bToB = norm360(atan2(-P1x, -P1y) * 180.0 / M_PI);
+                if (giroBearing < -900.0) {
+                    giroBearing = bToB;
+                } else {
+                    double d = bToB - giroBearing;
+                    if (d > 180.0) d -= 360.0;
+                    else if (d < -180.0) d += 360.0;
+                    giroBearing = norm360(giroBearing + 0.5 * d);
+                    if (d < -GIRO_DB_DEG) {
+                        if (giroCCW < 255) giroCCW++;
+                        giroCW = 0;
+                    } else if (d > GIRO_DB_DEG) {
+                        if (giroCW < 255) giroCW++;
+                        giroCCW = 0;
+                    }
+                }
+            }
+            // A giro in the DECLARED direction protects the arrival latch
+            // (SPEC 3.2). Unspecified side: any way round counts.
+            const bool giroDone =
+                (cur.side == 'P') ? (giroCCW >= GIRO_N)
+                : (cur.side == 'S') ? (giroCW >= GIRO_N)
+                                    : (giroCCW >= GIRO_N || giroCW >= GIRO_N);
             // Axes: entry A→B, exit B→C. Degenerate A (== B): no entry line.
             const double iL = sqrt(Ax * Ax + Ay * Ay);
             const double oL = sqrt(Cx * Cx + Cy * Cy);
@@ -999,6 +1049,7 @@ void raceRunUpdate(TinyGPSPlus& gps)
             // Late join: the leg opens past the entry line already.
             if (legFresh && haveEntry && !entryLatched && (P1x * uix + P1y * uiy) > 0.0) {
                 entryLatched = true;
+                entryAt = now;
                 bufferedSerialPrintln("[RACE] entry assumed (late join)");
             }
             legFresh = false;
@@ -1008,6 +1059,7 @@ void raceRunUpdate(TinyGPSPlus& gps)
                           uiy * TRAV_HALF_M, -uix * TRAV_HALF_M) &&
                 (P1x - P0x) * uix + (P1y - P0y) * uiy > 0.0) {
                 entryLatched = true;
+                entryAt = now;
                 bufferedSerialPrintln("[RACE] entry latched");
             }
             // Back to A: re-crossing the entry traverse away from B (and not
@@ -1015,16 +1067,31 @@ void raceRunUpdate(TinyGPSPlus& gps)
             // re-proves itself. Trend-based cancelling broke Windward-Leeward:
             // the whole downwind leg sails back toward A, which is the
             // correct course, not a retreat.
+            //
+            // ...and a boat going AROUND the buoy must never look like one.
+            // The traverses are unbounded lines (SPEC 2: a traverso has no
+            // span), so ANY giro wider than 180 degrees crosses the entry
+            // traverse a second time by construction — a mark left to port on
+            // a leg that bears away right needs 241 degrees, and the boat does
+            // that 25-31 m from the buoy with its distance constant. That is
+            // the GIRO, not a return: if the bearing has been swinging in the
+            // declared direction, the latch stands (SPEC 3.2 forbids
+            // "tornare bruscamente indietro", not a wide giro; 3.1-3.3 were
+            // all satisfied). Only a crossing with NO such swing — the boat
+            // arrives and turns back — cancels the arrival.
             const bool exitCross =
                 segXingXY(P0x, P0y, P1x, P1y, -uoy * TRAV_HALF_M, uox * TRAV_HALF_M,
                           uoy * TRAV_HALF_M, -uox * TRAV_HALF_M) &&
                 (P1x - P0x) * uox + (P1y - P0y) * uoy > 0.0;
-            if (havePrev && entryLatched && !exitCross &&
+            if (havePrev && entryLatched && !exitCross && !giroDone &&
                 segXingXY(P0x, P0y, P1x, P1y, -uiy * TRAV_HALF_M, uix * TRAV_HALF_M,
                           uiy * TRAV_HALF_M, -uix * TRAV_HALF_M) &&
                 (P1x - P0x) * uix + (P1y - P0y) * uiy < 0.0) {
                 entryLatched = false;
-                bufferedSerialPrintln("[RACE] latch cleared (back to A)");
+                char cmsg[64];
+                snprintf(cmsg, sizeof(cmsg), "[RACE] latch cleared (back to A) giro %u/%u",
+                         (unsigned)giroCCW, (unsigned)giroCW);
+                bufferedSerialPrintln(cmsg);
             }
             // Exit: cut the exit traverse toward C. The crossing latches at
             // once (exact point, exact side); the score fires when leaving B
@@ -1047,6 +1114,7 @@ void raceRunUpdate(TinyGPSPlus& gps)
                 if (!exitLatched || cut != exitSide) {
                     exitLatched = true;
                     exitSide = cut;
+                    exitAt = now;
                     char emsg[48];
                     snprintf(emsg, sizeof(emsg), "[RACE] exit latched cut %c", exitSide);
                     bufferedSerialPrintln(emsg);
@@ -1059,9 +1127,14 @@ void raceRunUpdate(TinyGPSPlus& gps)
                 (P1x - P0x) * uox + (P1y - P0y) * uoy < 0.0) {
                 exitLatched = false;
                 exitSide = ' ';
+                exitAt = 0;
                 bufferedSerialPrintln("[RACE] exit cancelled (back to B)");
             }
-            if (entryLatched && exitLatched && leavingB) {
+            // Todo 53: the exit cut must be AT OR AFTER the arrival. A latch
+            // left over from the previous attempt (a tape restart or a
+            // rejected-fix jump resets nothing) can never satisfy this, so a
+            // pass can no longer be credited a fix after the new entry latch.
+            if (entryLatched && exitLatched && exitAt >= entryAt && leavingB) {
                 const char sailed = exitSide;
                 if ((cur.side == 'P' || cur.side == 'S') && sailed != cur.side) {
                     char wv[16];
@@ -1090,6 +1163,7 @@ void raceRunUpdate(TinyGPSPlus& gps)
                     }
                     legReset(progIdx);
                     entryLatched = true; // arrival proven: the re-round needs only a clean exit
+                    entryAt = now;
                     legPrevLat = lat;
                     legPrevLon = lon;
                     havePrev = true;

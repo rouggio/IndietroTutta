@@ -35,6 +35,21 @@ servono tre punti: **A** (da dove vieni), **B** (la boa), **C** (dove vai dopo).
 Se dopo l'aggancio la barca torna verso A, l'aggancio si cancella: chi arriva
 vicino e torna indietro non conta niente.
 
+**Ampiezza del giro — ratificato dal velista il 2026-10-20.** Il giro non ha
+limite di ampiezza. Con la boa dichiarata **P** su un lato che piega a dritta
+(`Easy Peasy`: +119° al primo lato) la barca gira **241° in CCW** e tiene la boa
+a sinistra: è un giro, non un ritorno. Poiché i traversi sono **rette** (2), un
+giro oltre i 180° attraversa il traverso d'entrata una seconda volta *per
+costruzione* — quell'attraversamento, da solo, **non** cancella l'aggancio. La
+cancellazione vale solo se dall'aggancio **non c'è stato giro nel verso
+dichiarato**, cioè se la barca si è avvicinata e ha invertito. La direzione si
+legge su più punti (dettaglio ammesso da 6): segno della rotazione del
+rilevamento barca→B, tre oscillazioni consecutive oltre il rumore (2°). La prova
+offline (`store/simShape.js`, colonna `entryLost`) applica la stessa regola, e
+una rotta che gira dalla parte sbagliata resta bocciata. Verificato in acqua il
+2026-10-20 (sessione 228 su `Easy Peasy`, lati P): `passed mark 1 (cut P)`,
+`passed mark 2 (cut P)`, linea armata, `FINISHED` 162 s.
+
 ## 4. Il lato sbagliato
 
 Stesse condizioni (aggancio + taglio d'uscita allontanandosi da B) ma dal lato

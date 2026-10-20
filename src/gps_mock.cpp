@@ -171,6 +171,7 @@ static volatile int simCount = 0;       // fixes in the tape
 static volatile int simLoaded = 0;      // fixes the server has handed us (page cursor)
 static volatile int simTotal = 0;       // fixes in the current journey
 static volatile long simSessionId = 0;  // the session this journey is raced in
+static volatile long simGunSec = 0;     // script seconds from tape start to the gun
 static unsigned long simNextFixAt = 0;  // when the next fix is due
 static bool simFetching = false;
 static unsigned long simNextAttemptAt = 0; // fetch backoff (a 404 is not free)
@@ -281,6 +282,7 @@ static bool simFetchTape(int from)
                     simWander = (strcmp(rid, "wander") == 0);
                     simTotal = (int)total;
                     simSessionId = sid;
+                    simGunSec = gun;   // the tape's own clock: crossing = gun + 5 s
                     changed = true;
                     restart = (from > 0);
                 }
@@ -398,6 +400,36 @@ void gpsMockTick(TinyGPSPlus& gps)
     }
     if (!wander && simGateState != 1) {
         simGateState = 1;
+        // Align the tape to the WALL CLOCK, not to the moment we happened to
+        // find the session. The script puts the line cross at gun+5 in ITS
+        // clock (the run's creation), but a session made on the web only
+        // reaches the boat on the next heartbeat — up to 30 s idle — and
+        // playing from the tape's first fix then shifts the whole journey by
+        // that lag: the start lands ~30 s after the gun and the course runs
+        // late for the rest of the race. Drop the fixes already in the past so
+        // the journey resumes where the run's clock says it is.
+        //
+        // Capped at the script's gun: the crossing is gun+5, so the start
+        // always stays ahead of us (a boat that only hears about the session
+        // AFTER the gun still sails the last five seconds of the approach and
+        // crosses late — that is the honest limit of a scripted feed).
+        const long nowEpoch = raceWallEpoch();
+        int dropped = 0;
+        if (nowEpoch > 0) {
+            portENTER_CRITICAL(&simMux);
+            const long maxDrop = simGunSec;
+            while (simCount > 1 && dropped < maxDrop &&
+                   (long)simTape[simHead].epoch < nowEpoch - 1) {
+                simHead = (simHead + 1) % SIM_TAPE_MAX;
+                simCount--;
+                dropped++;
+            }
+            portEXIT_CRITICAL(&simMux);
+        }
+        if (dropped > 0) {
+            bufferedSerialPrintln(String("[MOCK] journey aligned: skipped ") +
+                                  dropped + " stale fix(es)");
+        }
         bufferedSerialPrintln(String("[MOCK] journey sailing (session ") + wantSession + ")");
     }
 
