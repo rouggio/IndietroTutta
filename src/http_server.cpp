@@ -656,6 +656,17 @@ static void handleReboot()
     ESP.restart();
 }
 
+// Last /screen capture (todo 6). Band height is fixed: 320x40 at 8bpp is
+// 12,800 bytes, the largest contiguous block a heap fragmented by TLS to Render
+// can be trusted with (the previously recorded floor was maxAllocHeap ~41 KB,
+// against the 76,801 bytes the old single full-page sprite asked for).
+// `bands < 0` = a band sprite failed to allocate, so the capture was truncated.
+static const int SCREEN_BAND_H = 40;
+static int           gScreenBands = 0;
+static bool          gScreenOk    = false;
+static unsigned long gScreenMs    = 0;
+static bool          gScreenBusy  = false;
+
 static void handleStatus()
 {
     StaticJsonDocument<2048> doc;
@@ -677,6 +688,15 @@ static void handleStatus()
     mem["freeHeap"]     = ESP.getFreeHeap();
     mem["minFreeHeap"]  = ESP.getMinFreeHeap();
     mem["maxAllocHeap"] = ESP.getMaxAllocHeap();
+
+    // /screen diagnostics: a grab is the tool used to verify the UI, and the
+    // failure it exists to survive (no contiguous block) must be visible here.
+    JsonObject scr = doc.createNestedObject("screen");
+    scr["bandH"]  = SCREEN_BAND_H;
+    scr["bands"]  = gScreenBands;
+    scr["ok"]     = gScreenOk;
+    scr["lastMs"] = gScreenMs;
+    scr["busy"]   = gScreenBusy;
 
     JsonObject sys = doc.createNestedObject("sys");
     sys["version"] = BUILD_VERSION;
@@ -768,9 +788,18 @@ static void handlePage()
 //
 // The ST7789 panel is write-only: TFT_eSPI's tft.readPixel() cannot read it
 // back (it always returned 0, so grabs were black). The only readable surface
-// is a TFT_eSprite buffer, so we re-render the current page into an 8-bit
-// (RGB332) off-screen sprite and stream that. 8bpp keeps it to ~77 KB, which
-// fits the heap on demand, and the UI's flat palette round-trips closely.
+// is a TFT_eSprite buffer, so we re-render the current page into an off-screen
+// sprite and stream that. 8bpp (RGB332) keeps it small and the UI's flat
+// palette round-trips closely.
+//
+// The page is rendered ONE 320x40 BAND at a time (12,800 bytes) instead of into
+// a single 320x240 sprite (76,801 bytes, one contiguous calloc). Talking to
+// Render fragments the heap until the largest free block is ~41 KB, and the
+// full-page buffer then failed — `503 no memory for capture` while /status
+// stayed healthy — so grabs were unusable exactly when UI work was being
+// verified against prod. Bands need a third of that and leave slack for a worse
+// day. The wire format is unchanged (76,800 bytes of RGB565 big-endian), so
+// scripts/grab_screen.py and the PNG pipeline are untouched.
 static void handleScreen()
 {
     const int w = tft.width();
@@ -783,38 +812,63 @@ static void handleScreen()
         server.send(503, "text/plain", "no gps");
         return;
     }
-
-    TFT_eSprite spr(gCanvas); // bound to the hardware panel for width/height
-    spr.setColorDepth(8);
-    if (spr.createSprite(w, h) == nullptr) {
-        server.send(503, "text/plain", "no memory for capture");
+    if (gScreenBusy) {
+        server.send(503, "text/plain", "capture in progress");
         return;
     }
 
-    // Redirect all drawing at the sprite and force a full repaint of the
-    // page currently on screen (requiresInit resets each screen's change-
-    // detect caches so every element is drawn). gGrabbing suppresses side
-    // effects the init path would otherwise trigger.
-    TFT_eSPI* saved = gCanvas;
-    gCanvas = &spr;
-    gGrabbing = true;
-    drawScreen(*gpsRef, true, page);
-    gGrabbing = false;
-    gCanvas = saved;
+    gScreenBusy  = true;
+    gScreenBands = 0;
+    gScreenOk    = false;
+    const unsigned long t0 = millis();
 
     server.setContentLength((size_t)w * h * 2);
     server.send(200, "application/octet-stream", "");
+
     static uint16_t row[480];
-    for (int y = 0; y < h; y++) {
-        const int n = w > 480 ? 480 : w;
-        for (int x = 0; x < n; x++) {
-            const uint16_t px = spr.readPixel(x, y);
-            row[x] = (uint16_t)((px >> 8) | (px << 8)); // big-endian on the wire
+    for (int y0 = 0; y0 < h; y0 += SCREEN_BAND_H) {
+        const int bh = (y0 + SCREEN_BAND_H <= h) ? SCREEN_BAND_H : (h - y0);
+
+        TFT_eSprite spr(gPanel); // bound to the hardware panel for width/height
+        spr.setColorDepth(8);
+        if (spr.createSprite(w, bh) == nullptr) {
+            bufferedSerialPrintln("[SCREEN] band alloc failed, capture truncated");
+            gScreenBands = -1;
+            gScreenMs    = millis() - t0;
+            gScreenBusy  = false;
+            return; // Content-Length is already out: the caller sees a short body
         }
-        server.sendContent((const char*)row, (size_t)n * 2);
-        if ((y & 15) == 15) delay(1); // feed the watchdog
+
+        // Redirect all drawing at the band and force a full repaint of the page
+        // currently on screen (requiresInit resets each screen's change-detect
+        // caches so every element is drawn). gGrabbing suppresses side effects
+        // the init path would otherwise trigger; the dispatcher shifts y by the
+        // band's page origin.
+        gCapture  = &spr;
+        gCaptureY = y0;
+        gGrabbing = true;
+        drawScreen(*gpsRef, true, page);
+        gGrabbing = false;
+        gCapture  = nullptr;
+
+        for (int y = 0; y < bh; y++) {
+            const int n = w > 480 ? 480 : w;
+            for (int x = 0; x < n; x++) {
+                const uint16_t px = spr.readPixel(x, y);
+                row[x] = (uint16_t)((px >> 8) | (px << 8)); // big-endian on the wire
+            }
+            server.sendContent((const char*)row, (size_t)n * 2);
+            if ((y & 15) == 15) delay(1); // feed the watchdog
+        }
+
+        spr.deleteSprite();
+        gScreenBands++;
+        delay(1);
     }
-    spr.deleteSprite();
+
+    gScreenMs   = millis() - t0;
+    gScreenOk   = true;
+    gScreenBusy = false;
 }
 
 static void handleRedirect()

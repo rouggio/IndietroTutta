@@ -19,8 +19,11 @@ static const int CX = 160;
 static const int CY = 120;
 
 TFT_eSPI tftHW = TFT_eSPI();
-TFT_eSPI* gCanvas = &tftHW;   // drawing target: hardware by default
-bool gGrabbing = false;       // true while rendering a /screen capture
+TFT_eSPI*    gPanel    = &tftHW;   // the hardware panel
+TFT_eSprite* gCapture  = nullptr;  // band sprite while a /screen capture runs
+int32_t      gCaptureY = 0;        // page y of the band's first row
+Canvas       tftCanvas;            // drawing dispatcher: `tft` is this
+bool gGrabbing = false;            // true while rendering a /screen capture
 
 unsigned long lastUpdate = 0;
 

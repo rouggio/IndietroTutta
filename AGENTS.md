@@ -94,10 +94,14 @@ practice Start/Repeat placement use it when the session carries no wind),
 `screen_diagnostics.*` (RR from main), `screen_config.*` (LL from main),
 `wifi_manager.*` non-blocking AP+STA (scan prefers visible strongest, park/retry),
 `ota.*` semver vs `latest.txt`, `http_server.*` portal port 80,
-`canvas.*` drawing-target indirection (`gCanvas` = hw panel; `/screen`
-grab re-renders the current page into an off-screen 8bpp sprite since the
-ST7789 is write-only — `#define tft (*gCanvas)`; font 1 on a sprite faults,
-so capture uses font 2 for the race pane labels),
+`canvas.*` drawing-target dispatcher: `tft` is a `Canvas` object, not a
+TFT_eSPI reference, so every call goes either to the panel (`gPanel`) or -
+during a `/screen` capture - to the 320x40 band sprite (`gCapture` +
+`gCaptureY`, y translated). The ST7789 is write-only so a sprite is the only
+readable surface; with an explicit dispatcher an un-forwarded method is a
+compile error, not a silently incomplete grab (`canvasPushImage()` is now just
+a forward; font 1 on a sprite faults, so capture uses font 2 for the race pane
+labels),
 `config_store.*` NVS ns `wifi` blob `cfg` + `wifi_%d_ssid/pass`.
 (Race engine now lives in `race_session.*` + `race_run.*` + `race_courses.*` + `screen_race.*`.)
 **The race clock base is the GUN, never the line crossing:** every start path in
@@ -323,19 +327,21 @@ before touching any pass/score/target logic.**
   (venue wind at the boat's last stored position, env fallback, RAM); `POST /gps`
   JSON lat/lon/speed/course/alt/sats/flagged/username. `setInsecure()` everywhere, no auth.
 - `server_link.*`: dev/prod switch (NVS `srv` mode/host, portal `/server`); dev+host = plain HTTP to LAN backend, else TLS prod. All fetchers (`health/gps/sim/courses/OTA`) go through `ServerLink`.
-- **`/screen` capture needs ~77 KB of CONTIGUOUS heap and starves on prod.** A 320×240
-  8bpp sprite is one 76,801-byte `calloc`; when it fails the route answers
-  `503 no memory for capture`. Right after boot `maxAllocHeap` is ~77,812 and it works,
-  but TLS churn from talking to **Render** fragments the heap down to ~40,948 and every
-  grab then fails until a reboot. Symptom to recognise: `GET /status` fine, `/screen` 503,
-  and the serial full of `[BACKEND] slow pass 3000ms+` (each mock fix + `POST /gps` to a
-  cold free instance takes seconds). On the local DEV backend it works all session. Reboot
-  before a UI-debugging stretch, or point the device at DEV; a real fix would be streaming
-  the page in 320×40 bands (12.8 KB per sprite) instead of one big sprite. The grab is an
-  **8bpp RGB332** sprite: colours are quantised (e.g. `RDIM` 0x8410 comes back as a nearby
-  palette value), so a pixel probe must match by tolerance, never by exact RGB565.
+- **`/screen` captures in 320x40 bands (fw 1.0.374) - it needs 12.8 KB of
+  contiguous heap, not 77 KB.** The old capture was one 320x240 8bpp sprite: a
+  single 76,801-byte `calloc` that TLS churn from talking to **Render** fragmented
+  the heap below (~40,948), so `GET /status` stayed fine while `/screen` answered
+  `503 no memory for capture` - and every grab failed until a reboot, which is
+  exactly when UI work was being verified against prod. Now the page is re-rendered
+  one 320x40 band at a time and the bands are streamed in order; the wire format is
+  unchanged, so `scripts/grab_screen.py` and the PNG pipeline needed nothing. Read
+  `/status` first if a grab ever misbehaves: `mem.maxAllocHeap` beside
+  `screen {bandH, bands, ok, lastMs}` (`bands: -1` = a band failed to allocate and
+  the response was truncated). The grab is still an **8bpp RGB332** sprite: colours
+  are quantised (e.g. `RDIM` 0x8410 comes back as a nearby palette value), so a
+  pixel probe must match by tolerance, never by exact RGB565.
 - Portal always up: open AP `IndietroTutta`, DNS → `192.168.4.1` → `/config`.
-  Routes: `/config /save /wifi/remove /reset (wipe all!) /reboot /status /health /serial /mock?on=1|0 /nogo (GET current; POST /nogo?deg=<total width 10..180> — no-go arc width, own NVS key, shown in /status) /ota (POST immediate check vs current server) /server?mode=prod|dev&host=<ip:port> (GET=current) /btn?b=L|R&e=R|RR (remote button) /screen (RGB565 BE 320x240 grab: re-renders the current page into an off-screen 8bpp sprite and streams it, since the ST7789 can't be read back; `scripts/grab_screen.py` → PNG)`. All unauthenticated.
+  Routes: `/config /save /wifi/remove /reset (wipe all!) /reboot /status /health /serial /mock?on=1|0 /nogo (GET current; POST /nogo?deg=<total width 10..180> — no-go arc width, own NVS key, shown in /status) /ota (POST immediate check vs current server) /server?mode=prod|dev&host=<ip:port> (GET=current) /btn?b=L|R&e=R|RR (remote button) /screen (RGB565 BE 320x240 grab: re-renders the current page into a 320x40 8bpp band sprite at a time and streams the bands in order (12,800 bytes each), since the ST7789 can't be read back; `scripts/grab_screen.py` → PNG)`. All unauthenticated.
 - **`sys.page` in `/status`** (`main|race|diagnostics|config`): the mock feed
   delivers the scripted run whatever page is showing, so a device parked on
   MAIN produces a race with no countdown, no marks and no finish — and
