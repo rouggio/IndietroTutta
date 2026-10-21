@@ -13,6 +13,13 @@ bottom hints untouched.
   Pins in `include/User_Setup.h` force-included via `-DUSER_SETUP_LOADED -include`.
 - Buttons GPIO21=Left GPIO22=Right, active-low, 50ms debounce, 500ms long-press.
 - GPS UART2 RX16 TX17 @9600, parsed by TinyGPSPlus in `gps.cpp`.
+- **Power: 3.3 V buck-boost, NOT a 5→3.3 V linear regulator (changed 2026-10-21).**
+  The original on-board 5→3.3 V regulator fried mid-race and took the device with it
+  (session 230: quiet at 10:21:51Z, then a clean reboot with RAM lost and no clue in
+  the serial). It got hot in normal use. **A device that dies and comes back rebooted
+  is a POWER suspect first** — brownout/reset, not firmware — especially under display
+  + Wi-Fi + OTA load; check the regulator/buck before chasing a firmware bug, and do
+  not read a lost serial ring as evidence of a firmware fault.
 - Build: `make compile` (must be SUCCESS before commit), `make upload PORT=COM5`,
   `make monitor`, `make dist` (= shorthand `dc`: bump + publish OTA), `make dl`
   (= shorthand `dl`: ota-local + device pulls immediately, `DEVICE_IP ?= 192.168.0.106`
