@@ -3,14 +3,42 @@
 Usage:  python scripts/grab_screen.py [host] [out.png]
 Default host 192.168.0.106 (Ciccio, DHCP — confirm via GET /status first).
 Takes seconds (SPI reads on the device); a debugging tool, not a live feed.
+
+Grabs are kept in ../grab (project root): a bare filename lands there, and with
+no name at all the file becomes <host>_<page>_<timestamp>.png.
 """
+import json
+import os
 import struct
 import sys
 import urllib.request
 import zlib
+from datetime import datetime
 
 HOST = sys.argv[1] if len(sys.argv) > 1 else "192.168.0.106"
-OUT = sys.argv[2] if len(sys.argv) > 2 else "screen.png"
+DEVICE_REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+PROJECT_ROOT = os.path.dirname(DEVICE_REPO)  # umbrella: PLAN.md / ROADMAP.md live here
+GRAB_DIR = os.path.join(
+    PROJECT_ROOT
+    if os.path.isfile(os.path.join(PROJECT_ROOT, "PLAN.md"))
+    else DEVICE_REPO,  # device repo cloned on its own: keep the grabs local
+    "grab",
+)
+OUT = sys.argv[2] if len(sys.argv) > 2 else ""
+if OUT and not os.path.dirname(OUT):
+    OUT = os.path.join(GRAB_DIR, OUT)  # a bare filename always lands in grab/
+if not OUT:
+    page = "screen"
+    try:  # name the file after what is on the panel; a dead portal is not fatal
+        with urllib.request.urlopen(f"http://{HOST}/status", timeout=5) as r:
+            page = json.load(r).get("sys", {}).get("page", "screen")
+    except Exception:
+        pass
+    OUT = os.path.join(
+        GRAB_DIR,
+        f"{HOST.replace(':', '-')}_{page}_{datetime.now():%Y%m%d-%H%M%S}.png",
+    )
+os.makedirs(os.path.dirname(OUT) or GRAB_DIR, exist_ok=True)
 W, H = 320, 240  # rotation-3 landscape framebuffer
 
 

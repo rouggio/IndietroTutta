@@ -339,7 +339,10 @@ before touching any pass/score/target logic.**
   `screen {bandH, bands, ok, lastMs}` (`bands: -1` = a band failed to allocate and
   the response was truncated). The grab is still an **8bpp RGB332** sprite: colours
   are quantised (e.g. `RDIM` 0x8410 comes back as a nearby palette value), so a
-  pixel probe must match by tolerance, never by exact RGB565.
+  pixel probe must match by tolerance, never by exact RGB565. Grabs are written
+  to `../grab/` at the project root (`scripts/grab_screen.py`): a bare filename
+  lands there, and with no filename at all the file is `<host>_<page>_<stamp>.png`.
+  The pre-band reference set for todo 6 lives in `grab/ref6/`.
 - Portal always up: open AP `IndietroTutta`, DNS → `192.168.4.1` → `/config`.
   Routes: `/config /save /wifi/remove /reset (wipe all!) /reboot /status /health /serial /mock?on=1|0 /nogo (GET current; POST /nogo?deg=<total width 10..180> — no-go arc width, own NVS key, shown in /status) /ota (POST immediate check vs current server) /server?mode=prod|dev&host=<ip:port> (GET=current) /btn?b=L|R&e=R|RR (remote button) /screen (RGB565 BE 320x240 grab: re-renders the current page into a 320x40 8bpp band sprite at a time and streams the bands in order (12,800 bytes each), since the ST7789 can't be read back; `scripts/grab_screen.py` → PNG)`. All unauthenticated.
 - **`sys.page` in `/status`** (`main|race|diagnostics|config`): the mock feed
