@@ -11,8 +11,10 @@ bottom hints untouched.
 - **Two variants, ONE `src/`** (2026-10-31): one PlatformIO env each, selected with
   `PIOENV`. `esp32dev` = **v1** (classic ESP32, in the field) stays the default;
   `esp32s3` = **v2** (ESP32-S3 N16R8: 16 MB QIO flash + 8 MB OPI PSRAM,
-  `default_16MB.csv` dual-OTA). The per-variant difference is the **display setup
-  header** (`-include include/User_Setup.h`); shared flags/libs live in `[common]`.
+  `default_16MB.csv` dual-OTA). The per-variant differences are the board/flash
+  flags, the **pin map** (`include/board_pins.h`, selected by
+  `-DDEVICE_VARIANT_V2`) and the **display setup header**
+  (`-include include/User_Setup.h`); shared flags/libs live in `[common]`.
   `make compile|upload|monitor|clean [PIOENV=esp32s3]`, e.g.
   `make upload PORT=COM3 PIOENV=esp32s3`.
   - The S3's only USB is the native CDC/JTAG: the env sets
@@ -34,23 +36,46 @@ bottom hints untouched.
     Forcing `SPI_PORT` to 2 selects GPSPI2, the bus the `SPI` object really
     uses. v1 is unaffected (`VSPI` = 3 is a valid base). This is IDF-version
     independent — it is NOT a core 2.x-vs-3.x problem.
-  - **S3 pin trap: GPIO 22–25 do not exist** (S3 = 0–21, 26–48). `buttons.cpp`
-    maps `{21 Left, 22 Right}`, so on v2 the **Right button is dead** until the
-    v2 pin map is decided (GPS 16/17 and buzzer 19 are valid as-is). `POST /btn`
-    still drives the UI over the portal.
+  - **S3 pin traps, and the per-variant map** (`include/board_pins.h`, chosen by
+    `-DDEVICE_VARIANT_V2`; v1 keeps exactly the field wiring). On the S3: GPIO
+    **22–25 do not exist** (S3 = 0–21, 26–48), **19/20 are the native USB pads** —
+    the v1 boot chime on 19 grabbed them and killed the USB console/OTA link
+    while the app kept running (the portal still served, which is what made it
+    look like a dead board) — **26–37 are the QSPI flash + OPI PSRAM bus**, and
+    0/3/45/46 are strapping. v2 therefore uses buttons **21 / 38 / 39** (a third
+    front button exists on v2, with no UI action bound yet; 40/41 free),
+    buzzer **47**, GPS 16/17 and the display pins unchanged. `Button::Third` is
+    in the enum and the table is built from the macros, so v1 (whose
+    `PIN_BTN_THIRD` is -1) compiles the two-button table. `POST /btn` takes
+    `b=L|R|3`.
   - v2 still builds the **v1 panel config** (ST7789 240×320, GPIO 23/18/5/2/4, all
     valid on S3) until the 3.5" 320×480 **ST7796S** panel is wired: the layout is
     NOT portable yet — `screen_race.cpp` and friends hardcode the 320×240 frame
     (`MAP_W = 320`, `CELL_EDGE {0,107,213,320}`). Until that port lands, a v2 board
-    boots, joins WiFi and serves the portal, but paints nothing.
-  - **OTA is still ONE channel** (`ota.cpp`: `serverBaseUrl() + "/ota"`), so a v2
-    board that OTA-checks would pull the **v1** binary — wrong-chip image, boot
-    loop. Safe only because a fresh board has `config = {}` ⇒ `otaCheckOnStart`
-    false. A `/ota/v2` channel split is required before v2 ever goes OTA.
+    boots, joins WiFi, serves the portal and updates over the air, but paints
+    nothing.
+  - **OTA is split per variant** (`OTA_CHANNEL` in `config.h`, used by
+    `ota.cpp`): v1 pulls `/ota`, v2 pulls `/ota/v2`, and `make dist
+    PIOENV=esp32s3` stages into `public/ota/v2/`. One shared channel would let a
+    v2 board pull the v1 (esp32dev) image — wrong chip, no boot, and nothing to
+    recover with once the enclosure is sealed. `/status` reports
+    `sys.variant`, `sys.otaChannel` and `sys.ap`. **Bootstrap caveat:** a board
+    whose firmware predates the split still asks the legacy `/ota` path, so its
+    first update has to be staged there; after that it is on its own channel.
+    Firmware 1.0.378 was the first v2 build; it was published to `/ota/v2` and
+    pulled over TLS from Render on 2026-10-31, and `/ota` stayed on the v1
+    1.0.375 image throughout.
+  - **The AP name is per board**: `IndietroTutta-XXXX`, XXXX = the last two bytes
+    of the STA MAC (`wifi_manager.cpp: wifiApSsid()`), i.e. 14:C1:9F:CD:6D:FC →
+    `IndietroTutta-6DFC`. Two unsuffixed boards in range both advertised
+    `IndietroTutta`, so a laptop joined whichever answered first and the portal
+    could drive the wrong boat with no error.
 - Arduino, libs: `TFT_eSPI + TinyGPSPlus + ArduinoJson@^6.21.1`.
 - Display ST7789 CS5 DC2 RST4 MOSI23 SCLK18, rotation 3, `TFT_BGR` in `platformio.ini`.
   Pins in `include/User_Setup.h` force-included via `-DUSER_SETUP_LOADED -include`.
-- Buttons GPIO21=Left GPIO22=Right, active-low, 50ms debounce, 500ms long-press.
+- Buttons GPIO21=Left GPIO22=Right (v1); the map lives in `include/board_pins.h`
+  (`PIN_BTN_LEFT/RIGHT/THIRD`), active-low, 50ms debounce, 500ms long-press.
+- Buzzer `PIN_SOUND` (`sound.h`): 19 on v1, **47 on v2** — never 19/20 on an S3.
 - GPS UART2 RX16 TX17 @9600, parsed by TinyGPSPlus in `gps.cpp`.
 - **Power: 3.3 V buck-boost, NOT a 5→3.3 V linear regulator (changed 2026-10-21).**
   The original on-board 5→3.3 V regulator fried mid-race and took the device with it
@@ -413,7 +438,7 @@ before touching any pass/score/target logic.**
   logs only on a CHANGE of side/near (~4 lines per race); an earlier
   once-a-second version pushed `passed mark` and `finished` out of the ring
   — the diagnostic destroyed the evidence it was added to collect.
-- OTA: `GET ota/latest.txt` → semver compare → `HTTPUpdate firmware.bin` + progress bar + `redrawCurrentPage()`. `rebootOnUpdate(false)`: on success the panel gets a clean `fillScreen` before `ESP.restart()` so the boot splash shows neatly (no stale progress-overlay pixels). Boot check if `otaCheckOnStart`, 60s WiFi timeout. `make ota-local` stages a dev build into LAN `public/ota/` with no commit/push/hook (cloud untouched; `config.h` + `public/ota/*` stay dirty by design); `make dl` (= `dl`) = ota-local + immediate pull + verify, and `make dist` (= `dc`) is the cloud publish that commits the bin into the backend repo.
+- OTA: `GET <otaBase>/latest.txt` → semver compare → `HTTPUpdate firmware.bin` + progress bar + `redrawCurrentPage()`, where `<otaBase>` = `serverBaseUrl() + "/ota" + OTA_CHANNEL` (`""` on v1, `"/v2"` on the S3). `rebootOnUpdate(false)`: on success the panel gets a clean `fillScreen` before `ESP.restart()` so the boot splash shows neatly (no stale progress-overlay pixels). Boot check if `otaCheckOnStart`, 60s WiFi timeout. `make ota-local` stages a dev build into LAN `public/ota$(OTA_SUBDIR)/` with no commit/push/hook (cloud untouched; `config.h` + `public/ota/*` stay dirty by design); `make dl` (= `dl`) = ota-local + immediate pull + verify, and `make dist` (= `dc`) is the cloud publish that commits the bin into the backend repo — **always pass `PIOENV=esp32s3` when publishing v2**, otherwise the v1 channel gets the image.
 - Bruno in `bruno/` covers portal routes (`access-point` + `local-network` envs).
 - Quirks: empty portal name keeps stored username; username regex both sides; WiFi rotate-on-5s-fail never blocks UI; OTA download blocks loop; laps RAM-only.
 - **Never edit a UTF-8 source with PowerShell** (`Get-Content -Raw` + `Set-Content
