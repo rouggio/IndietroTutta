@@ -8,7 +8,46 @@ bottom hints untouched.
 
 ## Hardware / toolchain
 
-- Board `esp32dev`, Arduino, libs: `TFT_eSPI + TinyGPSPlus + ArduinoJson@^6.21.1`.
+- **Two variants, ONE `src/`** (2026-10-31): one PlatformIO env each, selected with
+  `PIOENV`. `esp32dev` = **v1** (classic ESP32, in the field) stays the default;
+  `esp32s3` = **v2** (ESP32-S3 N16R8: 16 MB QIO flash + 8 MB OPI PSRAM,
+  `default_16MB.csv` dual-OTA). The per-variant difference is the **display setup
+  header** (`-include include/User_Setup.h`); shared flags/libs live in `[common]`.
+  `make compile|upload|monitor|clean [PIOENV=esp32s3]`, e.g.
+  `make upload PORT=COM3 PIOENV=esp32s3`.
+  - The S3's only USB is the native CDC/JTAG: the env sets
+    `-DARDUINO_USB_CDC_ON_BOOT=1 -DARDUINO_USB_MODE=1`, without which `Serial`
+    goes to the unconnected UART0 pins and `/serial` stays empty. A dual-USB S3
+    devkit also exposes a **CH343 UART bridge** on its other Type-C port: that one
+    flashes fine but shows only ROM/panic output, because the app's `Serial` is
+    the native CDC. Panics still land there (ROM prints them on UART0).
+  - **`-DUSE_FSPI_PORT` in the v2 env is LOAD-BEARING.** Without it the app
+    boot-panics in a loop on the first `screenInit()`:
+    `Guru Meditation ... StoreProhibited, EXCVADDR 0x000010`, backtrace
+    `begin_tft_write` ← `TFT_eSPI::init` ← `Canvas::init` ← `screenInit`.
+    TFT_eSPI 2.5.43's S3 path sets `SPI_PORT = FSPI = 1`, and IDF's
+    `soc/esp32s3/include/soc/soc.h:122` defines
+    `REG_SPI_BASE(i) = (((i)>=2) ? DR_REG_SPI2_BASE + (i-2)*0x1000 : 0)`
+    — so `_spi_user = SPI_USER_REG(1)` = `0 + 0x10` and the first
+    `writecommand()` stores to address 0x10. The library's own
+    `#ifndef REG_SPI_BASE` workaround never fires because IDF *does* define it.
+    Forcing `SPI_PORT` to 2 selects GPSPI2, the bus the `SPI` object really
+    uses. v1 is unaffected (`VSPI` = 3 is a valid base). This is IDF-version
+    independent — it is NOT a core 2.x-vs-3.x problem.
+  - **S3 pin trap: GPIO 22–25 do not exist** (S3 = 0–21, 26–48). `buttons.cpp`
+    maps `{21 Left, 22 Right}`, so on v2 the **Right button is dead** until the
+    v2 pin map is decided (GPS 16/17 and buzzer 19 are valid as-is). `POST /btn`
+    still drives the UI over the portal.
+  - v2 still builds the **v1 panel config** (ST7789 240×320, GPIO 23/18/5/2/4, all
+    valid on S3) until the 3.5" 320×480 **ST7796S** panel is wired: the layout is
+    NOT portable yet — `screen_race.cpp` and friends hardcode the 320×240 frame
+    (`MAP_W = 320`, `CELL_EDGE {0,107,213,320}`). Until that port lands, a v2 board
+    boots, joins WiFi and serves the portal, but paints nothing.
+  - **OTA is still ONE channel** (`ota.cpp`: `serverBaseUrl() + "/ota"`), so a v2
+    board that OTA-checks would pull the **v1** binary — wrong-chip image, boot
+    loop. Safe only because a fresh board has `config = {}` ⇒ `otaCheckOnStart`
+    false. A `/ota/v2` channel split is required before v2 ever goes OTA.
+- Arduino, libs: `TFT_eSPI + TinyGPSPlus + ArduinoJson@^6.21.1`.
 - Display ST7789 CS5 DC2 RST4 MOSI23 SCLK18, rotation 3, `TFT_BGR` in `platformio.ini`.
   Pins in `include/User_Setup.h` force-included via `-DUSER_SETUP_LOADED -include`.
 - Buttons GPIO21=Left GPIO22=Right, active-low, 50ms debounce, 500ms long-press.
@@ -350,7 +389,13 @@ before touching any pass/score/target logic.**
   to `../grab/` at the project root (`scripts/grab_screen.py`): a bare filename
   lands there, and with no filename at all the file is `<host>_<page>_<stamp>.png`.
   The pre-band reference set for todo 6 lives in `grab/ref6/`.
-- Portal always up: open AP `IndietroTutta`, DNS → `192.168.4.1` → `/config`.
+- Portal always up: open AP **`IndietroTutta-XXXX`**, DNS → `192.168.4.1` → `/config`.
+  XXXX = the last two bytes of the STA MAC (`wifi_manager.cpp: wifiApSsid()`),
+  i.e. the tail of the same address the backend knows the board by
+  (14:C1:9F:CD:6D:FC → `IndietroTutta-6DFC`), and `/status` reports the live
+  name in `sys.ap`. The suffix exists because two un-suffixed boards in range
+  both advertised `IndietroTutta`: the laptop joined whichever answered first
+  and the portal could drive the wrong boat without any error.
   Routes: `/config /save /wifi/remove /reset (wipe all!) /reboot /status /health /serial /mock?on=1|0 /nogo (GET current; POST /nogo?deg=<total width 10..180> — no-go arc width, own NVS key, shown in /status) /ota (POST immediate check vs current server) /server?mode=prod|dev&host=<ip:port> (GET=current) /btn?b=L|R&e=R|RR (remote button) /screen (RGB565 BE 320x240 grab: re-renders the current page into a 320x40 8bpp band sprite at a time and streams the bands in order (12,800 bytes each), since the ST7789 can't be read back; `scripts/grab_screen.py` → PNG)`. All unauthenticated.
 - **`sys.page` in `/status`** (`main|race|diagnostics|config`): the mock feed
   delivers the scripted run whatever page is showing, so a device parked on

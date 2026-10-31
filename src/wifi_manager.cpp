@@ -7,6 +7,7 @@
 #include <WiFi.h>
 #include <DNSServer.h>
 #include <TinyGPSPlus.h>
+#include <string.h>
 
 DNSServer dns;
 
@@ -125,18 +126,56 @@ static void preferNetwork(int index)
     attemptCount = 0;
 }
 
+// ---------------------------------------------------------
+// AP identity
+//
+// The AP name must be unique per device. Two boards powered in the same
+// room (bench, boat park, race village) both advertised "IndietroTutta", so
+// a phone or laptop joined whichever answered first and the portal could
+// drive the WRONG boat - silently, since every device serves the same
+// routes. The suffix is the last two bytes of the STA MAC, the same address
+// the backend knows this board by, so "IndietroTutta-6DFC" is
+// 14:C1:9F:CD:6D:FC. Built lazily: WiFi.macAddress() is only meaningful
+// once a mode is set, and before that it reads 00:00:00:00:00:00.
+// ---------------------------------------------------------
+
+static char apSsid[33] = "IndietroTutta";
+static bool apSsidBuilt = false;
+
+const char* wifiApSsid()
+{
+    if (apSsidBuilt)
+        return apSsid;
+
+    String mac = WiFi.macAddress(); // "14:C1:9F:CD:6D:FC"
+    mac.replace(":", "");           // "14C19FCD6DFC"
+
+    if (mac.length() >= 4 && mac != "000000000000")
+    {
+        const String ssid =
+            String("IndietroTutta-") + mac.substring(mac.length() - 4);
+
+        strncpy(apSsid, ssid.c_str(), sizeof(apSsid) - 1);
+        apSsid[sizeof(apSsid) - 1] = '\0';
+        apSsidBuilt = true;
+    }
+
+    return apSsid;
+}
+
 static void startAccessPoint()
 {
     WiFi.mode(WIFI_AP_STA);
 
-    if (!WiFi.softAP("IndietroTutta"))
+    if (!WiFi.softAP(wifiApSsid()))
     {
         bufferedSerialPrintln("[WiFi] Failed to start AP");
         return;
     }
 
-    bufferedSerialPrint("[WiFi] AP IP: ");
-    bufferedSerialPrintln(WiFi.softAPIP().toString());
+    bufferedSerialPrintln(
+        String("[WiFi] AP ") + wifiApSsid() +
+        " IP: " + WiFi.softAPIP().toString());
 
     dns.start(53, "*", WiFi.softAPIP());
 }

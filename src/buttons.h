@@ -2,7 +2,8 @@
 
 enum class Button {
     Left,
-    Right
+    Right,
+    Third   // v2 only (PIN_BTN_THIRD); no UI action bound yet
 };
 
 enum class ButtonEvent {

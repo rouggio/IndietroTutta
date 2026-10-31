@@ -1,12 +1,13 @@
 #include <Arduino.h>
 #include <TinyGPSPlus.h>
 
+#include "board_pins.h"
 #include "gps_mock.h"
 
 HardwareSerial GPSSerial(2);
 
-#define GPS_RX 16
-#define GPS_TX 17
+#define GPS_RX PIN_GPS_RX
+#define GPS_TX PIN_GPS_TX
 #define GPS_BAUD 9600
 
 void gpsInit()

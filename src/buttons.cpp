@@ -1,4 +1,5 @@
 #include "buttons.h"
+#include "board_pins.h"
 #include "sound.h"
 #include <Arduino.h>
 
@@ -13,9 +14,14 @@ struct ButtonState {
 static const unsigned long DEBOUNCE_MS = 50;
 static const unsigned long LONG_PRESS_MS = 500;
 
+// Order MUST match the Button enum (the index is cast back to Button).
+// PIN_BTN_THIRD is negative on v1, where the third button does not exist.
 static ButtonState buttons[] = {
-    { .pin = 21, .pressed = false, .longPressDetected = false, .pressStart = 0, .lastDebounce = 0 }, // Left
-    { .pin = 22, .pressed = false, .longPressDetected = false, .pressStart = 0, .lastDebounce = 0 }  // Right
+    { .pin = PIN_BTN_LEFT,  .pressed = false, .longPressDetected = false, .pressStart = 0, .lastDebounce = 0 }, // Left
+    { .pin = PIN_BTN_RIGHT, .pressed = false, .longPressDetected = false, .pressStart = 0, .lastDebounce = 0 }, // Right
+#if PIN_BTN_THIRD >= 0
+    { .pin = PIN_BTN_THIRD, .pressed = false, .longPressDetected = false, .pressStart = 0, .lastDebounce = 0 }, // Third
+#endif
 };
 
 static const int NUM_BUTTONS =

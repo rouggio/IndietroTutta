@@ -3,6 +3,8 @@
 #include <Arduino.h>
 #include <stddef.h>
 
+#include "board_pins.h"
+
 // --------------------------------------------------
 // Buzzer sound scripts (test hook).
 //
@@ -30,7 +32,8 @@
 // --------------------------------------------------
 
 // Passive buzzer: + on this pin, - on GND.
-#define SOUND_PIN 19
+// v1 = 19; v2 = 47 (19/20 are the S3's native USB pads - see board_pins.h).
+#define SOUND_PIN PIN_SOUND
 
 #define SOUND_MAX_NOTES 64
 #define SOUND_MAX_NOTE_MS 5000

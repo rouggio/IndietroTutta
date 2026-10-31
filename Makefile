@@ -23,13 +23,18 @@ else
 endif
 
 BAUD ?= 115200
+# Hardware variant = PlatformIO environment (see platformio.ini).
+#   esp32dev = v1 (classic ESP32)   esp32s3 = v2 (ESP32-S3 N16R8)
+# v1 stays the default so every existing recipe keeps working unchanged.
+PIOENV ?= esp32dev
 VENV := .venv
 PY := $(VENV)/$(VENV_SUBDIR)/python
 CONFIG := src/config.h
 BACKEND := $(firstword $(wildcard ../backend ../IndietroTuttaBackend))
-OTA_DIR := $(BACKEND)/public/ota
-OTA_LATEST_URL ?= https://indietrotutta.onrender.com/ota/latest.txt
-FIRMWARE := .pio/build/esp32dev/firmware.bin
+OTA_SUBDIR := $(if $(filter esp32s3,$(PIOENV)),/v2,)
+OTA_DIR := $(BACKEND)/public/ota$(OTA_SUBDIR)
+OTA_LATEST_URL ?= https://indietrotutta.onrender.com/ota$(OTA_SUBDIR)/latest.txt
+FIRMWARE := .pio/build/$(PIOENV)/firmware.bin
 # `dl` target: device LAN IP is DHCP-assigned, override when it moves:
 #   make dl DEVICE_IP=192.168.0.123
 DEVICE_IP ?= 192.168.0.106
@@ -62,7 +67,7 @@ bump-version:
 	echo "Firmware version: $$VERSION -> $$NEW_VERSION"
 
 compile:
-	$(PY) -m platformio run
+	$(PY) -m platformio run -e $(PIOENV)
 
 build: compile
 
@@ -83,9 +88,10 @@ ota-local: bump-version compile
 		echo "ERROR: firmware.bin not found. Run 'make build' first."; \
 		exit 1; \
 	fi; \
+	mkdir -p "$(OTA_DIR)"; \
 	cp "$(FIRMWARE)" "$(OTA_DIR)/firmware.bin"; \
 	echo "$$VERSION" > "$(OTA_DIR)/latest.txt"; \
-	echo "Local OTA staged: $$VERSION (NOT committed, cloud untouched)"; \
+	echo "Local OTA staged: $$VERSION -> public/ota$(OTA_SUBDIR) (NOT committed, cloud untouched)"; \
 	echo "Device: switch to DEV, then POST /ota to pull it (or just 'make dl')."
 
 # Local deploy (`dl`): everything ota-local does, then the device pulls the
@@ -117,13 +123,13 @@ dl: ota-local
 	exit 1
 
 upload:
-	$(PY) -m platformio run -t upload $(UPLOAD_ARGS)
+	$(PY) -m platformio run -e $(PIOENV) -t upload $(UPLOAD_ARGS)
 
 monitor:
 	$(PY) -m platformio device monitor $(MONITOR_ARGS) --baud $(BAUD)
 
 clean:
-	$(PY) -m platformio run -t clean
+	$(PY) -m platformio run -e $(PIOENV) -t clean
 
 deploy: compile upload
 
@@ -140,15 +146,16 @@ git-push:
 		echo "ERROR: firmware.bin not found. Run 'make build' first."; \
 		exit 1; \
 	fi; \
-	echo "Publishing firmware version $$VERSION"; \
+	echo "Publishing firmware version $$VERSION (channel public/ota$(OTA_SUBDIR))"; \
 	echo "Copying firmware.bin..."; \
+	mkdir -p "$(OTA_DIR)"; \
 	cp "$(FIRMWARE)" "$(OTA_DIR)/firmware.bin"; \
 	echo "Creating latest.txt..."; \
 	echo "$$VERSION" > "$(OTA_DIR)/latest.txt"; \
 	echo "Adding OTA files to git..."; \
-	git -C "$(BACKEND)" add public/ota/latest.txt public/ota/firmware.bin; \
+	git -C "$(BACKEND)" add "public/ota$(OTA_SUBDIR)/latest.txt" "public/ota$(OTA_SUBDIR)/firmware.bin"; \
 	echo "Committing..."; \
-	git -C "$(BACKEND)" commit -m "Update OTA firmware to version $$VERSION"; \
+	git -C "$(BACKEND)" commit -m "Update OTA firmware to version $$VERSION ($(PIOENV) channel public/ota$(OTA_SUBDIR))"; \
 	echo "Pushing..."; \
 	git -C "$(BACKEND)" push; \
 	if [ -f "$(BACKEND)/.env" ]; then \

@@ -700,10 +700,17 @@ static void handleStatus()
 
     JsonObject sys = doc.createNestedObject("sys");
     sys["version"] = BUILD_VERSION;
+    // Which buildchain this firmware came from: "v1" (classic ESP32, /ota) or
+    // "v2" (ESP32-S3, /ota/v2). Decides which OTA channel the board pulls.
+    sys["variant"] = DEVICE_VARIANT_NAME;
+    sys["otaChannel"] = String("/ota") + OTA_CHANNEL;
     sys["otaCheckOnStart"] = config.otaCheckOnStart;
     sys["username"] = config.username;
     sys["mock"] = gpsMockActive();
     sys["server"] = serverBaseUrl();
+    // AP name is per-board ("IndietroTutta-XXXX", MAC suffix) so boards in
+    // range never collide; handy when the portal has to be opened by hand.
+    sys["ap"] = wifiApSsid();
     sys["nogo"] = noGoArcDeg;
     // Buzzer key-press feedback; own NVS key ("wifi"/"beepkeys").
     sys["beepOnKeys"] = beepOnKeys;
@@ -749,8 +756,9 @@ static void handleBtn()
     Button btn;
     if (b == "L" || b == "l") btn = Button::Left;
     else if (b == "R" || b == "r") btn = Button::Right;
+    else if (b == "3") btn = Button::Third;
     else {
-        server.send(400, "text/plain", "b must be L|R");
+        server.send(400, "text/plain", "b must be L|R|3");
         return;
     }
     ButtonEvent ev;

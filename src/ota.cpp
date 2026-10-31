@@ -148,7 +148,9 @@ void appendOTAScreen(const String& message) {
 
 String baseURL() {
   // OTA rides the same dev/prod switch: local :3000 serves public/ota/.
-  return serverBaseUrl() + "/ota";
+  // The CHANNEL is per-variant ("/v2" on the ESP32-S3), so a v2 board can
+  // never pull a v1 image and vice versa. See OTA_CHANNEL in config.h.
+  return serverBaseUrl() + "/ota" OTA_CHANNEL;
 }
 
 
