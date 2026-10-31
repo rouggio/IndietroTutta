@@ -1,10 +1,14 @@
-# AGENTS.md — IndietroTutta device firmware (ESP32)
+# AGENTS.md — IndietroTutta device firmware (ESP32 v1 / ESP32-S3 v2)
 
-Portable marine GPS instrument: ST7789 240×320, 2 buttons, GPS UART2, WiFi AP+STA,
-OTA self-update. Main screen body = 2 rows × 3 cols: instant speed (row 1,
-cols 1-2), max speed + session time (row 2), wind/bearing ring cell (col 3,
-spans both rows). Top bar (WiFi/data/FX icons + DEV tile when server mode is DEV) +
-bottom hints untouched.
+Portable marine GPS instrument: ST7789 240×320 (a 320×480 ST7796S is the v2
+target, not wired yet), 2 buttons on v1 / 3 on v2, GPS UART2, WiFi AP+STA,
+OTA self-update on a per-variant channel. Main screen body = 2 rows × 3 cols:
+instant speed (row 1, cols 1-2), max speed + session time (row 2), wind/bearing
+ring cell (col 3, spans both rows). Top bar (WiFi/data/FX icons + DEV tile when
+server mode is DEV) + bottom hints untouched.
+
+Board-level facts (variants, wiring, flashing, port matrix) live in
+`DEVICE_NOTES.md`; this file is behaviour.
 
 ## Hardware / toolchain
 
