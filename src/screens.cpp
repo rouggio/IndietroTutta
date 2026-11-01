@@ -82,7 +82,7 @@ bool splashActive() {
 void drawScreen(TinyGPSPlus &gps, bool requiresInit, ScreenPage page) {
   switch (page) {
     case PageMain: drawScreenSpeed(gps, requiresInit); break;
-    case PageDiagnostics: drawScreenDiagnostics(gps); break;
+    case PageDiagnostics: drawScreenDiagnostics(gps, requiresInit); break;
     case PageRace: drawScreenRace(gps, requiresInit); break;
     case PageConfig: drawScreenConfig(requiresInit); break;
 

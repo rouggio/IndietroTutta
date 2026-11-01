@@ -973,17 +973,17 @@ static void drawRaceMap(TinyGPSPlus& gps, bool full)
             const int cx = MAP_X + MAP_W / 2;
             const int cy = WIRE_TOP + (WIRE_Y1 - WIRE_TOP) / 2;
             tft.setTextDatum(MC_DATUM);
-            tft.setTextColor(RFG, RBG);
             if (finHold) {
                 // The race is over and the backend has taken the session away;
                 // the header still carries the result (todo 38), so this must
                 // not claim there was never a session.
-                tft.drawString("Race finished", cx, cy - 30, 2);
+                tft.drawString("Race finished", cx, cy - 34, 4);
             } else {
-                tft.drawString("No session available", cx, cy - 30, 2);
+                tft.drawString("No session available", cx, cy - 34, 4);
             }
-            drawLabel1C(cx, cy + 2, "Start a practice session from menu", RDIM);
-            drawLabel1C(cx, cy + 18, "or await committee instructions", RDIM);
+            tft.setTextColor(RDIM, RBG);
+            tft.drawString("Start a practice session from menu", cx, cy + 6, 2);
+            tft.drawString("or await committee instructions", cx, cy + 28, 2);
             // The view tag sits inside the cleared area; force it back.
             mapRepainted = true;
         }
@@ -2210,7 +2210,7 @@ void screenRaceButton(Button button, ButtonEvent event)
                 courseDirty = true;
                 return;
             }
-            if (button == Button::Right && event == ButtonEvent::LongPress) {
+            if (button == Button::Third && event == ButtonEvent::ShortPress) {
                 if (startPickedCourse()) {
                     courseClose(); // courseVersion bump redraws the new course
                 } else {
@@ -2228,7 +2228,7 @@ void screenRaceButton(Button button, ButtonEvent event)
             }
             return;
         }
-        if (button == Button::Right && event == ButtonEvent::LongPress) {
+        if (button == Button::Third && event == ButtonEvent::ShortPress) {
             if (!courseCount()) {
                 showTransient("NO COURSE ");
                 return;
@@ -2249,11 +2249,15 @@ void screenRaceButton(Button button, ButtonEvent event)
             menuDirty = true;
             return;
         }
-        if (button == Button::Right && event == ButtonEvent::LongPress) {
+        if (button == Button::Third && event == ButtonEvent::ShortPress) {
             menuConfirm();
             return;
         }
-        if (event == ButtonEvent::ShortPress || event == ButtonEvent::LongPress) {
+        // Anything else closes, EXCEPT the right button: 2L used to confirm and
+        // a stray press there should not silently walk out of the menu now that
+        // the action lives on 3S.
+        if (button != Button::Right &&
+            (event == ButtonEvent::ShortPress || event == ButtonEvent::LongPress)) {
             menuClose();
         }
         return;

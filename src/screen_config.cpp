@@ -63,15 +63,17 @@ void drawScreenConfig(bool requiresInit)
         needsRedraw = true;
     }
 
-    // ---- Title (brand navy bar, same as the splash and UPDATE) ----
-    tft.fillRect(0, 0, tft.width(), 44, brandNavy());
-    tft.setTextColor(WHITE, brandNavy());
-    tft.setTextDatum(MC_DATUM);
-    tft.drawString("CONFIG", tft.width() / 2, 22, 4);
-    tft.drawFastHLine(0, 44, tft.width(), GRAY);
-
-    // ---- Selectable rows ----
+    // ---- Title + rows ----
     if (needsRedraw) {
+        // Title bar is chrome: repainted only on a redraw pass, not every
+        // 200ms, or the navy fill flickers (the race menu never did because it
+        // draws its title on full passes only).
+        tft.fillRect(0, 0, tft.width(), 44, brandNavy());
+        tft.setTextColor(WHITE, brandNavy());
+        tft.setTextDatum(MC_DATUM);
+        tft.drawString("CONFIG", tft.width() / 2, 22, 4);
+        tft.drawFastHLine(0, 44, tft.width(), GRAY);
+
         // Wipe the whole row block in one go: 60..272 covers the last row
         // (62 + 6*30 = 242, font 4 runs to ~268).
         tft.fillRect(0, 60, tft.width(), WIPE_HEIGHT, BG);
@@ -142,8 +144,8 @@ void screenConfigButton(Button button, ButtonEvent event)
         return;
     }
 
-    // Right long: apply the selected setting
-    if (button == Button::Right && event == ButtonEvent::LongPress) {
+    // 3S: apply the selected setting (menus action on 3S, not 2L)
+    if (button == Button::Third && event == ButtonEvent::ShortPress) {
         if (selRow == ROW_OTA) {
             config.otaCheckOnStart = !config.otaCheckOnStart;
             bufferedSerialPrintln(config.otaCheckOnStart ?

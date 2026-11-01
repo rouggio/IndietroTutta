@@ -34,12 +34,6 @@ static String padRight(String s, int len)
 
 void drawScreenDiagnosticsMain(TinyGPSPlus &gps)
 {
-  // Title bar: brand navy, the same as the splash and the update screen.
-  tft.fillRect(0, 0, tft.width(), 44, brandNavy());
-  tft.setTextColor(WHITE, brandNavy());
-  tft.setTextDatum(MC_DATUM);
-  tft.drawString("DIAGNOSTICS", tft.width() / 2, 22, 4);
-
   tft.drawFastHLine(0, 44, tft.width(), GRAY);
   tft.drawFastVLine(DIVIDER_X, HDR_Y - 2, 320 - (HDR_Y - 2), GRAY);
 
@@ -94,7 +88,12 @@ void drawScreenDiagnosticsMain(TinyGPSPlus &gps)
 
   String mac = WiFi.macAddress();
   mac.replace(":", "");
-  tft.drawString(padRight("MAC: " + mac, 15), COL_R_X, ROW_Y0 + ROW_DY, 4);
+  // 12 hex chars + "MAC: " does not fit the 225px column at font 4, so this
+  // line alone drops to font 2 (measured, not guessed).
+  String macLine = "MAC: " + mac;
+  const uint8_t macFont =
+      tft.textWidth(macLine, 4) <= (480 - COL_R_X - 6) ? 4 : 2;
+  tft.drawString(padRight(macLine, 15), COL_R_X, ROW_Y0 + ROW_DY, macFont);
 
   tft.drawString(padRight("IP: " + WiFi.localIP().toString(), 15), COL_R_X,
                  ROW_Y0 + 2 * ROW_DY, 4);
@@ -109,8 +108,23 @@ void drawScreenDiagnosticsMain(TinyGPSPlus &gps)
   // No hint bar: the buttons are on the right edge of the enclosure.
 }
 
-void drawScreenDiagnostics(TinyGPSPlus &gps)
+void drawScreenDiagnostics(TinyGPSPlus &gps, bool requiresInit)
 {
+  // The title bar is chrome: drawing it on every 200ms pass makes the fill +
+  // text re-render and the navy band visibly flickers (the race menu draws its
+  // title only on a full pass, which is why it does not). Repaint it only when
+  // the page is (re)entered.
+  static bool chromeDrawn = false;
+  if (requiresInit) chromeDrawn = false;
+
+  if (!chromeDrawn) {
+    tft.fillRect(0, 0, tft.width(), 44, brandNavy());
+    tft.setTextColor(WHITE, brandNavy());
+    tft.setTextDatum(MC_DATUM);
+    tft.drawString("DIAGNOSTICS", tft.width() / 2, 22, 4);
+    tft.drawFastHLine(0, 44, tft.width(), GRAY);
+    chromeDrawn = true;
+  }
   drawScreenDiagnosticsMain(gps);
 }
 

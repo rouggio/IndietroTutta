@@ -314,11 +314,17 @@ static const int ROW2_Y = BODY_TOP + ROW1_H;  // 220
 static const int ROW2_H = SCR_H - ROW2_Y;     // 100 (to the panel edge)
 static const int BRG_W = ROW1_H;              // square bearing cell: 188
 static const int SPEED_W = SCR_W - BRG_W;     // 292: instant-speed cell
-static const int CELL4_W = SCR_W / 4;         // 120: row-2 cells
+// Row 2 is NOT four equal cells any more: the session clock needs 130px for its
+// four font-6 digits plus the small colon, and the 10px come out of the wind
+// cell, which only ever shows two digits. Everything else stays put.
+static const int ROW2_EDGE[5] = {0, 120, 250, 360, 480};
+static const int ROW2_CX[4] = {60, 185, 305, 420};   // max | session | wind | brg
 
 // Text anchors derived from the cells above.
 static const int SPEED_LABEL_Y = BODY_TOP + 10;                  // 42
-static const int SPEED_VALUE_Y = BODY_TOP + ROW1_H * 2 / 3;      // 157
+// Centre of the space BELOW the label (label is font 2, 16px): (58+220)/2.
+// Font 8 is 75px tall, so this leaves equal air above and below it.
+static const int SPEED_VALUE_Y = (SPEED_LABEL_Y + 16 + BODY_TOP + ROW1_H) / 2;  // 139
 static const int ROW2_LABEL_Y = ROW2_Y + 12;                     // 232
 static const int ROW2_VALUE_Y = ROW2_Y + ROW2_H * 3 / 5;         // 280
 
@@ -326,10 +332,11 @@ static void drawMainGrid()
 {
   // Row 1: one split, between the speed cell and the square ring cell.
   tft.drawFastVLine(SPEED_W, BODY_TOP, ROW1_H, GRAY);
-  // Row 2: one rule across, then three splits for the four equal cells.
+  // Row 2: one rule across, then the splits for its four cells (the session
+  // cell is 10px wider than the rest, see ROW2_EDGE).
   tft.drawFastHLine(0, ROW2_Y, SCR_W, GRAY);
   for (int i = 1; i < 4; i++) {
-    tft.drawFastVLine(i * CELL4_W, ROW2_Y, ROW2_H, GRAY);
+    tft.drawFastVLine(ROW2_EDGE[i], ROW2_Y, ROW2_H, GRAY);
   }
 }
 
@@ -384,8 +391,8 @@ static void drawNoGoArc(int cx, int cy, int r, int centerDeg, int half, uint16_t
 
 // Solid triangle pointing at `deg` (0 = up, clockwise): tip `h` px beyond
 // the base along the bearing, base centered at `baseR` (equilateral width
-// minus 5px), plus a 4px-thick / 15px color-matched tail behind the base.
-// Erases too.
+// minus 5px). No tail any more (2026-11-02): the triangles alone read fine at
+// this size and the sticks made the ring busy. Erases too.
 static void drawNupTriangle(int cx, int cy, int tipR, int baseR, int deg, uint16_t color)
 {
   const double a = deg * M_PI / 180.0;
@@ -397,32 +404,107 @@ static void drawNupTriangle(int cx, int cy, int tipR, int baseR, int deg, uint16
   const int p1x = bx + (int)(w * cz), p1y = by + (int)(w * sx);
   const int p2x = bx - (int)(w * cz), p2y = by - (int)(w * sx);
   tft.fillTriangle(tx, ty, p1x, p1y, p2x, p2y, color);
-  for (int k = 0; k < 4; k++) {            // tail: 4 parallel 1px lines
-    const double off = (double)k - 1.5;
-    const int ox = (int)(off * cz), oy = (int)(off * sx);
-    tft.drawLine(cx + (int)((baseR - 15) * sx) + ox, cy - (int)((baseR - 15) * cz) + oy,
-                 bx + ox, by + oy, color);
+}
+
+// --------------------------------------------------
+// SESSION / PARTIAL STATISTICS  (RAM only, reset on reboot)
+//
+// The receiver reports speed at ~1 Hz, so the average is time-weighted by the
+// gap between valid samples: a dropped fix lengthens the gap instead of adding
+// a sample of 0 knots, and a gap longer than 5 s is not counted at all (nothing
+// was measured, so counting it would drag the average down for no reason).
+//
+// PARTIAL = a sub-session inside the session, with its own start, max and
+// average: 3L starts a new one (the session is untouched), 3S toggles the two
+// row-2 readouts between max/session and avg/partial.
+// --------------------------------------------------
+static double stSesMaxKn = 0.0, stSesSumKn = 0.0;
+static unsigned long stSesMs = 0;
+static double stParMaxKn = 0.0, stParSumKn = 0.0;
+static unsigned long stParMs = 0;
+static unsigned long stParStartMs = 0;
+static unsigned long stLastSampleMs = 0;
+static bool stHasFix = false;
+static bool showPartial = false;
+
+static void statsSample(double kn, bool valid)
+{
+  const unsigned long now = millis();
+  if (!valid) { stLastSampleMs = now; return; }
+  if (stLastSampleMs) {
+    const unsigned long dt = now - stLastSampleMs;
+    if (dt <= 5000) {
+      stSesSumKn += kn * dt;
+      stSesMs += dt;
+      stParSumKn += kn * dt;
+      stParMs += dt;
+    }
   }
+  stLastSampleMs = now;
+  stHasFix = true;
+  if (kn > stSesMaxKn) stSesMaxKn = kn;
+  if (kn > stParMaxKn) stParMaxKn = kn;
+}
+
+static double statsSessionMaxKn() { return stSesMaxKn; }
+static double statsPartialAvgKn() { return stParMs ? stParSumKn / stParMs : 0.0; }
+static double statsPartialMaxKn() { return stParMaxKn; }
+static unsigned long statsSessionMs() { return millis(); }                    // since boot
+static unsigned long statsPartialMs() { return stParStartMs ? millis() - stParStartMs : millis(); }
+
+static void partialReset()
+{
+  stParMaxKn = 0.0;
+  stParSumKn = 0.0;
+  stParMs = 0;
+  stParStartMs = millis();
+}
+
+// Force both readout cells to repaint (label + value) on the next pass.
+static void statsForceRedraw()
+{
+  lastMaxStr = "";
+  lastSesStr = "";
+}
+
+// A clock at font 6 does not fit a 120px cell: "12:34" is 4 x 27px digits plus
+// a 15px colon = 123. Drawing the four digits at font 6 and the colon at font 2
+// between them lands at ~118, so the time reads at the same size as its
+// siblings instead of falling back to font 4 (which is what looked "smaller").
+// Constant geometry: four digits every time, so nothing ghosts.
+static void drawClock6(int cx, int yCentre, unsigned long sec)
+{
+  char mm[3], ss[3];
+  snprintf(mm, sizeof(mm), "%02lu", (sec / 60UL) % 100UL);
+  snprintf(ss, sizeof(ss), "%02lu", sec % 60UL);
+
+  const int wmm = tft.textWidth(mm, 6);
+  const int wss = tft.textWidth(ss, 6);
+  const int wc = tft.textWidth(":", 2);
+  const int total = wmm + 2 + wc + 2 + wss;
+  const int x = cx - total / 2;
+  const int yTop = yCentre - 24;   // font 6 is 48px tall
+
+  tft.setTextColor(WHITE, BG);
+  tft.setTextDatum(TL_DATUM);
+  tft.drawString(mm, x, yTop, 6);
+  tft.drawString(":", x + wmm + 2, yTop + 14, 2);
+  tft.drawString(ss, x + wmm + 2 + wc + 2, yTop, 6);
 }
 
 void drawSpeed(TinyGPSPlus &gps)
 {
   static const char* unitLabels[SPEED_UNITS] = { "kn", "km/h", "mph" };
-  // Session max (RAM only, resets on reboot)
-  static double sessionMaxKnots = 0.0;
-  static bool hasSessionMax = false;
-
   const double knots = gps.speed.isValid() ? gps.speed.knots() : 0.0;
-
-  if (gps.speed.isValid()) {
-    hasSessionMax = true;
-    if (knots > sessionMaxKnots) sessionMaxKnots = knots;
-  }
+  statsSample(knots, gps.speed.isValid());
 
   double value = knots;
-  double maxValue = sessionMaxKnots;
-  if (config.speedUnit == 1) { value *= 1.852; maxValue *= 1.852; }         // km/h
-  else if (config.speedUnit == 2) { value *= 1.15078; maxValue *= 1.15078; } // mph
+  // Cell 1: the session's max, or the PARTIAL's average (3S toggles).
+  double maxValue = showPartial ? statsPartialAvgKn() : statsSessionMaxKn();
+  double avgPartial = statsPartialAvgKn();
+  if (config.speedUnit == 1) { value *= 1.852; maxValue *= 1.852; avgPartial *= 1.852; }
+  else if (config.speedUnit == 2) { value *= 1.15078; maxValue *= 1.15078; avgPartial *= 1.15078; }
+  (void)avgPartial;
 
   // Instant speed cell (row 1, cols 1-2): unit label top-center, value
   // centered below — sized for "88.8" (font 8) + margins top and bottom.
@@ -457,43 +539,47 @@ void drawSpeed(TinyGPSPlus &gps)
 
   // Row 2, cells 1 and 2: max speed and session time. Each value redraws only
   // on change; a narrower value wipes its cell zone first (no ghosts).
-  const int cellMaxX = CELL4_W / 2;
-  const int cellSesX = CELL4_W + CELL4_W / 2;
+  const int cellMaxX = ROW2_CX[0];
+  const int cellSesX = ROW2_CX[1];
+  const bool hasValue = stHasFix;
   String maxPadded;
-  if (hasSessionMax) {
+  if (hasValue) {
     maxPadded = " " + String(maxValue, 1) + " ";
   } else {
     maxPadded = " --- ";
   }
-  drawCellLabel("Max Speed", cellMaxX, ROW2_LABEL_Y);
-  if (maxPadded != lastMaxStr) {
+  // The two row-2 mode labels are the only text whose glyph widths change with
+  // the 3S toggle ("Session time" vs "Partial time" are both 12 chars, but not
+  // the same 12). Wipe their band once on a mode change so the old string's
+  // edges cannot survive.
+  static int lastLabelMode = -1;
+  const int labelMode = showPartial ? 1 : 0;
+  if (labelMode != lastLabelMode) {
+    tft.fillRect(1, ROW2_LABEL_Y - 3, ROW2_EDGE[3] - 2, 22, BG);
+    lastLabelMode = labelMode;
+  }
+
+  drawCellLabel(showPartial ? "Avg Speed" : "Max Speed", cellMaxX, ROW2_LABEL_Y);  if (maxPadded != lastMaxStr) {
     if (maxPadded.length() < lastMaxStr.length())
-      tft.fillRect(3, ROW2_LABEL_Y + 15, CELL4_W - 6, 34, BG);
+      tft.fillRect(ROW2_EDGE[0] + 3, ROW2_LABEL_Y + 15, ROW2_EDGE[1] - ROW2_EDGE[0] - 6, 60, BG);
     tft.setTextColor(WHITE, BG);
     tft.setTextDatum(MC_DATUM);
     tft.drawString(maxPadded, cellMaxX, ROW2_VALUE_Y,
-                   fitValueFont(maxPadded, CELL4_W - 8));
+                   fitValueFont(maxPadded, ROW2_EDGE[1] - ROW2_EDGE[0] - 4));
     lastMaxStr = maxPadded;
   }
 
-  drawCellLabel("Session time", cellSesX, ROW2_LABEL_Y);
-  unsigned long totalSec = millis() / 1000UL;
-  unsigned long sesMm = totalSec / 60UL;
-  unsigned long sesSs = totalSec % 60UL;
-  // "mm:ss" rather than "mm'ss\"": the colon is in font 6's glyph set (the
-  // apostrophe and quote are not). Exactly 5 chars, so no padding is needed
-  // for a clean overwrite and the measurement is the same string that is drawn.
-  char sesBuf[16];
-  snprintf(sesBuf, sizeof(sesBuf), "%02lu:%02lu", sesMm, sesSs);
-  String sesTxt = String(sesBuf);
+  // Cell 2: session time (since boot) or the partial's clock (since 3L).
+  const unsigned long sesSec =
+      (showPartial ? statsPartialMs() : statsSessionMs()) / 1000UL;
+  char sesKey[8];
+  snprintf(sesKey, sizeof(sesKey), "%02lu%02lu",
+           (sesSec / 60UL) % 100UL, sesSec % 60UL);
+  String sesTxt = String(sesKey);
+  drawCellLabel(showPartial ? "Partial time" : "Session time", cellSesX, ROW2_LABEL_Y);
   if (sesTxt != lastSesStr) {
-    if (sesTxt.length() < lastSesStr.length())
-      tft.fillRect(CELL4_W + 3, ROW2_LABEL_Y + 15, CELL4_W - 6, 60, BG);
-    tft.setTextColor(WHITE, BG);
-    tft.setTextDatum(MC_DATUM);
-    tft.drawString(sesTxt, cellSesX, ROW2_VALUE_Y,
-                   fitValueFont(sesTxt, CELL4_W - 8));
     lastSesStr = sesTxt;
+    drawClock6(cellSesX, ROW2_VALUE_Y, sesSec);
   }
 
   // Ring cell (col 3, rows 1-2): N-up ring, top-aligned. Boat = green
@@ -570,11 +656,13 @@ void drawSpeed(TinyGPSPlus &gps)
     // TFT_eSPI has no font 3; the loaded classic fonts are 1, 2, 4, 6,
     // 7, and 8. The selected font has no degree glyph, so use the same
     // drawn degree ring as BRG.
+    // Center boat/wind angle, font 4 now that the ring is Ø172: font 2 was
+    // unreadable at arm's length.
     tft.setTextColor(WHITE, BG);
     tft.setTextDatum(MC_DATUM);
-    tft.drawString(cenTxt, cmpCx, cmpCy + 3, 2);
-    const int cenHalf = tft.textWidth(cenTxt, 2) / 2;
-    tft.drawCircle(cmpCx + cenHalf + 3, cmpCy - 1, 2, windAngleDeg >= 0 ? WHITE : BG);
+    tft.drawString(cenTxt, cmpCx, cmpCy + 3, 4);
+    const int cenHalf = tft.textWidth(cenTxt, 4) / 2;
+    tft.drawCircle(cmpCx + cenHalf + 6, cmpCy - 10, 3, windAngleDeg >= 0 ? WHITE : BG);
     lastCenStr = cenTxt;
     prevBoatDeg = boatDeg;
     prevWindDeg = windRel;
@@ -587,8 +675,8 @@ void drawSpeed(TinyGPSPlus &gps)
   // Row 2, cells 3 and 4: wind speed and bearing. They used to be stacked
   // under the ring; the wider panel gives them their own cells, which also
   // gives the ring the full square.
-  const int cellWndX = CELL4_W * 2 + CELL4_W / 2;   // 300
-  const int cellBrgX = CELL4_W * 3 + CELL4_W / 2;   // 420
+  const int cellWndX = ROW2_CX[2];                  // 305
+  const int cellBrgX = ROW2_CX[3];                  // 420
   drawCellLabel("Wind (kn)", cellWndX, ROW2_LABEL_Y);
   drawCellLabel("Bearing", cellBrgX, ROW2_LABEL_Y);
 
@@ -602,7 +690,7 @@ void drawSpeed(TinyGPSPlus &gps)
     tft.setTextColor(WHITE, BG);
     tft.setTextDatum(MC_DATUM);
     tft.drawString(wndTxt, cellWndX, ROW2_VALUE_Y,
-                   fitValueFont(wndTxt, CELL4_W - 8));
+                   fitValueFont(wndTxt, ROW2_EDGE[3] - ROW2_EDGE[2] - 4));
   }
 
   // Zero-padded 3 chars (constant width, no ghosting); the degree ring is
@@ -616,10 +704,13 @@ void drawSpeed(TinyGPSPlus &gps)
     lastBrgStr = degTxt;
     tft.setTextColor(WHITE, BG);
     tft.setTextDatum(MC_DATUM);
-    const uint8_t brgFont = fitValueFont(degTxt, CELL4_W - 30); // room for the ring
+    const uint8_t brgFont = fitValueFont(degTxt, ROW2_EDGE[4] - ROW2_EDGE[3] - 26); // room for the ring
     tft.drawString(degTxt, cellBrgX - 6, ROW2_VALUE_Y, brgFont);
+    // Degree mark sits at the APEX of the digits, not mid-height: font 6 is
+    // 48px tall (half 24), font 4 is 26 (half 13).
+    const int glyphHalf = (brgFont == 6) ? 24 : 13;
     tft.drawCircle(cellBrgX - 6 + tft.textWidth(degTxt, brgFont) / 2 + 7,
-                   ROW2_VALUE_Y - 10, 2, brgDeg >= 0 ? WHITE : BG);
+                   ROW2_VALUE_Y - glyphHalf + 4, 3, brgDeg >= 0 ? WHITE : BG);
   }
 }
 
@@ -681,10 +772,28 @@ void screenSpeedButton(
         return;
     }
 
-// Right long: jump to the diagnostics screen (RR-only, not part of
+// Right long: jump to the diagnostics screen (2L-only, not part of
     // the L-short cycle)
     if (button == Button::Right && event == ButtonEvent::LongPress) {
       setCurrentPage(PageDiagnostics);
+      return;
+    }
+
+    // 3S: toggle the row-2 readouts — max/session <-> avg/partial.
+    if (button == Button::Third && event == ButtonEvent::ShortPress) {
+      showPartial = !showPartial;
+      statsForceRedraw();
+      return;
+    }
+
+    // 3L: start a new partial (sub-session) — its own max/average/clock, the
+    // session totals untouched. If the readouts are still showing max/session,
+    // flip them to the partial view too: resetting a clock you cannot see is a
+    // gesture with no feedback.
+    if (button == Button::Third && event == ButtonEvent::LongPress) {
+      partialReset();
+      showPartial = true;
+      statsForceRedraw();
       return;
     }
   }
