@@ -15,8 +15,8 @@
 
 static UIState uiState = UIState::Screens;
 
-static const int CX = 160;
-static const int CY = 120;
+// (Full-screen messages centre themselves on tft.width()/height(); the old
+// 320x240 CX/CY constants are gone with that panel.)
 
 TFT_eSPI tftHW = TFT_eSPI();
 TFT_eSPI*    gPanel    = &tftHW;   // the hardware panel
@@ -30,12 +30,23 @@ unsigned long lastUpdate = 0;
 int prevPage = -1;
 ScreenPage page = PageMain;
 
+// Brand navy (#0f172a) — the splash screen background and the title bar of the
+// utility pages (UPDATE, CONFIG, DIAGNOSTICS). Defined once so they cannot
+// drift apart; callers pass it as the text background too.
+uint16_t brandNavy() {
+  return tft.color565(15, 23, 42);
+}
+
 void screenInit() {
   tft.init();
   tft.invertDisplay(false);
-  // Try rotation 3 (opposite landscape) and use MADCTL 0x68 (MX|MV|BGR)
-  // Use TFT_eSPI's setRotation only; avoid manual MADCTL to prevent conflicts
-  tft.setRotation(3);
+  // Rotation is the panel's: TFT_ROTATION comes from include/User_Setup.h
+  // (1 = landscape, this ST7796S). Fallback keeps a bare build working.
+  // TFT_eSPI's setRotation only; avoid manual MADCTL to prevent conflicts.
+#ifndef TFT_ROTATION
+#define TFT_ROTATION 3
+#endif
+  tft.setRotation(TFT_ROTATION);
 }
 
 // --------------------------------------------------
@@ -79,7 +90,7 @@ void drawScreen(TinyGPSPlus &gps, bool requiresInit, ScreenPage page) {
       tft.fillScreen(TFT_BLACK);
       tft.setTextDatum(MC_DATUM);
       tft.setTextColor(TFT_RED, TFT_BLACK);
-      tft.drawString("PAGE ERROR", CX, CY, 4);
+      tft.drawString("PAGE ERROR", tft.width() / 2, tft.height() / 2, 4);
       break;
   }
 }

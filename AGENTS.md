@@ -52,12 +52,16 @@ Board-level facts (variants, wiring, flashing, port matrix) live in
     in the enum and the table is built from the macros, so v1 (whose
     `PIN_BTN_THIRD` is -1) compiles the two-button table. `POST /btn` takes
     `b=L|R|3`.
-  - v2 still builds the **v1 panel config** (ST7789 240×320, GPIO 23/18/5/2/4, all
-    valid on S3) until the 3.5" 320×480 **ST7796S** panel is wired: the layout is
-    NOT portable yet — `screen_race.cpp` and friends hardcode the 320×240 frame
-    (`MAP_W = 320`, `CELL_EDGE {0,107,213,320}`). Until that port lands, a v2 board
-    boots, joins WiFi, serves the portal and updates over the air, but paints
-    nothing.
+  - **Display config is per variant**: v1 `include/User_Setup.h` (ST7789
+    240×320, MOSI 23), v2 `include/User_Setup_v2.h` (ST7796_DRIVER 320×480,
+    CS 10 / MOSI 11 / SCLK 12 / DC 2 / RST 4 — the SPI2-native pins, because
+    **the S3 has no GPIO 23**, and driving it produced a dark panel plus two
+    `Invalid pin selected` boot warnings). Rotation is `setRotation(3)` in
+    `screens.cpp` → 480×320 landscape. The **layout is still the 320×240 frame**
+    (`screen_race.cpp`: `MAP_W = 320`, `CELL_EDGE {0,107,213,320}`), so on v2 the
+    UI paints into the top-left corner until that port lands; the driver and
+    geometry are correct, so a panel can be wired and checked now. No backlight
+    control: no `TFT_BL`, the panel's LED is tied to 3.3 V.
   - **OTA is split per variant** (`OTA_CHANNEL` in `config.h`, used by
     `ota.cpp`): v1 pulls `/ota`, v2 pulls `/ota/v2`, and `make dist
     PIOENV=esp32s3` stages into `public/ota/v2/`. One shared channel would let a
@@ -187,28 +191,33 @@ spec scores.
 **Mark-passing law: `SPEC-mark-passing.md` at the repo root — LOCKED, read it
 before touching any pass/score/target logic.**
 
-## UI navigation (hints: L/LL left, R/RR right)
+## UI gestures — `1S`/`1L`, `2S`/`2L`, `3S`/`3L`
 
-- L-cycle = MAIN → RACE → MAIN (`PAGE_CYCLE=2`; the WAYPOINTS page was REMOVED on
-  `feature/remove-waypoints` `9e55584`, flagged-post/delete plumbing included).
-  DIAGNOSTICS + CONFIG excluded.
-- MAIN: `L` next, `LL`→CONFIG, `R` toggles the ring view N-up ↔ bearing-up
+**Naming (from 2026-11-01): button number + press length.** `1` = left button,
+`2` = right, `3` = third; `S` = short press, `L` = long press (500 ms). So `1S`
+is left-short, `2L` is right-long. **Use this vocabulary everywhere** — code
+comments, the portal interface (`POST /btn?b=2&e=L`), bruno, docs, bug reports.
+The old `L`/`LL`/`R`/`RR` is retired; `/btn` still accepts it as a legacy alias
+for old scripts, nothing else.
+
+- `1S`-cycle = MAIN → RACE → MAIN (`PAGE_CYCLE=2`; the WAYPOINTS page was REMOVED
+  on `feature/remove-waypoints` `9e55584`, flagged-post/delete plumbing
+  included). DIAGNOSTICS + CONFIG excluded.
+- MAIN: `1S` next, `1L`→CONFIG, `2S` toggles the ring view N-up ↔ bearing-up
   (RAM; boat triangle to the top, wind bearing-relative, N at true north),
-  `RR`→DIAGNOSTICS. RACE: `L` next, `R` cycles the **view** Map → Target →
-  Auto, `RR` toggles the **bearing** north-up ↔ heading-up, `LL`→MENU.
-  DIAGNOSTICS/CONFIG: `L` back to MAIN.
+  `2L`→DIAGNOSTICS. RACE: `1S` next, `2S` cycles the **view** Map → Target →
+  Auto, `2L` toggles the **bearing** north-up ↔ heading-up, `1L`→MENU.
+  DIAGNOSTICS/CONFIG: `1S` back to MAIN.
 - **Terminology, race screen — canonical, use these words in code comments,
-  docs and bug reports** (the on-screen hint is the same vocabulary:
-  `R <view> RR <bearing>`, e.g. `R Tgt RR N`):
-  - **`R` (short) = view mode.** Three states, **Map → Target → Auto**.
+  docs and bug reports**:
+  - **`2S` = view mode.** Three states, **Map → Target → Auto**.
     **Map** = the whole course fitted to the window — *overview* is a synonym.
     **Target** = the next destination centred at a fixed zoom — *focus* is a
     synonym. **Auto** = Target engages by distance (`autoDistM`,
     10/50/100/200 m, NVS) and **holds the zoom on the mark just rounded** until
     the boat is clear of it, then falls back to Map for the new leg. Code:
-    `focusMode` 0/1/2, NVS `race`/`viewMode`, hint `R Map` / `R Tgt` /
-    `R Auto`.
-  - **`RR` (long) = bearing mode.** Three states, **north-up → heading-up →
+    `focusMode` 0/1/2, NVS `race`/`viewMode`.
+  - **`2L` = bearing mode.** Three states, **north-up → heading-up →
     wide**. **North-up** = true north up (`N`). **Heading-up** = the direction
     toward the next destination is up (`BRG` — it is
     `courseTo(boat, destination)`, the *bearing to the mark*, not the boat's

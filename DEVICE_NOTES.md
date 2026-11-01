@@ -40,8 +40,8 @@ Do not hardcode a pin in a module.
 | Button 3 | — | **39** | v2 adds a front button; **no UI action bound yet** (40/41 free) |
 | Buzzer | 19 | **47** | 19/20 are the S3's native USB pads |
 | GPS RX / TX | 16 / 17 | 16 / 17 | UART2 @ 9600 |
-| TFT CS / DC / RST | 5 / 2 / 4 | 5 / 2 / 4 | unchanged, all valid on S3 |
-| TFT MOSI / SCLK | 23 / 18 | 23 / 18 | v1 panel config still in use |
+| TFT CS / DC / RST | 5 / 2 / 4 | **10** / 2 / 4 | 5 is fine on either, but v2 uses the SPI2-native CS |
+| TFT MOSI / SCLK | 23 / 18 | **11 / 12** | **the S3 has no GPIO 23** — v1's MOSI does not exist there |
 
 Buttons are active-low with pullups, 50 ms debounce, 500 ms long-press.
 

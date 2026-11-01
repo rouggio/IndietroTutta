@@ -34,7 +34,10 @@ void endSplash();
 bool splashActive();
 
 void screenInit();
-void screenLoop(TinyGPSPlus &gps);
+// Brand navy (#0f172a) — the splash background and the title bar of the
+// full-screen utility pages (UPDATE, CONFIG). One definition so they cannot
+// drift apart.
+uint16_t brandNavy();void screenLoop(TinyGPSPlus &gps);
 void nextScreen();
 
 void drawScreen(

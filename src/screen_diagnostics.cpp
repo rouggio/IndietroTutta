@@ -15,9 +15,15 @@
 #define WHITE TFT_WHITE
 #define GRAY 0x7BEF
 
+// Two equal columns on the 480px panel: 10px margin, 225px each, divider dead
+// centre at 240.
 static const int COL_L_X = 10;
-static const int COL_R_X = 166;
-static const int DIVIDER_X = 156;
+static const int COL_R_X = 250;
+static const int DIVIDER_X = 240;
+
+static const int HDR_Y = 50;    // column titles ("GPS" / "SYSTEM"), font 2
+static const int ROW_Y0 = 74;   // first value row, font 4 (26px tall)
+static const int ROW_DY = 34;   // 6 rows: 74..270, clear of the panel edge
 
 // Fixed-width lines so shrinking values never leave stale pixels
 static String padRight(String s, int len)
@@ -28,83 +34,79 @@ static String padRight(String s, int len)
 
 void drawScreenDiagnosticsMain(TinyGPSPlus &gps)
 {
-  // Page title, consistent with the other screens
-  tft.setTextColor(WHITE, BG);
+  // Title bar: brand navy, the same as the splash and the update screen.
+  tft.fillRect(0, 0, tft.width(), 44, brandNavy());
+  tft.setTextColor(WHITE, brandNavy());
   tft.setTextDatum(MC_DATUM);
-  tft.drawString("DIAGNOSTICS", tft.width() / 2, 20, 4);
+  tft.drawString("DIAGNOSTICS", tft.width() / 2, 22, 4);
 
   tft.drawFastHLine(0, 44, tft.width(), GRAY);
-  tft.drawFastVLine(DIVIDER_X, 52, 152, GRAY);
+  tft.drawFastVLine(DIVIDER_X, HDR_Y - 2, 320 - (HDR_Y - 2), GRAY);
 
-  char buf[24];
+  char buf[28];
 
   // ---- Left column: GPS ----
   tft.setTextDatum(TL_DATUM);
-
   tft.setTextColor(GRAY, BG);
-  tft.drawString("GPS", COL_L_X, 56, 2);
+  tft.drawString("GPS", COL_L_X, HDR_Y, 2);
 
   tft.setTextColor(WHITE, BG);
 
   snprintf(buf, sizeof(buf), "Chars %lu", (unsigned long)gps.charsProcessed());
-  tft.drawString(padRight(buf, 16), COL_L_X, 80, 2);
+  tft.drawString(padRight(buf, 15), COL_L_X, ROW_Y0, 4);
 
   if (gps.hdop.isValid())
     snprintf(buf, sizeof(buf), "HDOP %.1f", gps.hdop.hdop());
   else
     snprintf(buf, sizeof(buf), "HDOP --");
-  tft.drawString(padRight(buf, 16), COL_L_X, 104, 2);
+  tft.drawString(padRight(buf, 15), COL_L_X, ROW_Y0 + ROW_DY, 4);
 
   if (gps.location.isValid())
     snprintf(buf, sizeof(buf), "Lat %.5f", gps.location.lat());
   else
     snprintf(buf, sizeof(buf), "Lat --");
-  tft.drawString(padRight(buf, 16), COL_L_X, 128, 2);
+  tft.drawString(padRight(buf, 15), COL_L_X, ROW_Y0 + 2 * ROW_DY, 4);
 
   if (gps.location.isValid())
     snprintf(buf, sizeof(buf), "Lon %.5f", gps.location.lng());
   else
     snprintf(buf, sizeof(buf), "Lon --");
-  tft.drawString(padRight(buf, 16), COL_L_X, 152, 2);
+  tft.drawString(padRight(buf, 15), COL_L_X, ROW_Y0 + 3 * ROW_DY, 4);
 
   if (gps.altitude.isValid())
     snprintf(buf, sizeof(buf), "Alt %.1fm", gps.altitude.meters());
   else
     snprintf(buf, sizeof(buf), "Alt --");
-  tft.drawString(padRight(buf, 16), COL_L_X, 176, 2);
+  tft.drawString(padRight(buf, 15), COL_L_X, ROW_Y0 + 4 * ROW_DY, 4);
 
   if (gps.location.isValid())
     snprintf(buf, sizeof(buf), "Age %lums", (unsigned long)gps.location.age());
   else
     snprintf(buf, sizeof(buf), "Age --");
-  tft.drawString(padRight(buf, 16), COL_L_X, 200, 2);
+  tft.drawString(padRight(buf, 15), COL_L_X, ROW_Y0 + 5 * ROW_DY, 4);
 
   // ---- Right column: SYSTEM ----
   tft.setTextColor(GRAY, BG);
-  tft.drawString("SYSTEM", COL_R_X, 56, 2);
+  tft.drawString("SYSTEM", COL_R_X, HDR_Y, 2);
 
   tft.setTextColor(WHITE, BG);
-  tft.drawString(padRight("VER " BUILD_VERSION, 14), COL_R_X, 80, 2);
+  tft.drawString(padRight("VER: " BUILD_VERSION, 15), COL_R_X, ROW_Y0, 4);
 
   String mac = WiFi.macAddress();
   mac.replace(":", "");
-  tft.drawString(padRight("MAC " + mac, 14), COL_R_X, 104, 2);
+  tft.drawString(padRight("MAC: " + mac, 15), COL_R_X, ROW_Y0 + ROW_DY, 4);
 
-  tft.drawString(padRight("IP " + WiFi.localIP().toString(), 14), COL_R_X, 128, 2);
+  tft.drawString(padRight("IP: " + WiFi.localIP().toString(), 15), COL_R_X,
+                 ROW_Y0 + 2 * ROW_DY, 4);
 
   String ssid = WiFi.SSID();
   if (ssid.length() > 10) ssid = ssid.substring(0, 10);
-  tft.drawString(padRight("SSID " + ssid, 14), COL_R_X, 152, 2);
+  tft.drawString(padRight("SSID: " + ssid, 15), COL_R_X, ROW_Y0 + 3 * ROW_DY, 4);
 
   String user = config.username;
   if (user.length() > 9) user = user.substring(0, 9);
-  tft.drawString(padRight("User " + user, 14), COL_R_X, 176, 2);
-
-  // Hint bar: L/LL left, R/RR right (subscreen: L returns to speed)
-  tft.drawFastHLine(0, 217, tft.width(), GRAY);
-  tft.setTextColor(GRAY, BG);
-  tft.setTextDatum(BL_DATUM);
-  tft.drawString("L Back", 8, 235, 2);
+  tft.drawString(padRight("User: " + user, 15), COL_R_X, ROW_Y0 + 4 * ROW_DY, 4);
+  // No hint bar: the buttons are on the right edge of the enclosure.
 }
 
 void drawScreenDiagnostics(TinyGPSPlus &gps)
@@ -116,7 +118,7 @@ void screenDiagnosticsButton(
     Button button,
     ButtonEvent event
 ) {
-    // Subscreen of speed: L returns to speed screen
+    // Subscreen of speed: 1S returns to the speed screen
     if (button == Button::Left && event == ButtonEvent::ShortPress) {
         setCurrentPage(PageMain);
         return;

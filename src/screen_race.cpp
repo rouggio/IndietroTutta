@@ -79,28 +79,23 @@ static const int HDR_H = 30;           // one 26px text row + 4px top inset
 static const int HDR_ROW1_Y = 4;       // glyph top of the row
 static const int HDR_CY = HDR_ROW1_Y + 13; // MC_DATUM centre of a font-4 value
 static const int MAP_X = 0;
-static const int MAP_W = 320;          // full screen width (no side pane)
+static const int MAP_W = 480;          // full panel width (no side pane)
 static const int WIRE_TOP = HDR_H + 2; // map top: the map owns from here down
-static const int WIRE_Y1 = 208;        // ...to the frame south (strip is gone)
-static const int FRAME_SOUTH = 213;
+static const int WIRE_Y1 = 320;        // ...to the panel edge: the map is full-screen
+static const int FRAME_SOUTH = 319;
 // The grid's bottom rule. It closes the three cells AND is the map area's top
 // border: the map fill starts at WIRE_TOP, so this row is never painted over.
 static const int HDR_RULE_Y = WIRE_TOP - 1;  // 31
-// The grid: three cells across 320px. 320 is not divisible by 3, so the odd
-// pixel goes to the two OUTER cells (107 | 106 | 107): symmetric, and 106px is
-// enough for the widest value each cell can hold ("15.7 Kn" ~83px, "+99:59"
-// ~90px), so a readout never touches a rule.
-static const int CELL_EDGE[4] = {0, 107, 213, 320};
-static const int CELL_CX[3] = {53, 160, 266}; // DST | SPD | TIME centres
-// Bottom band (the hint region, far bottom): it holds the HINTS or the BANNER,
-// never both — the banner is the alert you must not miss (FINISHED, OCS, GO,
-// the gun countdown, a committee signal), so while it is up the hints step
-// aside and they come back when it goes. 26px tall, i.e. exactly one font-4
-// line under the frame's south rule; the font-2 hints keep their baseline.
-static const int BAND_Y = FRAME_SOUTH + 1;  // 214
-static const int BAND_H = 26;               // 214..239
-static const int BAND_HINT_Y = 239;         // BL baseline of the hint pair
-static const int BAND_BANNER_Y = BAND_Y;    // TC top of a font-4 banner
+// The grid: three cells across 480px, 160 each.
+static const int CELL_EDGE[4] = {0, 160, 320, 480};
+static const int CELL_CX[3] = {80, 240, 400}; // DST | SPD | TIME centres
+// Banner strip: no hint bar any more (the buttons are on the enclosure's right
+// edge), so the bottom of the panel belongs to the map. The banner still needs
+// a slot for the alerts you must not miss (FINISHED, OCS, GO, countdown, a
+// committee signal) — it overlays the map's bottom edge, 30px tall.
+static const int BAND_Y = 288;
+static const int BAND_H = 30;
+static const int BAND_BANNER_Y = BAND_Y + 2;  // TC top of a font-4 banner
 // Right values pane: 1/5 width, six mini-labeled rows filling the height.
 static const int PANE_X = 256;
 static const int PANE_W = 64;
@@ -111,7 +106,7 @@ static inline int paneRowY(int r) { return PANE_TOP + (r * PANE_H) / 6; }
 
 static void drawFrameChrome()
 {
-    tft.drawRect(0, 0, 320, FRAME_SOUTH, RDIM);
+    tft.drawRect(0, 0, MAP_W, FRAME_SOUTH, RDIM);
     // The header grid: two vertical rules closing three equal cells, and a
     // horizontal rule along their bottom (todo 50). The horizontal one doubles
     // as the map area's top border. Chrome, like the frame: drawn once per full
@@ -119,7 +114,7 @@ static void drawFrameChrome()
     // survive the 200ms path untouched.
     for (int i = 1; i < 3; i++)
         tft.drawFastVLine(CELL_EDGE[i], 1, HDR_RULE_Y, RDIM);
-    tft.drawFastHLine(0, HDR_RULE_Y, 320, RDIM);
+    tft.drawFastHLine(0, HDR_RULE_Y, MAP_W, RDIM);
 }
 
 static const int AUTO_DIST_OPTIONS[] = {10, 50, 100, 200};
@@ -969,7 +964,7 @@ static void drawRaceMap(TinyGPSPlus& gps, bool full)
             // WIRE_TOP would leave SPD/DST/TIME floating over the "no session"
             // message. PANE_TOP is the legacy name for the row just inside the
             // frame, i.e. 1.
-            tft.fillRect(0, PANE_TOP, 320, WIRE_Y1 - PANE_TOP, RBG);
+            tft.fillRect(0, PANE_TOP, MAP_W, WIRE_Y1 - PANE_TOP, RBG);
             drawFrameChrome();
             // The clear wiped the header banner and the readouts too, and all
             // of them are change-detected, so their caches must be reset or
@@ -1599,48 +1594,22 @@ static void drawRaceText(TinyGPSPlus& gps)
         drawReadoutC(CELL_CX[2], HDR_CY, 4, tim, ovTim, sizeof(ovTim), ovTimW);
     }
 
-    // Bottom band: the banner OR the hints, never both (todo 50). Switching
-    // between them clears the band once and resets both caches — everything in
-    // here is change-detected, so a clear without a cache reset would leave the
-    // band black for ever.
-    //
-    // A banner change does NOT clear: the countdown re-renders once a second,
-    // and a full-band blank every second would flash the way the header
-    // countdown used to (see drawSmart), so the banner keeps its suffix erase.
+    // Bottom strip: BANNER ONLY now (the hint bar is gone). A banner change
+    // does NOT clear: the countdown re-renders once a second, and a full-band
+    // blank every second would flash the way the header countdown used to, so
+    // the banner keeps its suffix erase. The strip is cleared once when it
+    // goes from "something" to "nothing".
     const bool haveBanner = ban[0] != '\0';
-    const uint8_t bandMode = haveBanner ? 2 : 1;
-    char hintL[16], hintR[16];
-    if (courseOpen && courseView == 1) {
-        snprintf(hintL, sizeof(hintL), "L Row  LL Back");
-        snprintf(hintR, sizeof(hintR), "R Set  RR Start");
-    } else if (courseOpen || menuOpen) {
-        snprintf(hintL, sizeof(hintL), "L Back");
-        snprintf(hintR, sizeof(hintR), "R Sel RR Pick");
-    } else {
-        snprintf(hintL, sizeof(hintL), "L Next  LL Menu");
-        const char* viewName = focusMode == 0 ? "Map" : focusMode == 1 ? "Tgt" : "Auto";
-        const char* bearName = viewMode == 0 ? "N" : viewMode == 1 ? "BRG" : "Wide";
-        snprintf(hintR, sizeof(hintR), "R %s RR %s", viewName, bearName);
-    }
-    if (bandMode != lastBandMode ||
-        (!haveBanner && (strcmp(hintL, lastHintL) != 0 || strcmp(hintR, lastHintR) != 0))) {
+    const uint8_t bandMode = haveBanner ? 2 : 0;
+    if (bandMode != lastBandMode) {
         tft.fillRect(0, BAND_Y, MAP_W, BAND_H, RBG);
         lastBandMode = bandMode;
         pBan[0] = 0; pBanW = 0; // the band is black: force the banner back
-        lastHintL[0] = 0; lastHintR[0] = 0;
     }
     if (haveBanner) {
-        // Centred, one font-4 line: the band is 26px, exactly the glyph height.
+        // Centred, one font-4 line over the map's bottom edge.
         drawSmart(MAP_W / 2, BAND_BANNER_Y, 4, TC_DATUM,
                   finBanner ? TFT_GREEN : RFG, ban, pBan, sizeof(pBan), pBanW);
-    } else {
-        tft.setTextColor(RDIM, RBG);
-        tft.setTextDatum(BL_DATUM);
-        tft.drawString(hintL, 8, BAND_HINT_Y, 2);
-        tft.setTextDatum(BR_DATUM);
-        tft.drawString(hintR, tft.width() - 8, BAND_HINT_Y, 2);
-        strncpy(lastHintL, hintL, sizeof(lastHintL) - 1);
-        strncpy(lastHintR, hintR, sizeof(lastHintR) - 1);
     }
 }
 
@@ -1688,30 +1657,25 @@ static const char* menuRowText(MenuRow r)
 
 static void drawRaceMenu(bool full)
 {
-    // CONFIG is the menu reference: centered title + rule, `>` rows with
-    // yellow selection, hint bar with rule. Same geometry, same grays.
+    // Same chrome as CONFIG: brand-navy title bar, `>` rows in font 4 with a
+    // yellow selection, no hint bar (the buttons are on the enclosure's edge).
     if (full) {
         tft.fillScreen(TFT_BLACK);
-        tft.setTextColor(TFT_WHITE, TFT_BLACK);
+        tft.fillRect(0, 0, tft.width(), 44, brandNavy());
+        tft.setTextColor(TFT_WHITE, brandNavy());
         tft.setTextDatum(MC_DATUM);
-        tft.drawString("RACE/PRACTICE MENU", tft.width() / 2, 20, 2);
+        tft.drawString("RACE/PRACTICE MENU", tft.width() / 2, 22, 4);
         tft.drawFastHLine(0, 44, tft.width(), MENU_GRAY);
     } else {
-        tft.fillRect(0, 60, tft.width(), 70, TFT_BLACK);
+        tft.fillRect(0, 52, tft.width(), 200, TFT_BLACK);
     }
     char row[40];
     for (uint8_t i = 0; i < menuN; i++) {
         snprintf(row, sizeof(row), "%s %s", i == menuSel ? ">" : " ", menuRowText(menuRows[i]));
         tft.setTextDatum(TL_DATUM);
         tft.setTextColor(i == menuSel ? TFT_YELLOW : TFT_WHITE, TFT_BLACK);
-        tft.drawString(row, 12, 68 + i * 30, 2);
+        tft.drawString(row, 12, 60 + i * 34, 4);
     }
-    tft.drawFastHLine(0, 214, tft.width(), MENU_GRAY);
-    tft.setTextColor(MENU_GRAY, TFT_BLACK);
-    tft.setTextDatum(BL_DATUM);
-    tft.drawString("L Back", 8, 235, 2);
-    tft.setTextDatum(BR_DATUM);
-    tft.drawString("R Next  RR Pick", tft.width() - 8, 235, 2);
 }
 
 static void menuClose()
@@ -1753,7 +1717,7 @@ static void distCycle(int dir)
 
 static void drawCourseOptions()
 {
-    const int bx = 8, bw = 304, by = 34, bh = 172;
+    const int bx = 16, bw = 448, by = 34, bh = 190;
     tft.fillRect(bx, by, bw, bh, RBG);
     tft.drawRect(bx, by, bw, bh, RFG);
     tft.setTextDatum(TC_DATUM);
@@ -1777,15 +1741,14 @@ static void drawCourseOptions()
     tft.drawString(rowD, bx + 12, by + 76, 2);
 
     tft.setTextColor(RDIM, RBG);
-    tft.drawString("R change   RR start", bx + 12, by + 116, 2);
-    tft.drawString("course placed upwind of you", bx + 12, by + 140, 2);
+    tft.drawString("course placed upwind of you", bx + 12, by + 116, 2);
 }
 
 // Course browse list (below header; map frozen behind it). Repainted on
 // open/selection/fetch-ready only.
 static void drawCourseList()
 {
-    const int bx = 8, bw = 304, by = 34, bh = 172;
+    const int bx = 16, bw = 448, by = 34, bh = 190;
     tft.fillRect(bx, by, bw, bh, RBG);
     tft.drawRect(bx, by, bw, bh, RFG);
     tft.setTextDatum(TL_DATUM);

@@ -23,15 +23,19 @@ else
 endif
 
 BAUD ?= 115200
-# Hardware variant = PlatformIO environment (see platformio.ini).
-#   esp32dev = v1 (classic ESP32)   esp32s3 = v2 (ESP32-S3 N16R8)
-# v1 stays the default so every existing recipe keeps working unchanged.
-PIOENV ?= esp32dev
+# Board = PlatformIO environment (see platformio.ini). One board now:
+#   esp32s3 = ESP32-S3 N16R8 + 3.5" ST7796S
+# The classic-ESP32 (v1) env was retired 2026-11-01. Override PIOENV only if a
+# second env is added back.
+PIOENV ?= esp32s3
 VENV := .venv
 PY := $(VENV)/$(VENV_SUBDIR)/python
 CONFIG := src/config.h
 BACKEND := $(firstword $(wildcard ../backend ../IndietroTuttaBackend))
-OTA_SUBDIR := $(if $(filter esp32s3,$(PIOENV)),/v2,)
+# OTA channel: the board's config.h says OTA_CHANNEL "/v2", so publish there.
+# Kept as an explicit constant rather than derived from PIOENV: a wrong env
+# would otherwise put an S3 image on the legacy /ota path.
+OTA_SUBDIR := /v2
 OTA_DIR := $(BACKEND)/public/ota$(OTA_SUBDIR)
 OTA_LATEST_URL ?= https://indietrotutta.onrender.com/ota$(OTA_SUBDIR)/latest.txt
 FIRMWARE := .pio/build/$(PIOENV)/firmware.bin

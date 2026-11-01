@@ -29,13 +29,13 @@ enum ConfigRow {
     ROW_COUNT
 };
 
-// Seven rows at 21px (font 2 is 16px tall): rows occupy 64..206 and the hint
-// bar rule sits at 214. The enum order IS the display order and every row is
-// always offered — the list used to lose FX in PROD, which put "set the fix
-// source" out of reach on a prod-mounted boat that wants a scripted run.
-static const int ROW_Y0 = 64;
-static const int ROW_DY = 21;
-static const int WIPE_HEIGHT = 148;
+// Seven rows at 30px (font 4 is 26px tall): rows occupy 62..272. The enum
+// order IS the display order and every row is always offered — the list used to
+// lose FX in PROD, which put "set the fix source" out of reach on a
+// prod-mounted boat that wants a scripted run.
+static const int ROW_Y0 = 62;
+static const int ROW_DY = 30;
+static const int WIPE_HEIGHT = 212;
 
 static int selRow = ROW_OTA;
 static bool needsRedraw = true;
@@ -63,16 +63,17 @@ void drawScreenConfig(bool requiresInit)
         needsRedraw = true;
     }
 
-    // ---- Title ----
-    tft.setTextColor(WHITE, BG);
+    // ---- Title (brand navy bar, same as the splash and UPDATE) ----
+    tft.fillRect(0, 0, tft.width(), 44, brandNavy());
+    tft.setTextColor(WHITE, brandNavy());
     tft.setTextDatum(MC_DATUM);
-    tft.drawString("CONFIG", tft.width() / 2, 20, 4);
+    tft.drawString("CONFIG", tft.width() / 2, 22, 4);
     tft.drawFastHLine(0, 44, tft.width(), GRAY);
 
     // ---- Selectable rows ----
     if (needsRedraw) {
-        // Wipe the whole row block in one go, stopping just short of the hint
-        // bar at y=214 (60..208 covers the last row at 64 + 6*21 = 190..206).
+        // Wipe the whole row block in one go: 60..272 covers the last row
+        // (62 + 6*30 = 242, font 4 runs to ~268).
         tft.fillRect(0, 60, tft.width(), WIPE_HEIGHT, BG);
 
         for (int i = 0; i < ROW_COUNT; i++) {
@@ -104,7 +105,7 @@ void drawScreenConfig(bool requiresInit)
                 row += String("Speed unit  : ") + speedLabel();
 
             tft.setTextDatum(TL_DATUM);
-            tft.drawString(row, 12, y, 2);
+            tft.drawString(row, 12, y, 4);
         }
 
         // Detail line under the rows: what PROD/DEV actually means right
@@ -114,13 +115,7 @@ void drawScreenConfig(bool requiresInit)
         needsRedraw = false;
     }
 
-    // ---- Hint bar: L/LL on the left, R/RR on the right ----
-    tft.drawFastHLine(0, 214, tft.width(), GRAY);
-    tft.setTextColor(GRAY, BG);
-    tft.setTextDatum(BL_DATUM);
-    tft.drawString("L Main  LL OTA", 8, 235, 2);
-    tft.setTextDatum(BR_DATUM);
-    tft.drawString("R Sel  RR Set", tft.width() - 8, 235, 2);
+    // No hint bar: the buttons are on the right edge of the enclosure.
 }
 
 void screenConfigButton(Button button, ButtonEvent event)

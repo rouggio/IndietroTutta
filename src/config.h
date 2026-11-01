@@ -3,18 +3,13 @@
 
 // OTA configuration
 //
-// CHANNEL SPLIT (2026-10-31): v1 boards publish/pull from /ota, v2 (ESP32-S3)
-// from /ota/v2. One shared channel is a brick risk: a v2 board would pull the
-// v1 (esp32dev) image, which the S3 refuses to boot - and once the box is
-// sealed there is no USB to recover it with. The variant is the buildchain's
-// -DDEVICE_VARIANT_V2 (see include/board_pins.h).
-#if defined(DEVICE_VARIANT_V2)
+// The channel is /ota/v2 and MUST STAY: the board in the field is flashed with
+// this path in its NVS-less OTA logic, and prod serves the image there. It
+// exists because a shared /ota once meant a v2 board could pull the v1
+// (classic-ESP32) image - a wrong-chip image it will not boot, with no USB left
+// once the enclosure is closed. v1 is retired, but the channel stays.
 #define OTA_CHANNEL     "/v2"
 #define DEVICE_VARIANT_NAME "v2"
-#else
-#define OTA_CHANNEL     ""
-#define DEVICE_VARIANT_NAME "v1"
-#endif
 
 #define OTA_BASE_URL    "https://indietrotutta.onrender.com/ota" OTA_CHANNEL
-#define BUILD_VERSION   "1.0.378"
+#define BUILD_VERSION   "1.0.387"

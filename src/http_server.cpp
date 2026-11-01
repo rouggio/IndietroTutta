@@ -682,6 +682,13 @@ static void handleStatus()
         doc["gps"]["location"]["lng"] = gpsRef->location.isValid() ? gpsRef->location.lng() : 0.0;
         doc["gps"]["satellites"] = gpsRef->satellites.value();
         doc["gps"]["hdop"] = gpsRef->hdop.value();
+        // Bring-up counters. `sats` and `hdop` only move once the receiver has
+        // a FIX, so with a bare module (no antenna) they cannot tell a working
+        // UART from a dead one: `chars` is every byte TinyGPSPlus consumed and
+        // `sentences` every NMEA sentence that passed its checksum. Rising
+        // chars + rising sentences = the wiring is right, no sky needed.
+        doc["gps"]["chars"] = gpsRef->charsProcessed();
+        doc["gps"]["sentences"] = gpsRef->passedChecksum();
     }
 
     JsonObject mem = doc.createNestedObject("mem");
@@ -752,20 +759,25 @@ static void handleHealth()
 static void handleBtn()
 {
     const String b = server.hasArg("b") ? server.arg("b") : "";
-    const String e = server.hasArg("e") ? server.arg("e") : "R";
+    const String e = server.hasArg("e") ? server.arg("e") : "S";
+    // Gestures are named <button><S|L>: 1S/1L = button 1 (left), 2S/2L =
+    // button 2 (right), 3S/3L = button 3. `b` and `e` are the two halves so a
+    // script can drive either one; the canonical query is ?b=2&e=S.
+    // Legacy aliases (b=L|R, e=R|RR) still answer, because older runs and
+    // tools/race.sh speak that dialect.
     Button btn;
-    if (b == "L" || b == "l") btn = Button::Left;
-    else if (b == "R" || b == "r") btn = Button::Right;
+    if (b == "1" || b == "L" || b == "l") btn = Button::Left;
+    else if (b == "2" || b == "R" || b == "r") btn = Button::Right;
     else if (b == "3") btn = Button::Third;
     else {
-        server.send(400, "text/plain", "b must be L|R|3");
+        server.send(400, "text/plain", "b must be 1|2|3");
         return;
     }
     ButtonEvent ev;
-    if (e == "R" || e == "r") ev = ButtonEvent::ShortPress;
-    else if (e == "RR" || e == "rr") ev = ButtonEvent::LongPress;
+    if (e == "S" || e == "s" || e == "R" || e == "r") ev = ButtonEvent::ShortPress;
+    else if (e == "L" || e == "l" || e == "RR" || e == "rr") ev = ButtonEvent::LongPress;
     else {
-        server.send(400, "text/plain", "e must be R|RR");
+        server.send(400, "text/plain", "e must be S|L");
         return;
     }
     screenButtonEvent(btn, ev);

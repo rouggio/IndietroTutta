@@ -18,8 +18,8 @@
 // OTA SCREEN
 // --------------------------------------------------
 
-static const int OTA_MAX_LINES = 8;
-static const int OTA_LINE_HEIGHT = 18;
+static const int OTA_MAX_LINES = 7;
+static const int OTA_LINE_HEIGHT = 28;   // font 4 is 26px tall
 static const int OTA_LOG_X = 5;
 static const int OTA_LOG_Y = 52;
 
@@ -74,10 +74,12 @@ void drawOTAProgress(int progress) {
 
 
 // Fixed-width log lines so a shorter line fully overwrites a longer one
-// (no clear on the refresh path — it flickers)
+// (no clear on the refresh path — it flickers). 30 chars at font 4 is ~390 px,
+// which fits the 480 px panel from x=5 with room to spare.
+static const int OTA_LINE_CHARS = 30;
 static String padOtaLine(const String& s) {
-  String out = s;
-  while (out.length() < 36) out += " ";
+  String out = s.length() > OTA_LINE_CHARS ? s.substring(0, OTA_LINE_CHARS) : s;
+  while (out.length() < OTA_LINE_CHARS) out += " ";
   return out;
 }
 
@@ -89,7 +91,7 @@ static void drawOtaSlot(int i) {
     padOtaLine(otaLines[i]),
     OTA_LOG_X,
     OTA_LOG_Y + i * OTA_LINE_HEIGHT,
-    2
+    4
   );
 }
 
@@ -105,10 +107,11 @@ void initOTAScreen() {
 
   tft.fillScreen(TFT_BLACK);
 
-  // Title + rule, same style as the other screens
+  // Title bar in the brand navy (same colour as the splash), white caption.
+  tft.fillRect(0, 0, tft.width(), 44, brandNavy());
   tft.setTextDatum(MC_DATUM);
-  tft.setTextColor(TFT_WHITE, TFT_BLACK);
-  tft.drawString("UPDATE", tft.width() / 2, 20, 4);
+  tft.setTextColor(TFT_WHITE, brandNavy());
+  tft.drawString("UPDATE", tft.width() / 2, 22, 4);
   tft.drawFastHLine(0, 44, tft.width(), GRAY);
 }
 

@@ -5,7 +5,21 @@ meta {
 }
 
 post {
-  url: {{baseUrl}}/btn?b=L&e=R
+  url: {{baseUrl}}/btn?b=1&e=S
   body: none
   auth: none
+}
+
+docs {
+  Gestures are named <button><S|L>:
+
+    1S / 1L   button 1 (left)   short / long
+    2S / 2L   button 2 (right)  short / long
+    3S / 3L   button 3          short / long
+
+  The query takes the two halves, so `?b=1&e=S` is 1S and `?b=1&e=L` is 1L.
+  Writes are POST-only on the portal; a GET silently no-ops.
+
+  Legacy dialect still answers (b=L|R, e=R|RR) because older runs and
+  tools/race.sh speak it, but new scripts should use b=1|2|3 with e=S|L.
 }
