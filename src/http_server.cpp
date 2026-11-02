@@ -2,6 +2,8 @@
 #include <WiFi.h>
 #include <ArduinoJson.h>
 #include <TinyGPSPlus.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 
 #include <esp_heap_caps.h>
 #include "http_server.h"
@@ -15,6 +17,7 @@
 #include "server_link.h"
 #include "ota.h"
 #include "backend.h"
+#include "boot_diag.h"
 #include "sound.h"
 
 #include <TFT_eSPI.h>
@@ -669,7 +672,10 @@ static bool          gScreenBusy  = false;
 
 static void handleStatus()
 {
-    StaticJsonDocument<2048> doc;
+    // 2048 -> 2560: the reset/stack diagnostic keys below are the ones that
+    // would be dropped SILENTLY on overflow, and they are the whole reason the
+    // board's reboots can be classified at all.
+    StaticJsonDocument<2560> doc;
     doc["mode"] = (WiFi.getMode() == WIFI_AP) ? "Access Point" : "Station";
     doc["ssid"] = WiFi.SSID();
     doc["ip"] = (WiFi.getMode() == WIFI_AP)
@@ -695,6 +701,14 @@ static void handleStatus()
     mem["freeHeap"]     = ESP.getFreeHeap();
     mem["minFreeHeap"]  = ESP.getMinFreeHeap();
     mem["maxAllocHeap"] = ESP.getMaxAllocHeap();
+    // Stack watermarks (bytes still unused at the worst moment since boot).
+    // A reboot with no log left to read has to be narrowed down somehow: the
+    // upload path puts a 2KB body buffer + ServerLink on the backend task's
+    // stack, and the race-screen paint is the deepest the loop task ever goes.
+    // Free stack close to zero names the culprit without a debugger.
+    mem["loopStack"]    = (int)uxTaskGetStackHighWaterMark(NULL);
+    mem["backendStack"] = backendStackFree();
+    mem["healthStack"]  = healthStackFree();
 
     // /screen diagnostics: a grab is the tool used to verify the UI, and the
     // failure it exists to survive (no contiguous block) must be visible here.
@@ -707,6 +721,12 @@ static void handleStatus()
 
     JsonObject sys = doc.createNestedObject("sys");
     sys["version"] = BUILD_VERSION;
+    // Why this boot happened: "power-on" / "software" (our own restart) /
+    // "panic" / "task-wdt" / "brownout" / ... plus the lifetime counters.
+    // A reboot that leaves no other trace is at least CLASSIFIED here.
+    sys["reset"] = bootResetName();
+    sys["boots"] = bootCount();
+    sys["panics"] = bootPanicCount();
     // Which buildchain this firmware came from: "v1" (classic ESP32, /ota) or
     // "v2" (ESP32-S3, /ota/v2). Decides which OTA channel the board pulls.
     sys["variant"] = DEVICE_VARIANT_NAME;

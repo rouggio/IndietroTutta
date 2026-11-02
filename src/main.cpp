@@ -14,6 +14,7 @@
 #include "race_courses.h"
 #include "gps_mock.h"
 #include "sound.h"
+#include "boot_diag.h"
 
 TinyGPSPlus gps;
 
@@ -23,6 +24,9 @@ void setup(void) {
   beginSplash();
   Serial.begin(115200);
   delay(1000); // Wait for Serial to initialize
+  // First thing after the UART: what woke us up, and the tail of the log from
+  // the boot before (RTC memory keeps it across a panic/watchdog/restart).
+  bootDiagInit();
   loadConfig(config);
   // Boot chime on the passive buzzer (+ on D19, - on GND). MUST come after
   // loadConfig(): that is where bootSoundOn is read from NVS, and playing

@@ -59,6 +59,12 @@ struct BackendWork {
 };
 
 static QueueHandle_t workQueue = nullptr;
+
+// Task handles for /status's stack watermarks. The run upload (2KB body +
+// ServerLink) runs on the HEALTH task, not on "backend": that is why both are
+// reported separately.
+static TaskHandle_t backendTaskHandle = nullptr;
+static TaskHandle_t healthTaskHandle = nullptr;
 static volatile bool online = false;
 static volatile bool healthNow = false;
 static volatile bool courseWant = false;
@@ -443,6 +449,23 @@ static void backendTask(void *param){
 
     BackendWork w;
 
+    // Consecutive transient failures on the position queue.
+    //
+    // The failure path requeues the item at the FRONT, so with no backoff the
+    // retry is immediate. When the send fails FAST - connection refused, or no
+    // free lwIP socket, which is exactly what a race finish creates when the
+    // run upload opens a second connection - that becomes a tight loop of
+    // connect + log + requeue. Two things then follow, both seen on the boat:
+    // the log ring fills with identical lines (so the evidence for whatever
+    // happens NEXT is gone), and the task outruns the IDLE task on its core
+    // until the task watchdog reboots the board. That was the reboot at the
+    // finish, recorded as reset=task-wdt.
+    //
+    // So: yield between retries, grow the gap, and log the edge, not every
+    // attempt.
+    static int positionFails = 0;
+    static unsigned long positionRetryAt = 0;
+
     for (;;) {
         bool haveItem =
             xQueueReceive(workQueue, &w, pdMS_TO_TICKS(TASK_TICK_MS)) == pdTRUE;
@@ -488,7 +511,8 @@ static void backendTask(void *param){
             mockMs = millis() - t0;
         }
 
-        if (haveItem) {
+        const bool canSend = positionFails == 0 || (long)(now - positionRetryAt) >= 0;
+        if (haveItem && canSend) {
             // Queued items carry their own simulated tag (set at enqueue
             // time), so real fixes queued before mock-on stay real.
             // Transient failures requeue to the front (same as deletes);
@@ -498,12 +522,40 @@ static void backendTask(void *param){
             sendMs = millis() - t0;
             if (code == HTTP_CODE_OK) {
                 // Delivered: quiet by design, failures log below.
+                if (positionFails > 0) {
+                    bufferedSerialPrintln(String("[BACKEND] position sending back, after ") +
+                                          positionFails + " fail(s)");
+                    positionFails = 0;
+                }
             } else if (code <= 0 || code >= 500) {
-                bufferedSerialPrintln("[BACKEND] Position send failed, retrying");
+                positionFails++;
+                // 0.5s, 1s, 2s ... capped at 15s. The delay is the point: it
+                // is what lets the IDLE task run, and starving IDLE on this
+                // core is what the task watchdog counts as a dead board.
+                unsigned long gap = 500;
+                for (int i = 1; i < positionFails && gap < 15000; i++) gap *= 2;
+                if (gap > 15000) gap = 15000;
+                positionRetryAt = millis() + gap;
+                // Edge-triggered logging: a burst must not evict the ring.
+                if (positionFails == 1 || positionFails % 10 == 0) {
+                    bufferedSerialPrintln(String("[BACKEND] position send failed (") +
+                                          positionFails + "), retry in " + gap + "ms");
+                }
                 xQueueSendToFront(workQueue, &w, 0);
             } else {
                 bufferedSerialPrintln("[BACKEND] Position rejected, dropping");
             }
+        } else if (haveItem) {
+            // Still inside the backoff window: keep the newest fix the boat
+            // has, and let the yield at the bottom of the pass do the waiting.
+            xQueueSendToFront(workQueue, &w, 0);
+        }
+
+        // Yield for whatever is left of the backoff. vTaskDelay (not a busy
+        // wait) is the only reason this task cannot starve the idle task.
+        if (positionFails > 0) {
+            const long waitMs = (long)(positionRetryAt - millis());
+            vTaskDelay(pdMS_TO_TICKS(waitMs > 0 ? waitMs : 10));
         }
 
         // Slow-pass telemetry: a stalled pass starves the GPS feed, so the
@@ -574,17 +626,24 @@ void backendInit(TinyGPSPlus* gps)
         12288,
         nullptr,
         1,
-        nullptr,
+        &backendTaskHandle,
         0
     );
 
     xTaskCreatePinnedToCore(
         healthTask,
         "health",
-        12288,
+        // 18K, not the old 12K: the run upload runs HERE (healthTask owns the
+        // health poll and the pending-run POST) and it puts a 2048-byte JSON
+        // body AND a ServerLink - WiFiClient + WiFiClientSecure + HTTPClient -
+        // on this stack. The finish of a race is the one moment that path
+        // runs, which is exactly when the board was seen to reboot. /status
+        // reports the watermark (mem.healthStack), so the suspicion can be
+        // settled with a number instead of argued about.
+        18432,
         nullptr,
         1,
-        nullptr,
+        &healthTaskHandle,
         0
     );
 }
@@ -622,4 +681,16 @@ void backendLoop(TinyGPSPlus &gps)
     w.simulated = mock;
 
     enqueueWork(w);
+}
+
+// Free stack at the worst moment since boot, in bytes (ESP-IDF counts bytes,
+// unlike vanilla FreeRTOS). -1 until the task exists.
+int backendStackFree()
+{
+    return backendTaskHandle ? (int)uxTaskGetStackHighWaterMark(backendTaskHandle) : -1;
+}
+
+int healthStackFree()
+{
+    return healthTaskHandle ? (int)uxTaskGetStackHighWaterMark(healthTaskHandle) : -1;
 }

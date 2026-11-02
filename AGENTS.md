@@ -102,10 +102,23 @@ Board-level facts (variants, wiring, flashing, port matrix) live in
 ## Architecture — superloop + backend task
 
 `src/main.cpp loop()`: serial_buffer → buttons → gps → screens → wifi → backend → ota.
-Two FreeRTOS tasks in `backend.cpp` (12288 stack each, core 0): feed task
-(mock poll + telemetry upload + deletes + course fetch; slow passes
->2s logged with leg split) and health task (heartbeat 30s idle / 5s live
-+ run upload) so a slow `/health` never starves the GPS feed.
+Two FreeRTOS tasks in `backend.cpp` (core 0): feed task (12288 stack; mock poll
++ telemetry upload + deletes + course fetch; slow passes >2s logged with leg
+split) and health task (18432 stack; heartbeat 30s idle / 5s live + run upload,
+which needs the extra room for its 2KB JSON body) so a slow `/health` never
+starves the GPS feed.
+
+**A retry must never spin (learned the hard way, 2026-11-02).** A transient
+`POST /gps` failure requeues the fix at the FRONT of the queue, and the only
+wait in that loop is the queue *receive* timeout — which is skipped while an
+item is queued. With no backoff that is a tight loop of connect+log+retry: it
+outruns the IDLE task on core 0 and the **task watchdog reboots the board**
+(`/status` → `sys.reset: "task-wdt"`), while flooding `/serial` with identical
+lines so the ring holds no evidence of anything. It bit twice on one race: a
+race finish adds the run-upload connection, a couple of position sends fail,
+and 2 failures became thousands. `positionFails` now backs off 0.5s→15s, yields
+with `vTaskDelay`, and logs only the edge (`failed (n)`) and the recovery. Any
+new retry path needs the same discipline.
 
 - UI thread only snapshots GPS + `enqueueWork()` (16-deep queue, drops oldest).
 - Task drains queue → `POST /gps` (always sends `flagged:false`; the device no longer
@@ -119,7 +132,16 @@ Two FreeRTOS tasks in `backend.cpp` (12288 stack each, core 0): feed task
   `backendAbandonSession()` (POST signals ABANDON), `backendSendFlaggedPosition()`, `backendInit/Loop`.
   Telemetry uploads carry `simulated:true` when mock GPS is active (map shows
   sim tracks),
-- `serial_buffer.cpp`: 200-line mutex-guarded log for `/serial`.
+- `serial_buffer.cpp`: 200-line mutex-guarded log for `/serial`, plus a ~1KB
+  **RTC-memory mirror** of the same lines. RTC RAM survives a panic, a watchdog
+  and `ESP.restart()`, so the tail is replayed at the next boot as `[PREV] ...`:
+  a heap ring dies with the very reset it would have explained.
+- `boot_diag.cpp`: `esp_reset_reason()` read first thing in `setup()` →
+  `[BOOT] reset=… boots=… panics=…` + `/status` `sys.reset|boots|panics`
+  (NVS ns `diag`). `power-on` / `software` (our own restart) / `panic` /
+  `task-wdt` / `brownout` is the first question to ask of any mystery reboot.
+  `/status` `mem` also carries `loopStack` / `backendStack` / `healthStack`
+  high-water marks (bytes free at the worst moment since boot).
 
 Key modules: `screens.*` router + 200ms throttle, `screen_speed.*` main
 (body grid 2×3 under the top bar: instant speed cell = row1 cols1-2 —

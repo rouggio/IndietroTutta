@@ -20,3 +20,7 @@ void bufferedSerialPrint(const char *s);
 
 // printf-style formatted print (newline not appended unless format contains it)
 void bufferedSerialPrintf(const char *fmt, ...);
+
+// Replay the tail of the PREVIOUS boot's log into the ring, prefixed [PREV].
+// Call once, early in setup(). Returns the number of lines recovered.
+int serialBufferReplayRtcLog();

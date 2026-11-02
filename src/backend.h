@@ -34,3 +34,14 @@ bool backendTakeRacePageRequest();
 void backendInit(TinyGPSPlus* gps);
 
 void backendLoop(TinyGPSPlus &gps);
+
+// Bytes still unused on the backend task's stack at the worst moment since
+// boot (FreeRTOS high-water mark). -1 before the task exists. Reported by
+// /status: a 2KB run-upload body and a ServerLink live on that stack, so this
+// is the number that says whether a reboot was our own stack overflow.
+int backendStackFree();
+
+// Same, for the task that owns the health poll and the pending-run upload -
+// the upload runs THERE (see backendInit). This is the one to watch at a race
+// finish.
+int healthStackFree();
