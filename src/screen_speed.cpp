@@ -275,6 +275,8 @@ static bool ringBrgUp = false;
 // Instant speed: last string + font (width changes get a one-off wipe).
 static String lastSpdStr = "";
 static uint8_t lastSpdFont = 8;
+static int lastSpdW = -1;    // last drawn readout width  (px)
+static int lastSpdH = -1;    // last drawn readout height (px)
 
 static void drawCellLabel(const char* label, int cx, int y){
   tft.setTextColor(GRAY, BG);
@@ -314,11 +316,13 @@ static const int ROW2_Y = BODY_TOP + ROW1_H;  // 220
 static const int ROW2_H = SCR_H - ROW2_Y;     // 100 (to the panel edge)
 static const int BRG_W = ROW1_H;              // square bearing cell: 188
 static const int SPEED_W = SCR_W - BRG_W;     // 292: instant-speed cell
-// Row 2 is NOT four equal cells any more: the session clock needs 130px for its
-// four font-6 digits plus the small colon, and the 10px come out of the wind
-// cell, which only ever shows two digits. Everything else stays put.
-static const int ROW2_EDGE[5] = {0, 120, 250, 360, 480};
-static const int ROW2_CX[4] = {60, 185, 305, 420};   // max | session | wind | brg
+// Row 2 is NOT four equal cells: the session clock needs room for four font-6
+// digits plus a real 15px colon ("12:34" = 123px), which the 120px cell could
+// not hold — that is why it once fell back to font 4 (and then to a tiny font-2
+// colon). 136px gives the clock ~6px of air each side; the wind cell only ever
+// shows two digits, so it pays for it.
+static const int ROW2_EDGE[5] = {0, 120, 256, 360, 480};
+static const int ROW2_CX[4] = {60, 188, 308, 420};   // max | session | wind | brg
 
 // Text anchors derived from the cells above.
 static const int SPEED_LABEL_Y = BODY_TOP + 10;                  // 42
@@ -370,22 +374,31 @@ static void drawCompassRing(int cx, int cy, int r, int nDeg)
                  cx + (int)(rb * sx), cy - (int)(rb * cz), RING_GRAY);
   }
   const double a = nDeg * M_PI / 180.0;
-  const int nr = r - 12;
+  const int nr = r - RING_BAND - 12;  // inboard of the no-go band
   drawCompassN(cx + (int)(nr * sin(a)), cy - (int)(nr * cos(a)), "N", RING_GRAY);
 }
 
-// Upwind no-go arc: ±`half` degrees around `centerDeg` (0 = up), drawn as a
-// 12px radial band (r-RING_BAND..r) that swallows the ring inside its sector —
-// the arc merges with / overlaps the ring border. Same red as the wind arrow,
-// so the "do not sail here" zone and the wind pointer read as one signal.
-// Also erases (BG) — same geometry, so an old sector is fully removed.
+// Upwind no-go arc: ±`half` degrees around `centerDeg` (0 = up), a solid
+// RING_BAND-thick band (r-RING_BAND..r) that swallows the ring inside its
+// sector. Drawn as filled quads between consecutive degrees, NOT as 1px radial
+// lines: lines leave a sparse/dithered edge whenever the spacing between them
+// approaches the pen width, which is what "the band is not solid" was.
+// Same red as the wind arrow. Also erases (BG) — the quads tile the sector
+// exactly, so an old sector is fully removed.
 static void drawNoGoArc(int cx, int cy, int r, int centerDeg, int half, uint16_t color)
 {
-  for (int d = centerDeg - half; d <= centerDeg + half; d++) {
-    const double a = d * M_PI / 180.0;
-    const double sx = sin(a), cz = cos(a);
-    tft.drawLine(cx + (int)((r - RING_BAND) * sx), cy - (int)((r - RING_BAND) * cz),
-                 cx + (int)(r * sx), cy - (int)(r * cz), color);
+  for (int d = centerDeg - half; d < centerDeg + half; d++) {
+    const double a0 = d * M_PI / 180.0;
+    const double a1 = (d + 1) * M_PI / 180.0;
+    const int ri = r - RING_BAND;
+    const int xi0 = cx + (int)(ri * sin(a0)), yi0 = cy - (int)(ri * cos(a0));
+    const int xo0 = cx + (int)(r * sin(a0)),  yo0 = cy - (int)(r * cos(a0));
+    const int xi1 = cx + (int)(ri * sin(a1)), yi1 = cy - (int)(ri * cos(a1));
+    const int xo1 = cx + (int)(r * sin(a1)),  yo1 = cy - (int)(r * cos(a1));
+    // Two triangles make the quad; neighbours share an edge, so the band is
+    // continuous along its whole length.
+    tft.fillTriangle(xi0, yi0, xo0, yo0, xo1, yo1, color);
+    tft.fillTriangle(xi0, yi0, xo1, yo1, xi1, yi1, color);
   }
 }
 
@@ -467,29 +480,257 @@ static void statsForceRedraw()
   lastSesStr = "";
 }
 
-// A clock at font 6 does not fit a 120px cell: "12:34" is 4 x 27px digits plus
-// a 15px colon = 123. Drawing the four digits at font 6 and the colon at font 2
-// between them lands at ~118, so the time reads at the same size as its
-// siblings instead of falling back to font 4 (which is what looked "smaller").
-// Constant geometry: four digits every time, so nothing ghosts.
-static void drawClock6(int cx, int yCentre, unsigned long sec)
+// --------------------------------------------------
+// INSTANT SPEED — hand-drawn 7-segment readout
+//
+// TFT_eSPI's largest built-in digit face is font 8 at 75px, and setTextSize()
+// only scales font 1, so the readout was leaving most of a 188px cell empty.
+// These segments are drawn as filled polygons at ANY height, so the size
+// follows the cell instead of the font table. The look is deliberately font 8's
+// (a 7-segment face), just bigger.
+//
+// Segments, clockwise from the top: a, b, c, d, e, f, g (g = middle).
+// --------------------------------------------------
+
+// Horizontal bar centred on y, with chamfered ends.
+static void segBarH(int xa, int xb, int y, int t, uint16_t c)
 {
-  char mm[3], ss[3];
-  snprintf(mm, sizeof(mm), "%02lu", (sec / 60UL) % 100UL);
-  snprintf(ss, sizeof(ss), "%02lu", sec % 60UL);
+  const int h = t / 2;
+  if (xb - xa < 2 * h + 2) return;
+  tft.fillRect(xa + h, y - h, xb - xa - 2 * h, t, c);
+  tft.fillTriangle(xa, y, xa + h, y - h, xa + h, y + h, c);
+  tft.fillTriangle(xb, y, xb - h, y - h, xb - h, y + h, c);
+}
 
-  const int wmm = tft.textWidth(mm, 6);
-  const int wss = tft.textWidth(ss, 6);
-  const int wc = tft.textWidth(":", 2);
-  const int total = wmm + 2 + wc + 2 + wss;
-  const int x = cx - total / 2;
-  const int yTop = yCentre - 24;   // font 6 is 48px tall
+// Vertical bar centred on x, with chamfered ends.
+static void segBarV(int x, int ya, int yb, int t, uint16_t c)
+{
+  const int h = t / 2;
+  if (yb - ya < 2 * h + 2) return;
+  tft.fillRect(x - h, ya + h, t, yb - ya - 2 * h, c);
+  tft.fillTriangle(x, ya, x - h, ya + h, x + h, ya + h, c);
+  tft.fillTriangle(x, yb, x - h, yb - h, x + h, yb - h, c);
+}
 
-  tft.setTextColor(WHITE, BG);
-  tft.setTextDatum(TL_DATUM);
-  tft.drawString(mm, x, yTop, 6);
-  tft.drawString(":", x + wmm + 2, yTop + 14, 2);
-  tft.drawString(ss, x + wmm + 2 + wc + 2, yTop, 6);
+// Draw an explicit segment mask. Split out from segDigit so the caller can
+// paint ALL segments in the background first: a segmented glyph has no
+// bounding box of its own, so without that a digit going 8 -> 1 would keep its
+// neighbour's bars.
+static void segDigitMask(int x, int y, int w, int h, uint8_t m, uint16_t c)
+{
+  if (!m) return;
+
+  const int t = (h / 10 > 4) ? h / 10 : 4;   // stroke thickness (bolder)
+  const int y0 = y + t / 2;
+  const int y1 = y + h / 2;
+  const int y2 = y + h - t / 2;
+  const int xl = x + t / 2;
+  const int xr = x + w - t / 2;
+
+  if (m & 0b0000001) segBarH(xl, xr, y0, t, c);  // a
+  if (m & 0b0000010) segBarV(xr, y0, y1 - 1, t, c);  // b
+  if (m & 0b0000100) segBarV(xr, y1 + 1, y2, t, c);  // c
+  if (m & 0b0001000) segBarH(xl, xr, y2, t, c);  // d
+  if (m & 0b0010000) segBarV(xl, y1 + 1, y2, t, c);  // e
+  if (m & 0b0100000) segBarV(xl, y0, y1 - 1, t, c);  // f
+  if (m & 0b1000000) segBarH(xl, xr, y1, t, c);  // g
+}
+
+static void segDigit(int x, int y, int w, int h, char ch, uint16_t c)
+{
+  uint8_t m;
+  switch (ch) {
+    case '0': m = 0b0111111; break;
+    case '1': m = 0b0000110; break;
+    case '2': m = 0b1011011; break;
+    case '3': m = 0b1001111; break;
+    case '4': m = 0b1100110; break;
+    case '5': m = 0b1101101; break;
+    case '6': m = 0b1111101; break;
+    case '7': m = 0b0000111; break;
+    case '8': m = 0b1111111; break;
+    case '9': m = 0b1101111; break;
+    case '-': m = 0b1000000; break;   // middle bar: the no-fix placeholder
+    default:  m = 0; break;           // space / anything else: nothing
+  }
+  if (!m) return;
+  segDigitMask(x, y, w, h, m, c);
+}
+
+// Cell width of one glyph at height h.
+//   integer digits 0.58h, but "1" only 0.30h — a 7-seg "1" is two bars on the
+//   RIGHT of a full-width cell, so treating it as full width made "1.5" look
+//   right-aligned.
+//   FRACTION digits are always 0.58h, even a "1": the decimal part must not
+//   change the block's width, or the whole value slides sideways when the
+//   tenths happen to be a 1 (4.1 vs 4.3). Only the integer part is allowed to
+//   move the centring.
+//   decimal point 0.18h, 0.06h between glyphs.
+static int segAdvance(char c, int h, bool fractional)
+{
+  if (c == '.') return (h * 18) / 100;
+  if (c == '1' && !fractional) return (h * 30) / 100;
+  return (h * 58) / 100;
+}
+
+static int segWidth(const String& s, int h)
+{
+  const int gap = (h * 6) / 100;
+  bool frac = false;
+  int w = 0;
+  for (int i = 0; i < (int)s.length(); i++) {
+    if (s[i] == '.') frac = true;
+    w += segAdvance(s[i], h, frac);
+    if (i + 1 < (int)s.length()) w += gap;
+  }
+  return w;
+}
+
+// Biggest height that fits BOTH the width and the height available. Steps down
+// in 2px increments, so a 5th character shrinks the whole readout instead of
+// clipping it.
+static int segFitHeight(const String& s, int maxW, int maxH)
+{
+  int h = maxH;
+  while (h > 40 && segWidth(s, h) > maxW) h -= 2;
+  return h;
+}
+
+// ---- Incremental readout --------------------------------------------------
+// Repainting every bar of every digit on each refresh is what makes a
+// segmented display flicker: each update is ~30 polygon fills and the panel
+// scan-out catches them mid-draw. So the previous frame's glyph cells are kept
+// and only the differences are painted:
+//   * a glyph whose character did not change is not touched at all;
+//   * inside a changed glyph only the segments that turned on/off are drawn.
+// A geometry change (different width/height, i.e. the readout re-centred)
+// invalidates the cache: the caller clears the band and everything is redrawn.
+#define SEG_STROKE1 0b10000000   // the centred "1" stroke, not a segment set
+
+struct SegCell {
+  int x, y, w, h;
+  char ch;
+};
+
+static SegCell segPrev[12];
+static int segPrevN = 0;
+static bool segPrevValid = false;
+
+static uint8_t segMaskFor(char ch)
+{
+  switch (ch) {
+    case '0': return 0b0111111;
+    case '1': return SEG_STROKE1;
+    case '2': return 0b1011011;
+    case '3': return 0b1001111;
+    case '4': return 0b1100110;
+    case '5': return 0b1101101;
+    case '6': return 0b1111101;
+    case '7': return 0b0000111;
+    case '8': return 0b1111111;
+    case '9': return 0b1101111;
+    case '-': return 0b1000000;
+    default:  return 0;
+  }
+}
+
+// Paint one cell from scratch (or, with a mask, only some of its segments).
+static void segPaintCell(const SegCell& c, uint8_t mask, uint16_t color)
+{
+  const int t = (c.h / 10 > 4) ? c.h / 10 : 4;
+  if (c.ch == '.') {
+    const int dotW = (c.h * 18) / 100;
+    const int dot = (dotW / 2 > 3) ? dotW / 2 : 3;
+    tft.fillRect(c.x + dotW / 2 - dot / 2, c.y + c.h - dot, dot, dot, color);
+    return;
+  }
+  if (mask & SEG_STROKE1) {
+    segBarV(c.x + c.w / 2, c.y + t / 2, c.y + c.h - t / 2, t, color);
+  }
+  // 0b1111111 = all seven segments; SEG_STROKE1 (bit 7) is stripped here so a
+  // '1' does not also try to draw every bar. (0b0111111 would drop 'g'.)
+  segDigitMask(c.x, c.y, c.w, c.h, mask & 0b1111111, color);
+}
+
+// Wipe a cell: the 1px-margin box covers chamfer overshoot and a dot whose size
+// follows the height.
+static void segEraseCell(const SegCell& c)
+{
+  if (c.ch == '.') {
+    const int dotW = (c.h * 18) / 100;
+    tft.fillRect(c.x - 1, c.y + c.h - dotW - 3, dotW + 2, dotW + 4, BG);
+  } else {
+    tft.fillRect(c.x - 1, c.y - 1, c.w + 2, c.h + 2, BG);
+  }
+}
+
+// Draw the readout for `s`, touching only what differs from the previous frame
+// unless `wipe` (geometry changed and the caller has already cleared the band).
+static void drawSegReadoutDiff(const String& s, int cx, int cy, int h,
+                               uint16_t color, bool wipe)
+{
+  if (!s.length() || h <= 0) return;
+
+  const int gap = (h * 6) / 100;
+  SegCell next[12];
+  int n = 0;
+  int x = cx - segWidth(s, h) / 2;
+  const int y = cy - h / 2;
+  bool frac = false;
+  for (int i = 0; i < (int)s.length() && n < 12; i++) {
+    const char c = s[i];
+    if (c == '.') frac = true;
+    const int cw = segAdvance(c, h, frac);
+    next[n].x = x;
+    next[n].y = y;
+    next[n].w = cw;
+    next[n].h = h;
+    next[n].ch = c;
+    n++;
+    x += cw + gap;
+  }
+
+  if (wipe || !segPrevValid) {
+    for (int i = 0; i < n; i++) segPaintCell(next[i], segMaskFor(next[i].ch), color);
+  } else {
+    for (int i = 0; i < n; i++) {
+      if (i < segPrevN && segPrev[i].ch == next[i].ch) continue;   // unchanged glyph
+      const uint8_t oldM = (i < segPrevN) ? segMaskFor(segPrev[i].ch) : 0;
+      const uint8_t newM = segMaskFor(next[i].ch);
+      const bool sameBox = i < segPrevN &&
+                           segPrev[i].x == next[i].x &&
+                           segPrev[i].w == next[i].w &&
+                           segPrev[i].h == next[i].h;
+      if (sameBox && segPrev[i].ch != '.' && next[i].ch != '.') {
+        // Same digit cell, different digit: paint ONLY the segments that turn
+        // off (in BG) and on (in colour). Everything that stays lit is never
+        // touched, so a 0 -> 8 lights just the middle bar.
+        const uint8_t offM = oldM & ~newM;
+        const uint8_t onM = newM & ~oldM;
+        if (offM) segPaintCell(segPrev[i], offM, BG);
+        if (onM) segPaintCell(next[i], onM, color);
+      } else {
+        // Different kind of cell (digit <-> point) or a moved/resized box.
+        if (i < segPrevN) segEraseCell(segPrev[i]);
+        segPaintCell(next[i], newM, color);
+      }
+    }
+    for (int i = n; i < segPrevN; i++) segEraseCell(segPrev[i]);    // string got shorter
+  }
+
+  for (int i = 0; i < n; i++) segPrev[i] = next[i];
+  segPrevN = n;
+  segPrevValid = true;
+}
+
+static const int TRI_HALF_DEG = 16;   // angular half-width of a triangle's base
+
+// True when two bearings are within `tol` degrees of each other (any side).
+static bool angleWithin(int a, int b, int tol)
+{
+  if (a < 0 || b < 0) return false;
+  int d = ((a - b) % 360 + 360) % 360;
+  return d <= tol || d >= 360 - tol;
 }
 
 void drawSpeed(TinyGPSPlus &gps)
@@ -519,22 +760,29 @@ void drawSpeed(TinyGPSPlus &gps)
   tft.drawString(label, cx, SPEED_LABEL_Y, 2);
 
   String spd = gps.speed.isValid() ? String(value, 1) : String("---");
-  // Font 8 (75 px) is the largest built-in, but a 5-char value ("123.4" in
-  // km/h) can be wider than the 292 px cell; measure it and drop to font 6
-  // rather than letting the last glyph spill past the wipe and leave a ghost.
-  const uint8_t spdFont = tft.textWidth(spd, 8) <= SPEED_W - 8 ? 8 : 6;
-  if (spd != lastSpdStr || spdFont != lastSpdFont) {
-    if (spd.length() != lastSpdStr.length() || spdFont != lastSpdFont) {
-      // One-off wipe on a width/font change (rare: decade cross, unit toggle,
-      // 123.4). Spans the whole cell width so no glyph edge can survive.
-      tft.fillRect(1, SPEED_LABEL_Y + 20, SPEED_W - 2,
-                   (BODY_TOP + ROW1_H) - (SPEED_LABEL_Y + 24), BG);
+  // Segmented readout: the height follows the cell, and every glyph is centred
+  // as a block. So a change in TOTAL WIDTH or HEIGHT moves ALL the glyphs, and
+  // clearing per glyph at the new positions cannot erase the ink at the old
+  // ones — the old digits stay behind as ghosts. A '1' is narrower than the
+  // other digits, so this fires whenever a 1 enters or leaves the number, not
+  // only when the character count changes.
+  const int spdMaxW = SPEED_W - 14;
+  const int spdH = segFitHeight(spd, spdMaxW, 130);
+  const int spdW = segWidth(spd, spdH);
+  if (spd != lastSpdStr || spdW != lastSpdW || spdH != lastSpdH) {
+    const bool geometryChanged = (spdW != lastSpdW || spdH != lastSpdH);
+    if (geometryChanged) {
+      // Re-centring moves EVERY glyph, so the old ink cannot be erased by
+      // painting at the new positions: clear the whole value band.
+      tft.fillRect(1, SPEED_LABEL_Y + 18, SPEED_W - 2,
+                   (BODY_TOP + ROW1_H - 4) - (SPEED_LABEL_Y + 18), BG);
     }
-    tft.setTextColor(TFT_YELLOW, BG);
-    tft.setTextDatum(MC_DATUM);
-    tft.drawString(spd, cx, SPEED_VALUE_Y, spdFont);
+    // Only the glyphs (and the segments inside them) that changed are painted.
+    drawSegReadoutDiff(spd, cx, SPEED_VALUE_Y, spdH, TFT_YELLOW, geometryChanged);
     lastSpdStr = spd;
-    lastSpdFont = spdFont;
+    lastSpdW = spdW;
+    lastSpdH = spdH;
+    lastSpdFont = 8;   // font 8 equivalent; kept so initScreen() resets cleanly
   }
 
   // Row 2, cells 1 and 2: max speed and session time. Each value redraws only
@@ -570,16 +818,23 @@ void drawSpeed(TinyGPSPlus &gps)
   }
 
   // Cell 2: session time (since boot) or the partial's clock (since 3L).
+  // One font-6 string, real colon: the cell is 136px and "12:34" is 123px.
   const unsigned long sesSec =
       (showPartial ? statsPartialMs() : statsSessionMs()) / 1000UL;
-  char sesKey[8];
-  snprintf(sesKey, sizeof(sesKey), "%02lu%02lu",
+  char sesBuf[8];
+  snprintf(sesBuf, sizeof(sesBuf), "%02lu:%02lu",
            (sesSec / 60UL) % 100UL, sesSec % 60UL);
-  String sesTxt = String(sesKey);
+  String sesTxt = String(sesBuf);
   drawCellLabel(showPartial ? "Partial time" : "Session time", cellSesX, ROW2_LABEL_Y);
   if (sesTxt != lastSesStr) {
+    if (sesTxt.length() < lastSesStr.length())
+      tft.fillRect(ROW2_EDGE[1] + 3, ROW2_LABEL_Y + 15,
+                   ROW2_EDGE[2] - ROW2_EDGE[1] - 6, 60, BG);
+    tft.setTextColor(WHITE, BG);
+    tft.setTextDatum(MC_DATUM);
+    tft.drawString(sesTxt, cellSesX, ROW2_VALUE_Y,
+                   fitValueFont(sesTxt, ROW2_EDGE[2] - ROW2_EDGE[1] - 4));
     lastSesStr = sesTxt;
-    drawClock6(cellSesX, ROW2_VALUE_Y, sesSec);
   }
 
   // Ring cell (col 3, rows 1-2): N-up ring, top-aligned. Boat = green
@@ -638,32 +893,131 @@ void drawSpeed(TinyGPSPlus &gps)
     while (cenTxt.length() < 3) cenTxt = "0" + cenTxt;
   }
 
-  if (boatDeg != prevBoatDeg || windRel != prevWindDeg ||
-      arcDeg != prevArcDeg || noGoHalf != prevNoGoHalf ||
-      (int)brgUp != prevRingUp || cenTxt != lastCenStr) {
-    if (prevBoatDeg >= 0) drawNupTriangle(cmpCx, cmpCy, boatTip, boatBase, prevBoatDeg, BG);
-    if (prevWindDeg >= 0) drawNupTriangle(cmpCx, cmpCy, windTip, windBase, prevWindDeg, BG);
-    if (prevArcDeg >= 0) drawNoGoArc(cmpCx, cmpCy, cmpR, prevArcDeg, prevNoGoHalf, BG);
-    if (prevNDeg >= 0 && prevNDeg != nDeg) {   // stale N from an old angle
-      const double pa = prevNDeg * M_PI / 180.0;
-      drawCompassN(cmpCx + (int)((cmpR - 12) * sin(pa)), cmpCy - (int)((cmpR - 12) * cos(pa)), " N ", BG);
+  // Everything below is change-detected PER ELEMENT. The old version re-ran the
+  // whole stack (erase all shapes, redraw the ring, the arc, both triangles,
+  // the text) whenever ANY one of them moved — a course update at 1 Hz
+  // therefore repainted the no-go band and the ring every second, which is what
+  // flickered. Now:
+  //   * a triangle is erased/redrawn only if its own angle changed;
+  //   * the no-go band only if its centre/size changed;
+  //   * the ring circle only when a shape cut it (shapes are tangent to it);
+  //   * the ticks + N only when the view rotates (nDeg), because the N now sits
+  //     inboard of the band and no shape ever touches it.
+  const bool boatMoved = (boatDeg != prevBoatDeg);
+  const bool windMoved = (windRel != prevWindDeg);
+  const bool arcMoved = (arcDeg != prevArcDeg) || (noGoHalf != prevNoGoHalf);
+  const bool ringMoved = (nDeg != prevNDeg);
+  const bool textMoved = (cenTxt != lastCenStr);
+
+  if (boatMoved || windMoved || arcMoved || ringMoved || textMoved) {
+    // DAMAGE PROPAGATION: a shape is erased by painting its own footprint in
+    // the background, which also wipes whatever shared those pixels. Two
+    // triangles overlap whenever their bearings are less than 2 x the base's
+    // angular half-width apart (~30 deg), and the band (r-12..r) overlaps the
+    // outer third of any triangle in its sector. So each moved element drags
+    // its neighbours back in, in both directions, and the band is a neighbour
+    // of both.
+    bool redrawBoat = boatMoved;
+    bool redrawWind = windMoved;
+    bool redrawArc = arcMoved;
+    const int pairDeg = 2 * TRI_HALF_DEG;
+    const int bandDeg = noGoHalf + TRI_HALF_DEG;
+
+    if (redrawBoat) {
+      if (angleWithin(prevBoatDeg, windRel, pairDeg) ||
+          angleWithin(boatDeg, windRel, pairDeg)) redrawWind = true;
+      if (arcDeg >= 0 &&
+          (angleWithin(prevBoatDeg, arcDeg, bandDeg) ||
+           angleWithin(boatDeg, arcDeg, bandDeg))) redrawArc = true;
     }
-    drawCompassRing(cmpCx, cmpCy, cmpR, nDeg); // restore ring + N under the shapes
-    if (arcDeg >= 0) drawNoGoArc(cmpCx, cmpCy, cmpR, arcDeg, noGoHalf, ARC_RED);
-    if (windRel >= 0) drawNupTriangle(cmpCx, cmpCy, windTip, windBase, windRel, RED);
-    if (boatDeg >= 0) drawNupTriangle(cmpCx, cmpCy, boatTip, boatBase, boatDeg, GREEN);
-    // Center boat/wind angle, using the next smaller loaded font.
-    // TFT_eSPI has no font 3; the loaded classic fonts are 1, 2, 4, 6,
-    // 7, and 8. The selected font has no degree glyph, so use the same
-    // drawn degree ring as BRG.
-    // Center boat/wind angle, font 4 now that the ring is Ø172: font 2 was
-    // unreadable at arm's length.
-    tft.setTextColor(WHITE, BG);
-    tft.setTextDatum(MC_DATUM);
-    tft.drawString(cenTxt, cmpCx, cmpCy + 3, 4);
-    const int cenHalf = tft.textWidth(cenTxt, 4) / 2;
-    tft.drawCircle(cmpCx + cenHalf + 6, cmpCy - 10, 3, windAngleDeg >= 0 ? WHITE : BG);
-    lastCenStr = cenTxt;
+    if (redrawWind) {
+      if (angleWithin(prevWindDeg, boatDeg, pairDeg) ||
+          angleWithin(windRel, boatDeg, pairDeg)) redrawBoat = true;
+      if (arcDeg >= 0 &&
+          (angleWithin(prevWindDeg, arcDeg, bandDeg) ||
+           angleWithin(windRel, arcDeg, bandDeg))) redrawArc = true;
+    }
+    if (redrawArc && arcDeg >= 0) {
+      if (angleWithin(windRel, arcDeg, bandDeg) ||
+          angleWithin(prevWindDeg, arcDeg, bandDeg)) redrawWind = true;
+      if (angleWithin(boatDeg, arcDeg, bandDeg) ||
+          angleWithin(prevBoatDeg, arcDeg, bandDeg)) redrawBoat = true;
+    }
+
+    // Erase in reverse z-order: shapes first, then whatever is under them.
+    if (boatMoved && prevBoatDeg >= 0)
+      drawNupTriangle(cmpCx, cmpCy, boatTip, boatBase, prevBoatDeg, BG);
+    if (windMoved && prevWindDeg >= 0)
+      drawNupTriangle(cmpCx, cmpCy, windTip, windBase, prevWindDeg, BG);
+    if (arcMoved && prevArcDeg >= 0)
+      drawNoGoArc(cmpCx, cmpCy, cmpR, prevArcDeg, prevNoGoHalf, BG);
+
+    // A triangle's tip is tangent to the ring, so erasing one shaves the border:
+    // restore the 1px circle (not the ticks, not the N).
+    if (boatMoved || windMoved || arcMoved || redrawBoat || redrawWind) {
+      tft.drawCircle(cmpCx, cmpCy, cmpR, RING_GRAY);
+    }
+    if (ringMoved) {
+      if (prevNDeg >= 0) {   // stale N from an old angle
+        const double pa = prevNDeg * M_PI / 180.0;
+        drawCompassN(cmpCx + (int)((cmpR - RING_BAND - 12) * sin(pa)),
+                     cmpCy - (int)((cmpR - RING_BAND - 12) * cos(pa)), " N ", BG);
+      }
+      drawCompassRing(cmpCx, cmpCy, cmpR, nDeg);
+      // The ring's 30-deg ticks reach inboard to r-9, i.e. INSIDE the band's
+      // r-12..r thickness, and they are drawn after it: a view rotation would
+      // otherwise stripe the band (and clip the triangle tips). Anything that
+      // shares the ring's edge has to be repainted on top.
+      if (arcDeg >= 0) redrawArc = true;
+      if (windRel >= 0) redrawWind = true;
+      if (boatDeg >= 0) redrawBoat = true;
+    }
+
+    // The N glyph sits at r-RING_BAND-12 = 62px, which is INSIDE a triangle's
+    // radial span (base at r-30 = 56 .. tip at r): a triangle parked on the
+    // same bearing covers it, and when it moves away the N must come back.
+    // Only a ring rotation marks N dirty otherwise, so repair it here — before
+    // the shapes, which are then drawn on top as usual.
+    if (redrawBoat || redrawWind) {
+      if (angleWithin(boatDeg, nDeg, pairDeg) ||
+          angleWithin(prevBoatDeg, nDeg, pairDeg) ||
+          angleWithin(windRel, nDeg, pairDeg) ||
+          angleWithin(prevWindDeg, nDeg, pairDeg)) {
+        const double na = nDeg * M_PI / 180.0;
+        drawCompassN(cmpCx + (int)((cmpR - RING_BAND - 12) * sin(na)),
+                     cmpCy - (int)((cmpR - RING_BAND - 12) * cos(na)), "N", RING_GRAY);
+      }
+    }
+
+    // Repaint bottom-up: band, then wind, then boat, so the z-order can never
+    // invert (the boat is always on top).
+    if (redrawArc && arcDeg >= 0)
+      drawNoGoArc(cmpCx, cmpCy, cmpR, arcDeg, noGoHalf, ARC_RED);
+    if (redrawWind && windRel >= 0)
+      drawNupTriangle(cmpCx, cmpCy, windTip, windBase, windRel, RED);
+    if (redrawBoat && boatDeg >= 0)
+      drawNupTriangle(cmpCx, cmpCy, boatTip, boatBase, boatDeg, GREEN);
+
+    if (textMoved) {
+      // Wind angle, centre of the ring: font 6 (48px). The degree mark is part
+      // of the block, so the PAIR is centred on the ring's centre — centring
+      // just the digits pushed the visual mass ~4px right.
+      const int tw = tft.textWidth(cenTxt, 6);
+      const int dotD = 6;      // drawn with radius 3
+      const int gap = 3;
+      const int total = tw + gap + dotD;
+      // Wipe only the text's own footprint: 96x48 (+-48 x, +-24 y). A wider
+      // box reached past +-56, where a triangle's BASE sits (r-30), so a wind
+      // arrow at 3 or 9 o'clock had its inner edge bitten off by the clear.
+      tft.fillRect(cmpCx - 48, cmpCy - 24, 96, 48, BG);
+      tft.setTextColor(WHITE, BG);
+      tft.setTextDatum(MC_DATUM);
+      tft.drawString(cenTxt, cmpCx - total / 2 + tw / 2, cmpCy + 3, 6);
+      tft.drawCircle(cmpCx - total / 2 + tw + gap + dotD / 2, cmpCy - 18, 3,
+                     windAngleDeg >= 0 ? WHITE : BG);
+      lastCenStr = cenTxt;
+    }
+
     prevBoatDeg = boatDeg;
     prevWindDeg = windRel;
     prevArcDeg = arcDeg;
@@ -728,6 +1082,9 @@ void initScreen() {
   lastCenStr = "";
   lastSpdStr = "";
   lastSpdFont = 8;
+  lastSpdW = -1;
+  lastSpdH = -1;
+  segPrevValid = false;   // the page was cleared: repaint every segment
   prevBoatDeg = -2;
   prevWindDeg = -2;
   prevArcDeg = -1;

@@ -39,7 +39,29 @@ if not OUT:
         f"{HOST.replace(':', '-')}_{page}_{datetime.now():%Y%m%d-%H%M%S}.png",
     )
 os.makedirs(os.path.dirname(OUT) or GRAB_DIR, exist_ok=True)
-W, H = 320, 240  # rotation-3 landscape framebuffer
+
+
+def panel_rows():
+    """Width x height of the framebuffer, from /status when possible.
+
+    The capture is a full frame (w*h*2 bytes), so the size follows the panel:
+    it was 320x240 on the ST7789 and is 480x320 on the 3.5" ST7796S. /status
+    reports the band height and band count, which multiply to the row count;
+    the width is then len/2/rows. Falls back to the last known panel.
+    """
+    try:
+        with urllib.request.urlopen(f"http://{HOST}/status", timeout=5) as r:
+            scr = json.load(r).get("screen", {})
+        rows = int(scr.get("bandH", 0)) * int(scr.get("bands", 0))
+        if rows > 0:
+            return rows
+    except Exception:
+        pass
+    return 0
+
+
+ROWS = panel_rows()
+W, H = 480, 320  # default: the ST7796S at rotation 1
 
 
 def chunk(ctype, data):
@@ -52,6 +74,13 @@ with urllib.request.urlopen(f"http://{HOST}/screen", timeout=180) as r:
     data = r.read()
 
 want = W * H * 2
+if ROWS:
+    # Derive both dimensions from what the device actually sent: the frame is
+    # RGB565, so bytes = w * rows * 2.
+    H = ROWS
+    if len(data) % (2 * H) == 0:
+        W = len(data) // (2 * H)
+        want = len(data)
 if len(data) != want:
     sys.exit(f"expected {want} bytes, got {len(data)}")
 
