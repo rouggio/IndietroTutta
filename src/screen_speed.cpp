@@ -135,6 +135,37 @@ TriState prevFix = TriState::Unknown; // legacy (fix tile now uses prevFixTile)
 static int prevFixTile = -1; // 0 nofix, 1 fix, 2 mock; -1 forces repaint
 TriState prevDevMode = TriState::Unknown; // server-mode tile: DEV only in dev
 
+// ====== FIX FRESHNESS ======
+// A fix is only a FIX while it is RECENT. TinyGPSPlus's isValid() means "the
+// last sentence it parsed was sound", not "there is a fix now": it never
+// returns to false when the sky goes away, and it outlives a switch from MOCK
+// to REAL because the mock's last synthetic sentence is still inside the same
+// shared object. That is why a real receiver with no fix at all kept a GREEN
+// FX tile and a bench speed (2026-11-02). Two guards:
+//   - age <= FX_STALE_MS: the same 5 s the race engine already calls stale
+//     (race_run.cpp) - both sources deliver at 1 Hz, so it cannot flap in use;
+//   - age <= sinceSwitch: after the source flips, nothing the OLD source said
+//     counts, so the panel is honest at once instead of coasting.
+// Everything derived from the fix (speed, course, satellites) must ask this,
+// not isValid(), or a readout outlives the fix it came from.
+static const unsigned long FX_STALE_MS = 5000;
+
+static bool fixFresh(TinyGPSPlus &gps)
+{
+  static bool srcKnown = false;
+  static bool srcMock = false;
+  static unsigned long srcSwitchAt = 0;
+  const bool mockSrc = gpsMockActive();
+  if (!srcKnown || mockSrc != srcMock) {
+    srcKnown = true;
+    srcMock = mockSrc;
+    srcSwitchAt = millis();
+  }
+  const unsigned long sinceSwitch = millis() - srcSwitchAt;
+  const unsigned long age = gps.location.isValid() ? gps.location.age() : 0xFFFFFFFFUL;
+  return age <= FX_STALE_MS && age <= sinceSwitch;
+}
+
 // ====== LAYOUT ======
 void drawTopBar(TinyGPSPlus &gps)
 {
@@ -180,34 +211,11 @@ void drawTopBar(TinyGPSPlus &gps)
     prevDataConnected = TriState::False;
   }
 
-  // Fix Icon (yellow FX tile while the mock drives the fix instead of GPS).
-  // A fix is only a FIX while it is RECENT. TinyGPSPlus's isValid() means "the
-  // last sentence it parsed was sound", not "there is a fix now": it stays true
-  // for ever once the sky is gone, and - the case that exposed this - it
-  // survives a switch from MOCK to REAL, because the mock's last synthetic
-  // sentence is still in the shared object. So a real receiver with no fix at
-  // all kept a GREEN tile (2026-11-02). Two guards:
-  //   - age <= FX_STALE_MS: the same 5 s the race engine already calls stale
-  //     (race_run.cpp) - mock fixes arrive at 1 Hz, so it cannot flap in use.
-  //   - age <= sinceSwitch: after the source flips, nothing the OLD source said
-  //     counts, so the tile goes red at once and turns green only when the NEW
-  //     receiver actually reports. Otherwise the switch showed green for as long
-  //     as the stale mock fix was still inside the window.
-  static const unsigned long FX_STALE_MS = 5000;
-  static bool srcKnown = false;
-  static bool srcMock = false;
-  static unsigned long srcSwitchAt = 0;
-  const bool mockSrc = gpsMockActive();
-  if (!srcKnown || mockSrc != srcMock) {
-    srcKnown = true;
-    srcMock = mockSrc;
-    srcSwitchAt = millis();
-  }
-  const unsigned long sinceSwitch = millis() - srcSwitchAt;
-  const unsigned long fixAge = gps.location.isValid() ? gps.location.age() : 0xFFFFFFFFUL;
-  const bool fixFresh = fixAge <= FX_STALE_MS && fixAge <= sinceSwitch;
+  // Fix Icon (yellow FX tile while the mock drives the fix instead of GPS;
+  // green only for a RECENT real fix, red otherwise - see fixFresh()).
   icon_x += tile_width + tile_spacing;
-  const int fixTile = mockSrc ? 2 : (fixFresh ? 1 : 0);
+  const bool mockSrc = gpsMockActive();
+  const int fixTile = mockSrc ? 2 : (fixFresh(gps) ? 1 : 0);
   if (fixTile != prevFixTile)
   {
     prevFixTile = fixTile;
@@ -262,7 +270,7 @@ void drawTopBar(TinyGPSPlus &gps)
 
   // Right aligned symbols
 
-  int sats = gps.satellites.isValid() ? gps.satellites.value() : 0;
+  int sats = (fixFresh(gps) && gps.satellites.isValid()) ? gps.satellites.value() : 0;
 
   // GPS satellites (top-right)
   canvasPushImage(tft.width() - 57, 7, 16, 16, icon_sat, TFT_BLACK);
@@ -761,8 +769,11 @@ static bool angleWithin(int a, int b, int tol)
 void drawSpeed(TinyGPSPlus &gps)
 {
   static const char* unitLabels[SPEED_UNITS] = { "kn", "km/h", "mph" };
-  const double knots = gps.speed.isValid() ? gps.speed.knots() : 0.0;
-  statsSample(knots, gps.speed.isValid());
+  // Same freshness rule as the FX tile: nothing derived from the fix may
+  // outlive it. A stale speed is worse than no speed - it reads as a real one.
+  const bool fixOk = fixFresh(gps) && gps.speed.isValid();
+  const double knots = fixOk ? gps.speed.knots() : 0.0;
+  statsSample(knots, fixOk);
 
   double value = knots;
   // Cell 1: the session's max, or the PARTIAL's average (3S toggles).
@@ -784,7 +795,7 @@ void drawSpeed(TinyGPSPlus &gps)
   // the wipe clips its bottom rows.
   tft.drawString(label, cx, SPEED_LABEL_Y, 2);
 
-  String spd = gps.speed.isValid() ? String(value, 1) : String("---");
+  String spd = fixOk ? String(value, 1) : String("---");
   // Segmented readout: the height follows the cell, and every glyph is centred
   // as a block. So a change in TOTAL WIDTH or HEIGHT moves ALL the glyphs, and
   // clearing per glyph at the new positions cannot erase the ink at the old
@@ -885,7 +896,9 @@ void drawSpeed(TinyGPSPlus &gps)
   const int windTip = boatTip;                // shared ring tangent
   const int windBase = boatBase;
 
-  const int brgDeg = gps.course.isValid() ? (int)(gps.course.deg() + 0.5) % 360 : -1;
+  const int brgDeg = (fixFresh(gps) && gps.course.isValid())
+                         ? (int)(gps.course.deg() + 0.5) % 360
+                         : -1;
   const bool sesWind = raceSession.valid && raceSession.windSpeed > 0;
   // Env wind is valid once seen — even a calm 0kn report paints the arrow.
   // (Session wind keeps the >0 gate: frozen 0 there means unknown.)
