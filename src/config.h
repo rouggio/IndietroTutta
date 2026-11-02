@@ -12,4 +12,4 @@
 #define DEVICE_VARIANT_NAME "v2"
 
 #define OTA_BASE_URL    "https://indietrotutta.onrender.com/ota" OTA_CHANNEL
-#define BUILD_VERSION   "1.0.410"
+#define BUILD_VERSION   "1.0.415"
