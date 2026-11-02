@@ -151,6 +151,11 @@ static const int SIM_TAPE_MAX = 640;   // fixes: ~10 minutes at 1Hz
 static const int SIM_FIX_MS = 1000;    // the tape plays at the GPS's own rate
 static const int SIM_TAPE_LOW = 20;    // page / refill the tape below this
 static const long SIM_RUN_CHECK_MS = 20000; // "same run still?" cadence
+// A journey that is not this boat's session any more is dropped after this
+// much grace (see gpsMockTick): long enough that a health blip or a session
+// swap cannot throw a live race away, short enough that a dead session does
+// not leave the bench frozen for the minutes a run takes to prune itself.
+static const long SIM_ORPHAN_MS = 60000;
 
 // The tape is written by the backend task (fetch) and read by the UI loop
 // (release), so every head/count mutation lives under this short critical
@@ -181,7 +186,9 @@ static volatile bool simWander = false; // the tape holds the walk, not a run
 // UI thread only: -1 unknown, 0 held, 1 sailing. Logged on change, so a held
 // journey says WHY it is held instead of just looking like a dead boat.
 static int8_t simGateState = -1;
-
+// UI thread only: when the loaded journey first found itself without a home
+// (0 = it has one). See the orphan rule in gpsMockTick.
+static unsigned long simOrphanSince = 0;
 static void tapeResetLocked()
 {
     simHead = 0;
@@ -262,6 +269,7 @@ static bool simFetchTape(int from)
     int added = 0;
     bool changed = false;    // the feed is not the one in the tape
     bool restart = false;    // ...and these rows start at the old cursor
+    long foreignSid = 0;     // a journey for a session we are not in (refused)
     size_t got = 0;
 
     while (len <= 0 || got < (size_t)len) {
@@ -274,6 +282,18 @@ static bool simFetchTape(int from)
             if (sscanf(line, "#%23[^,],%ld,%ld,%ld,%ld,%ld",
                        rid, &sid, &gun, &dur, &total, &nowEpoch) >= 1) {
                 if (nowEpoch > 0) raceSetWallEpochFromServer(nowEpoch);
+                // A journey for a session this boat is NOT in is refused: taking
+                // it would only rebuild the stale tape the tick just dropped, and
+                // the two would pass it back and forth (2026-11-02). The WALK is
+                // always welcome (sid 0), and so is anything at all while we have
+                // no assignment yet - that is the boot case, where the session
+                // has not arrived from health yet.
+                const bool foreign = rid[0] && strcmp(rid, "wander") != 0 && sid > 0 &&
+                                     raceSession.valid && raceSession.sessionId != sid;
+                if (foreign) {
+                    foreignSid = sid;
+                    break;   // header only: the body is not read, cheap to retry
+                }
                 portENTER_CRITICAL(&simMux);
                 if (rid[0] && strcmp(rid, simRunId) != 0) {
                     tapeResetLocked();
@@ -302,6 +322,19 @@ static bool simFetchTape(int from)
         if (!ok) break;                          // full: page the rest later
     }
     link.http.end();
+
+    if (foreignSid > 0) {
+        // Edge-only: this repeats on every retry while the assignment is
+        // elsewhere, and a retry storm is what once tripped the watchdog.
+        static long foreignLogged = 0;
+        if (foreignLogged != foreignSid) {
+            foreignLogged = foreignSid;
+            bufferedSerialPrintln(String("[MOCK] ignoring journey for session ") +
+                                  foreignSid + " (ours is " +
+                                  String((long)raceSession.sessionId) + ")");
+        }
+        return false;
+    }
 
     if (changed) {
         bufferedSerialPrintln(String("[MOCK] feed ") + rid +
@@ -386,10 +419,38 @@ void gpsMockTick(TinyGPSPlus& gps)
     // given it. Holding the tape costs a delay; sailing it unwatched costs the
     // truth. (The WANDER is not a journey and keeps walking everywhere.)
     const char* hold = nullptr;
+    bool orphaned = false;   // the journey's session is not this boat's
     if (!wander) {
         if (page != PageRace) hold = (page == PageMain) ? "main screen" : "not on race";
-        else if (!raceSession.valid) hold = "no session yet";
-        else if (wantSession && raceSession.sessionId != wantSession) hold = "another session";
+        else if (!raceSession.valid) { hold = "no session yet"; orphaned = true; }
+        else if (wantSession && raceSession.sessionId != wantSession) {
+            hold = "another session";
+            orphaned = true;
+        }
+    }
+    // A journey whose session is no longer this boat's is STALE, and holding it
+    // is what froze a bench board at one fix with MOCK lit (2026-11-02): the
+    // feed's 20s check kept reading the same dead run back, so nothing moved
+    // again and nothing said so. The PAGE holds above are deliberately not
+    // stale (a journey is meant to wait while nobody is looking), but a session
+    // change gets a grace window first - a health blip must not throw a live
+    // race away - and is then dropped, so the next fetch reloads and, with no
+    // run, the server answers with the WALK (which is never held).
+    if (orphaned) {
+        if (simOrphanSince == 0) {
+            simOrphanSince = millis();
+        } else if (millis() - simOrphanSince > SIM_ORPHAN_MS) {
+            simOrphanSince = 0;
+            portENTER_CRITICAL(&simMux);
+            tapeResetLocked();
+            simRunId[0] = '\0';
+            simSessionId = 0;
+            simWander = false;
+            portEXIT_CRITICAL(&simMux);
+            bufferedSerialPrintln("[MOCK] journey dropped: its session is gone (walk next)");
+        }
+    } else {
+        simOrphanSince = 0;
     }
     if (hold) {
         if (simGateState != 0) {
