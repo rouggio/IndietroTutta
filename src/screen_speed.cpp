@@ -180,9 +180,34 @@ void drawTopBar(TinyGPSPlus &gps)
     prevDataConnected = TriState::False;
   }
 
-  // Fix Icon (yellow FX tile while the mock drives the fix instead of GPS)
+  // Fix Icon (yellow FX tile while the mock drives the fix instead of GPS).
+  // A fix is only a FIX while it is RECENT. TinyGPSPlus's isValid() means "the
+  // last sentence it parsed was sound", not "there is a fix now": it stays true
+  // for ever once the sky is gone, and - the case that exposed this - it
+  // survives a switch from MOCK to REAL, because the mock's last synthetic
+  // sentence is still in the shared object. So a real receiver with no fix at
+  // all kept a GREEN tile (2026-11-02). Two guards:
+  //   - age <= FX_STALE_MS: the same 5 s the race engine already calls stale
+  //     (race_run.cpp) - mock fixes arrive at 1 Hz, so it cannot flap in use.
+  //   - age <= sinceSwitch: after the source flips, nothing the OLD source said
+  //     counts, so the tile goes red at once and turns green only when the NEW
+  //     receiver actually reports. Otherwise the switch showed green for as long
+  //     as the stale mock fix was still inside the window.
+  static const unsigned long FX_STALE_MS = 5000;
+  static bool srcKnown = false;
+  static bool srcMock = false;
+  static unsigned long srcSwitchAt = 0;
+  const bool mockSrc = gpsMockActive();
+  if (!srcKnown || mockSrc != srcMock) {
+    srcKnown = true;
+    srcMock = mockSrc;
+    srcSwitchAt = millis();
+  }
+  const unsigned long sinceSwitch = millis() - srcSwitchAt;
+  const unsigned long fixAge = gps.location.isValid() ? gps.location.age() : 0xFFFFFFFFUL;
+  const bool fixFresh = fixAge <= FX_STALE_MS && fixAge <= sinceSwitch;
   icon_x += tile_width + tile_spacing;
-  const int fixTile = gpsMockActive() ? 2 : (gps.location.isValid() ? 1 : 0);
+  const int fixTile = mockSrc ? 2 : (fixFresh ? 1 : 0);
   if (fixTile != prevFixTile)
   {
     prevFixTile = fixTile;
