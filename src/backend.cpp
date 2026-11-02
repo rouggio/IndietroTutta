@@ -7,6 +7,7 @@
 #include "race_courses.h"
 #include "gps_mock.h"
 #include "server_link.h"
+#include "screens.h" // only for `page` (the engaged-poll rule, todo 68)
 
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
@@ -28,12 +29,33 @@
 // waiting for DNS/TLS/server round-trips.
 // ---------------------------------------------------------
 
-constexpr unsigned long HEALTH_CHECK_INTERVAL = 30000;
-constexpr unsigned long HEALTH_LIVE_INTERVAL = 5000; // session live: signals fast
-// While the network is down, retry briskly: at boot the first check runs
-// before WiFi has associated, and waiting the full 30s would lock the race
-// screen (entry gate) for half a minute after every power-on.
+// Idle cadence: how long a boat that is NOT engaged waits to hear about a race
+// the server created for it (todo 68).
+//
+// Engagement is the one thing the device cannot work out for itself - a
+// committee start exists only in the backend, and there is no push (Render
+// cannot reach a boat behind a venue NAT) - so the auto page-jump (todo 30) is
+// only as fast as this poll. 15 s, not 30 s. Each poll is a fresh DNS+TCP+TLS
+// handshake (ServerLink is one object per request; no socket reuse), so this is
+// the number to watch if the radio or the heap ever complains: 2x the
+// handshakes of the old 30 s, 3x fewer than being engaged.
+constexpr unsigned long HEALTH_CHECK_INTERVAL = 15000;
+// Engaged cadence: a live race (signals), the pre-start window, and any moment
+// the sailor is on the race screen. 5 s is what every live race has always run
+// at, so this is proven load, not new load.
+constexpr unsigned long HEALTH_LIVE_INTERVAL = 5000;
+// "The gun is close". An assigned session polls fast only from this far before
+// the gun: otherwise a session created in the morning for an afternoon start
+// would mean hours of 6x handshakes for nothing.
+constexpr long HEALTH_ENGAGED_WINDOW_S = 300;
+// Both intervals above assume the link is up. While the network is down, retry
+// briskly: at boot the first check runs before WiFi has associated, and waiting
+// the full idle interval would lock the race screen (entry gate) for half a
+// minute after every power-on.
 constexpr unsigned long HEALTH_RETRY_INTERVAL = 5000;
+// ...and until the first successful health ever, faster still: nothing is known
+// about the link, and this window ends at the first success.
+constexpr unsigned long HEALTH_BOOT_INTERVAL = 1000;
 // GPS throttling: baseline 30s at 0 knots, 2s at >=5 knots, linear in between
 constexpr unsigned long GPS_BASE_INTERVAL_MS = 30000;
 constexpr unsigned long GPS_FAST_INTERVAL_MS = 2000;
@@ -572,26 +594,52 @@ static void backendTask(void *param){
 // Heartbeat on its own task: a slow /health round trip (session geometry
 // + signals + Turso writes) must never starve the GPS feed. Same rand
 // intervals as before — 30s idle, 5s when the session is live.
+// How soon the next health poll is due (todo 68).
+//
+// Polling is the only channel: there is no push, so "reactive" means "how soon
+// after the committee acts". Three states deserve 5 s instead of the idle
+// cadence, and each of them is a moment when something the sailor is about to
+// act on can change:
+//   - the race is live (signals, abandon, an edit from the committee);
+//   - a session is assigned and its gun is unknown or within the engaged window
+//     (a gun set later must be heard at once - that is the start signal);
+//   - the UI is on the race screen: the sailor is waiting on a session, a
+//     postponement or a signal, assignment or not.
+// Everything else is a boat on the main screen doing its job, which needs no
+// news faster than HEALTH_CHECK_INTERVAL.
+static unsigned long healthIntervalMs()
+{
+    if (!online) {
+        return lastHealthOkMs == 0 ? HEALTH_BOOT_INTERVAL : HEALTH_RETRY_INTERVAL;
+    }
+    if (raceSessionLive()) {
+        return HEALTH_LIVE_INTERVAL;
+    }
+    if (raceSession.valid) {
+        const long gun = raceGunEpoch();  // 0: no gun set yet
+        const long now = raceWallEpoch(); // -1: wall clock unknown
+        if (gun <= 0 || now <= 0 || gun - now <= HEALTH_ENGAGED_WINDOW_S) {
+            return HEALTH_LIVE_INTERVAL;
+        }
+    }
+    // `page` is owned by the UI task; reading it here is deliberate (see the
+    // extern in screens.h) and only ever shifts a cadence.
+    if (page == PageRace) {
+        return HEALTH_LIVE_INTERVAL;
+    }
+    return HEALTH_CHECK_INTERVAL;
+}
+
 static void healthTask(void *param)
 {
     (void)param;
     unsigned long lastHealthCheck = 0;
     bool firstCheck = true; // hit the backend at once so the link tiles are
-                            // honest and a session arrives without a 30s wait
+                            // honest and a session arrives without waiting a
+                            // full poll
     for (;;) {
         const unsigned long now = millis();
-        // Until the very first successful health we know nothing about the
-        // link. Retry fast in that window only: it is bounded by the first
-        // success, so this costs nothing afterwards. (It used to exist for the
-        // race-screen entry gate; the gate is gone — todo 42 — but a boat that
-        // boots at the start line still benefits from finding the link fast.)
-        const unsigned long bootHealthInterval = 1000;
-        const unsigned long healthInterval =
-            raceSessionLive() ? HEALTH_LIVE_INTERVAL
-                              : (online ? HEALTH_CHECK_INTERVAL
-                                        : (lastHealthOkMs == 0 ? bootHealthInterval
-                                                               : HEALTH_RETRY_INTERVAL));
-        if (healthNow || firstCheck || now - lastHealthCheck >= healthInterval) {
+        if (healthNow || firstCheck || now - lastHealthCheck >= healthIntervalMs()) {
             healthNow = false;
             firstCheck = false;
             lastHealthCheck = now;

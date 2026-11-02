@@ -180,6 +180,16 @@ void screenLoop(TinyGPSPlus &gps) {
 
     if (millis() - lastUpdate > 200) {
         lastUpdate = millis();
+        // Entering the race screen is a request for freshness (todo 68): from
+        // here on the health task runs the engaged cadence, but its next tick
+        // could be up to 5 s away. Force one now, so the empty race screen is
+        // answered at once. Covers every way in - setCurrentPage() (a session
+        // arrived, or the menu), nextScreen() (the L cycle) - because it keys
+        // on the transition, not on the caller. backendPollHealthNow() only
+        // raises a flag, so it is safe from the UI loop.
+        if (prevPage != page && page == PageRace) {
+            backendPollHealthNow();
+        }
         drawScreen(
             gps,
             prevPage != page,
