@@ -291,6 +291,10 @@ static String lastSesStr = "";
 static String lastWndStr = "";
 static String lastBrgStr = "";
 static String lastCenStr = "";
+// View tag in the ring cell's top-left corner ("North" / "Head" / "Wind").
+// Padded to 5 chars so the opaque background erases the previous word: the
+// words differ in length and there is no fillRect on the 200 ms path.
+static String lastViewStr = "";
 // Compass cell: angles of the triangles last drawn (view-relative: in
 // heading-up the boat is 0, in wind-up the wind SOURCE is 0). -1 = nothing
 // drawn, -2 = cell not rendered yet (sentinel — forces ring+N+arrows on first
@@ -311,6 +315,11 @@ static int prevNDeg = -1;
 // missing and returns by itself when the input does - the MODE is never
 // silently changed by a data gap.
 static int ringView = 0;
+// The view the dial ACTUALLY draws (0/1/2), latched by the last pass. It equals
+// ringView except while that view's input is missing, which is exactly the
+// distinction /status exposes: a north-up picture under a "wind" mode is
+// information, not a fault.
+static int ringDrawn = 0;
 // Availability from the last draw pass, so the button can SKIP a view that
 // cannot be drawn instead of landing on a press with no visible effect.
 static bool ringCanHeading = false;
@@ -932,12 +941,32 @@ void drawSpeed(TinyGPSPlus &gps)
   ringCanHeading = brgDeg >= 0;
   ringCanWind = upwRaw >= 0;
   int rotDeg = 0;
-  if (ringView == 1 && ringCanHeading) rotDeg = brgDeg;
-  else if (ringView == 2 && ringCanWind) rotDeg = upwRaw;
+  int effView = 0;   // the view that is actually drawn (see the tag below)
+  if (ringView == 1 && ringCanHeading) { rotDeg = brgDeg; effView = 1; }
+  else if (ringView == 2 && ringCanWind) { rotDeg = upwRaw; effView = 2; }
+  ringDrawn = effView;
   const int arcDeg = upwRaw >= 0 ? (upwRaw - rotDeg + 360) % 360 : -1;
   const int boatDeg = brgDeg >= 0 ? (brgDeg - rotDeg + 360) % 360 : -1;
   const int windRel = wndAbs >= 0 ? (wndAbs - rotDeg + 360) % 360 : -1;
   const int nDeg = (360 - rotDeg) % 360;
+
+  // View tag, top-left of the cell (the one patch the inscribed ring leaves
+  // free). It names the view that is ACTUALLY drawn, not the selected mode: a
+  // degraded view (no COG, no wind) reads "North" honestly and flips back by
+  // itself when the input returns - labelling a north-up dial "Wind" would be
+  // worse than saying nothing. Five chars wide so the next word covers the old
+  // one with its own opaque background.
+  {
+    static const char* viewNames[3] = { "North", "Head", "Wind" };
+    String tag = viewNames[effView];
+    while (tag.length() < 5) tag += ' ';
+    if (tag != lastViewStr) {
+      tft.setTextColor(GRAY, BG);
+      tft.setTextDatum(TL_DATUM);
+      tft.drawString(tag, SPEED_W + 3, BODY_TOP + 2, 2);
+      lastViewStr = tag;
+    }
+  }
   int windAngleDeg = -1;
   if (brgDeg >= 0 && upwRaw >= 0) {
     const int rawAngle = (brgDeg - upwRaw + 360) % 360;
@@ -1135,6 +1164,7 @@ void initScreen() {
   lastWndStr = "";
   lastBrgStr = "";
   lastCenStr = "";
+  lastViewStr = "";   // the page was cleared: repaint the view tag
   lastSpdStr = "";
   lastSpdFont = 8;
   lastSpdW = -1;
@@ -1214,3 +1244,22 @@ void screenSpeedButton(
       return;
     }
   }
+
+// ---- ring view, for /status ------------------------------------------------
+// Two separate answers on purpose: `mode` is what `2S` selected, `drawn` is
+// the view the dial is actually showing. They differ exactly while the mode's
+// input is missing (no COG / no wind) - the case a photo cannot describe,
+// because the picture then looks like plain north-up.
+const char *ringViewModeName() {
+  static const char *names[3] = { "north", "head", "wind" };
+  return names[(ringView < 0 || ringView > 2) ? 0 : ringView];
+}
+
+const char *ringViewDrawnName() {
+  static const char *names[3] = { "north", "head", "wind" };
+  return names[(ringDrawn < 0 || ringDrawn > 2) ? 0 : ringDrawn];
+}
+
+// The availability the button uses to skip a view it cannot draw.
+bool ringViewCanHeading() { return ringCanHeading; }
+bool ringViewCanWind() { return ringCanWind; }

@@ -150,7 +150,12 @@ Key modules: `screens.*` router + 200ms throttle, `screen_speed.*` main
 the speed row 121px; row2 col1 "Max Speed", col2 "Session time" — labels
 font-2 gray at ROW_MID+7, values font-4 at ROW_MID+42, each center-wiped when
 narrower; col3 ring cell spans both rows — N-up ring
-top-aligned (diameter = cell width − 8px), RING_GRAY (0xC618) ring + 30° radial
+top-aligned (diameter = cell width − 8px), a **view tag in the cell's top-left
+corner** (`North` / `Head` / `Wind`, font 2 gray, the one patch the inscribed
+ring leaves free; it names the view ACTUALLY drawn, so a degraded view honestly
+reads `North` and flips back by itself, and it is padded to 5 chars so the
+opaque background erases the previous word — no fillRect on the 200 ms path,
+one-off redraw on change, reset in `initScreen`), RING_GRAY (0xC618) ring + 30° radial
 ticks inside (twice
 as long at 90/180/270, top skipped for the font-2 "N" which moves to the
 true-north angle in heading-up / wind-up view), two solid equilateral-shape minus-5px
@@ -230,7 +235,9 @@ for old scripts, nothing else.
   wind-up puts the wind SOURCE at the top so the no-go arc is centred on 12
   o'clock; the wind arrow, the arc and the N glyph all rotate by the same
   offset, and a view whose input is missing — no COG, no wind — is skipped by
-  the button and drawn as north-up until the input returns),
+  the button and drawn as north-up until the input returns; the view in effect
+  is named in the cell's top-left corner `North`/`Head`/`Wind`, with
+  `/status` `sys.ring` reporting mode vs drawn),
   `2L`→DIAGNOSTICS. RACE: `1S` next, `2S` cycles the **view** Map → Target →
   Auto, `2L` toggles the **bearing** north-up ↔ heading-up, `1L`→MENU.
   DIAGNOSTICS/CONFIG: `1S` back to MAIN.
@@ -474,6 +481,15 @@ for old scripts, nothing else.
   only, once, so a skipper who leaves is not dragged back), and a scripted
   journey will not release a fix until the race screen is up — the mock boat
   simply waits instead of sailing its front unwatched.
+- **`sys.ring` in `/status`** (`{mode, drawn, canHeading, canWind}`): the main
+  ring's view state. `mode` is what `2S` selected, `drawn` is what the dial is
+  actually showing — they differ **exactly** while the mode's input is missing
+  (no COG / no wind), and that difference is invisible in a screen grab (the dial
+  just looks north-up), so it is unguessable from a photo. `canHeading`/`canWind`
+  are the flags the button skips an undrawable view on. Read this instead of
+  counting presses: a press is indistinguishable from a finger on the button
+  when someone is standing at the board, and the third state is skipped outright
+  when there is no wind to show.
 - **Diagnostic logging is rationed on purpose.** The 200-line serial ring
   rolls in ~3 minutes and a race does not fit in it. The start-window trace
   logs only on a CHANGE of side/near (~4 lines per race); an earlier

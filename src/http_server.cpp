@@ -13,6 +13,7 @@
 #include "wifi_manager.h"
 #include "gps_mock.h"
 #include "screens.h"
+#include "screen_speed.h"
 #include "buttons.h"
 #include "server_link.h"
 #include "ota.h"
@@ -739,6 +740,16 @@ static void handleStatus()
     // range never collide; handy when the portal has to be opened by hand.
     sys["ap"] = wifiApSsid();
     sys["nogo"] = noGoArcDeg;
+    // Ring view (2S): `mode` is what the button selected, `drawn` is what the
+    // dial shows. They differ only while the mode's input is missing, and that
+    // is invisible in a screen grab (the dial just looks north-up), so a report
+    // from the water can else only be guessed at. `canHeading`/`canWind` are
+    // exactly the flags the button skips on.
+    JsonObject ring = sys.createNestedObject("ring");
+    ring["mode"] = ringViewModeName();
+    ring["drawn"] = ringViewDrawnName();
+    ring["canHeading"] = ringViewCanHeading();
+    ring["canWind"] = ringViewCanWind();
     // Buzzer key-press feedback; own NVS key ("wifi"/"beepkeys").
     sys["beepOnKeys"] = beepOnKeys;
     // Boot chime; own NVS key ("wifi"/"bootsnd").
