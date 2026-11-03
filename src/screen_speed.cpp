@@ -23,6 +23,7 @@
 #define RED TFT_RED
 #define DARK_RED 0x8000
 #define GRAY 0x7BEF
+#define ORANGE 0xFD20        // #FFA500: the long-press hint colour (olive was invisible)
 #define RING_GRAY 0xC618 // brighter silver - ring circle and ticks (the N is text, so WHITE)
 #define ARC_RED RED      // no-go arc: the SAME red as the wind arrow, by identity
 #define RING_BAND 12     // no-go band thickness in px, inward from the ring (r-RING_BAND..r)
@@ -332,7 +333,7 @@ void drawTopBar(TinyGPSPlus &gps)
   tft.setTextColor(sats > 0 ? sats > MIN_SAT_THRESHOLD ? GREEN : TFT_YELLOW : TFT_RED, BG);
   tft.setTextDatum(TR_DATUM);
   String satStr = (sats < 10) ? "0" + String(sats) : String(sats);
-  tft.drawString(satStr, satRight - 10, 1, 4);
+  tft.drawString(satStr, satRight - 10, 3, 4);
 
 
   // The header's rule stops at the column: the strip crosses the header, so a
@@ -352,6 +353,7 @@ static String lastCenStr = "";
 // words differ in length and there is no fillRect on the 200 ms path.
 static String lastViewStr = "";
 static bool hintsDrawn = false;   // the strip is static text: page init only
+static int hintThirdMode = -1;    // -1 = cell 3 not painted yet (see drawHintThird)
 // Compass cell: angles of the triangles last drawn (view-relative: in
 // heading-up the boat is 0, in wind-up the wind SOURCE is 0). -1 = nothing
 // drawn, -2 = cell not rendered yet (sentinel — forces ring+N+arrows on first
@@ -495,7 +497,13 @@ static void drawSpineWord(int x, int y, const char *word, uint16_t fg)
     glyph.drawString(String(word[k]), 4, 8, 2);
     for (int sy = 0; sy < 16; sy++)
       for (int sx = 0; sx < 8; sx++) {
-        const uint16_t c = glyph.readPixel(sx, sy);
+        // A 16-bit TFT_eSprite keeps its pixels byte-swapped and readPixel()
+        // hands them back in THAT order, while pushImage() sends them straight
+        // out: 0xFD20 (orange) arrived as 0x20FD, i.e. blue. White and grey hid
+        // the bug for two rounds because they are near-symmetric under a byte
+        // swap. Undo it here, so everything downstream sees ordinary RGB565.
+        const uint16_t raw = glyph.readPixel(sx, sy);
+        const uint16_t c = (uint16_t)((raw >> 8) | (raw << 8));
         if (c == BG) continue;
         // 90 deg clockwise: the glyph's top-left corner lands top-right.
         const int dx = BOX_W - 1 - sy;
@@ -509,22 +517,43 @@ static void drawSpineWord(int x, int y, const char *word, uint16_t fg)
 static void drawHints()
 {
   // All caps, two words per button, split by ONE glyph slot of space so the
-  // pair still reads as one rotated run. The short press is the primary layer
-  // (WHITE) and the long press one step back (GRAY): the button's main job is
-  // what you reach for, the long press is the secondary one.
-  static const char *shortW[3] = { "RACE", "BEAR", "PART" };
-  static const char *longW[3]  = { "CFG", "DIAG", "ALL" };
+  // pair still reads as one rotated run. RACE / BEAR (the short press) are the
+  // primary layer in WHITE; the long press is one step back — CFG and DIAG take
+  // ORANGE. Button 3 is not a pair at all: see drawHintThird().
+  static const char *shortW[2] = { "RACE", "BEAR" };
+  static const char *longW[2]  = { "CFG", "DIAG" };
+  static const uint16_t shortC[2] = { WHITE, WHITE };
+  static const uint16_t longC[2]  = { ORANGE, ORANGE };
   if (hintsDrawn) return;   // static text: page init only, never the 200 ms path
   hintsDrawn = true;
   const int cx = HINT_X + HINT_W / 2;      // 465: centre of the spine
-  for (int i = 0; i < 3; i++) {
-    const int cy = (SCR_H * (2 * i + 1)) / 6;         // 53 / 160 / 266
+  for (int i = 0; i < 2; i++) {
+    const int cy = (SCR_H * (2 * i + 1)) / 6;         // 53 / 160
     const int n1 = (int)strlen(shortW[i]);
     const int n2 = (int)strlen(longW[i]);
     const int top = cy - ((n1 + 1 + n2) * 8) / 2;     // whole pair, centred
-    drawSpineWord(cx - 8, top, shortW[i], WHITE);
-    drawSpineWord(cx - 8, top + (n1 + 1) * 8, longW[i], GRAY);
+    drawSpineWord(cx - 8, top, shortW[i], shortC[i]);
+    drawSpineWord(cx - 8, top + (n1 + 1) * 8, longW[i], longC[i]);
   }
+}
+
+// Button 3 does not have a "short press / long press" pair worth printing: 3S
+// toggles the stats between session totals and the partial. So its cell names
+// the state the NEXT press will select — PARTIAL while the session totals are
+// on screen, ALL while the partial is — which is what the sailor actually
+// wants from the label. One word, so the cell is cleared before each repaint
+// (the spine image is opaque but its height follows the word).
+static void drawHintThird(bool showPartial)
+{
+  const int mode = showPartial ? 1 : 0;
+  if (hintThirdMode == mode) return;
+  hintThirdMode = mode;
+  const int cellTop = (SCR_H * 4) / 6;                // 213: the divider above
+  tft.fillRect(HINT_X + 1, cellTop + 1, HINT_W - 2, SCR_H - cellTop - 2, BG);
+  const char *w = showPartial ? "ALL" : "PARTIAL";
+  const int n = (int)strlen(w);
+  const int cy = (SCR_H * 5) / 6;                     // 266: the cell's centre
+  drawSpineWord(HINT_X + (HINT_W - 16) / 2, cy - (n * 8) / 2, w, WHITE);
 }
 
 
@@ -549,10 +578,27 @@ static void drawCompassN(int x, int y, const char* s, uint16_t color)
 // the ticks did not, so neither the boat nor the ring could be read against a
 // tick. The length class keys off the ABSOLUTE d (north/east/south/west), not
 // the rotated screen angle, or the long ticks would travel with the card too.
-static void drawCompassTicks(int cx, int cy, int r, int nDeg, uint16_t color)
+static const int TRI_HALF_DEG = 16;   // angular half-width of a triangle's base
+
+// True when two bearings are within `tol` degrees of each other (any side).
+static bool angleWithin(int a, int b, int tol)
+{
+  if (a < 0 || b < 0) return false;
+  int d = ((a - b) % 360 + 360) % 360;
+  return d <= tol || d >= 360 - tol;
+}
+
+// `skipCentre`/`skipHalf` leave out the no-go sector: inside it the band owns
+// those pixels, and a tick repainted there would ink a silver dash on the red.
+// Pass skipCentre < 0 to draw the whole set (the band is painted afterwards on
+// a ring rotation, so it covers them there).
+static void drawCompassTicks(int cx, int cy, int r, int nDeg, uint16_t color,
+                             int skipCentre = -1, int skipHalf = 0)
 {
   for (int d = 30; d < 360; d += 30) {
-    const double a = ((d + nDeg) % 360) * M_PI / 180.0;
+    const int sa = (d + nDeg) % 360;
+    if (skipCentre >= 0 && angleWithin(sa, skipCentre, skipHalf)) continue;
+    const double a = sa * M_PI / 180.0;
     const double sx = sin(a), cz = cos(a);
     const int ra = r - 2, rb = (d % 90 == 0) ? r - 9 : r - 5;
     tft.drawLine(cx + (int)(ra * sx), cy - (int)(ra * cz),
@@ -932,15 +978,6 @@ static void drawSegReadoutDiff(const String& s, int cx, int cy, int h,
   segPrevValid = true;
 }
 
-static const int TRI_HALF_DEG = 16;   // angular half-width of a triangle's base
-
-// True when two bearings are within `tol` degrees of each other (any side).
-static bool angleWithin(int a, int b, int tol)
-{
-  if (a < 0 || b < 0) return false;
-  int d = ((a - b) % 360 + 360) % 360;
-  return d <= tol || d >= 360 - tol;
-}
 
 void drawSpeed(TinyGPSPlus &gps)
 {
@@ -1011,14 +1048,15 @@ void drawSpeed(TinyGPSPlus &gps)
   // The two row-2 mode labels are the only text whose glyph widths change with
   // the 3S toggle ("Session time" vs "Partial time" are both 12 chars, but not
   // the same 12). Wipe their band once on a mode change so the old string's
-  // edges cannot survive.
+  // edges cannot survive. Only cells 1-2: the wind label does not change with
+  // the mode, so wiping across it just made it blink on every toggle.
   static int lastLabelMode = -1;
   const int labelMode = showPartial ? 1 : 0;
   if (labelMode != lastLabelMode) {
     // From just under the value block to the bottom edge: the value's own clear
     // -out stops at ROW2_VALUE_Y + 24, and a wipe that started any higher would
     // shave the digits' last rows on every 3S toggle.
-    tft.fillRect(1, ROW2_VALUE_Y + 25, ROW2_EDGE[3] - 2,
+    tft.fillRect(1, ROW2_VALUE_Y + 25, ROW2_EDGE[2] - 2,
                  SCR_H - (ROW2_VALUE_Y + 25), BG);
     lastLabelMode = labelMode;
   }
@@ -1126,7 +1164,7 @@ void drawSpeed(TinyGPSPlus &gps)
     if (tag != lastViewStr) {
       tft.setTextColor(WHITE, BG);
       tft.setTextDatum(TL_DATUM);
-      tft.drawString(tag, SPEED_W + 8, BODY_TOP + 2, 2);
+      tft.drawString(tag, SPEED_W + 8, BODY_TOP + 4, 2);
       lastViewStr = tag;
     }
   }
@@ -1212,10 +1250,18 @@ void drawSpeed(TinyGPSPlus &gps)
     if (arcMoved && prevArcDeg >= 0)
       drawNoGoArc(cmpCx, cmpCy, cmpR, prevArcDeg, prevNoGoHalf, BG);
 
-    // A triangle's tip is tangent to the ring, so erasing one shaves the border:
-    // restore the 1px circle (not the ticks, not the N).
+    // A triangle's tip is tangent to the ring, so erasing one shaves the border
+    // — and its footprint reaches r-9..r-2, the same band the ticks live in, so
+    // a passing arrow also wipes whatever tick it lands on. Restore the circle
+    // AND the tick set here, minus the ticks inside the no-go sector (the band
+    // owns those pixels; a tick drawn there would ink a silver dash on the red).
+    // Both triangles are then repainted on top, so a restored tick can never
+    // end up lying across an arrow that did not move.
     if (boatMoved || windMoved || arcMoved || redrawBoat || redrawWind) {
       drawCompassCircle(cmpCx, cmpCy, cmpR);
+      drawCompassTicks(cmpCx, cmpCy, cmpR, nDeg, RING_GRAY, arcDeg, noGoHalf + 2);
+      if (boatDeg >= 0) redrawBoat = true;
+      if (windRel >= 0) redrawWind = true;
     }
     if (ringMoved) {
       if (prevNDeg >= 0) {   // stale N from an old angle
@@ -1241,11 +1287,20 @@ void drawSpeed(TinyGPSPlus &gps)
     // same bearing covers it, and when it moves away the N must come back.
     // Only a ring rotation marks N dirty otherwise, so repair it here — before
     // the shapes, which are then drawn on top as usual.
+    //
+    // Do NOT repair it while a triangle still covers it: the arrow is repainted
+    // over the N immediately afterwards, and the panel's GRAM is visible as it
+    // is written, so drawing a bright white glyph and then covering it is a
+    // visible flash on every arrow repaint (1 Hz). The N only needs to be
+    // repainted when it ends up UNCOVERED — i.e. when the triangle that was
+    // sitting on it has moved off.
     if (redrawBoat || redrawWind) {
-      if (angleWithin(boatDeg, nDeg, pairDeg) ||
-          angleWithin(prevBoatDeg, nDeg, pairDeg) ||
-          angleWithin(windRel, nDeg, pairDeg) ||
-          angleWithin(prevWindDeg, nDeg, pairDeg)) {
+      const bool coveredNow =
+          (boatDeg >= 0 && angleWithin(boatDeg, nDeg, pairDeg)) ||
+          (windRel >= 0 && angleWithin(windRel, nDeg, pairDeg));
+      if (!coveredNow &&
+          (angleWithin(prevBoatDeg, nDeg, pairDeg) ||
+           angleWithin(prevWindDeg, nDeg, pairDeg))) {
         const double na = nDeg * M_PI / 180.0;
         drawCompassN(cmpCx + (int)((cmpR - RING_BAND - 8) * sin(na)),
                      cmpCy - (int)((cmpR - RING_BAND - 8) * cos(na)), "N", WHITE);
@@ -1309,12 +1364,16 @@ void drawSpeed(TinyGPSPlus &gps)
   const int cellWndX = ROW2_CX[2];                  // 305
   const int cellBrgX = ROW2_CX[3];                  // 420
 
+  // The wind count is drawn TRIMMED and centred: the old space padding to 3
+  // chars kept a constant width for ghost reasons but centred the padding, so
+  // "2" sat a character right of the cell's centre. A one-off wipe on a
+  // shrink does that job without lying about the position.
   String wndTxt = "---";
-  if (wndValid) {
-    wndTxt = String(wndKn);
-    while (wndTxt.length() < 3) wndTxt = " " + wndTxt;
-  }
+  if (wndValid) wndTxt = String(wndKn);
   if (wndTxt != lastWndStr) {
+    if (wndTxt.length() < lastWndStr.length())
+      tft.fillRect(ROW2_EDGE[2] + 3, ROW2_VALUE_TOP - 4,
+                   ROW2_EDGE[3] - ROW2_EDGE[2] - 6, ROW2_VALUE_H + 8, BG);
     lastWndStr = wndTxt;
     tft.setTextColor(WHITE, BG);
     tft.setTextDatum(MC_DATUM);
@@ -1361,6 +1420,7 @@ void initScreen() {
   lastCenStr = "";
   lastViewStr = "";   // the page was cleared: repaint the view tag
   hintsDrawn = false; // ...and the hint strip with it
+  hintThirdMode = -1; // button 3's word follows the stats mode
   lastSpdStr = "";
   lastSpdFont = 8;
   lastSpdW = -1;
@@ -1383,9 +1443,7 @@ void drawScreenSpeed(TinyGPSPlus &gps, bool requiresInit)
 
   drawMainGrid();
   drawHints();
-
-  // No hint bar: the buttons are on the right edge of the enclosure, so the
-  // bottom strip belongs to the readouts now (row 2 runs to the panel edge).
+  drawHintThird(showPartial);   // button 3 names the state the next press selects
 }
 
 void screenSpeedButton(
