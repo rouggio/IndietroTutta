@@ -291,20 +291,30 @@ static String lastSesStr = "";
 static String lastWndStr = "";
 static String lastBrgStr = "";
 static String lastCenStr = "";
-// Compass cell: angles of the triangles last drawn (mode-relative: in
-// bearing-up view the boat is 0 and the wind is bearing-relative).
-// -1 = nothing drawn, -2 = cell not rendered yet (sentinel — forces
-// ring+N+arrows on first pass). prevRingUp/prevNDeg track the view mode
-// and the angle where the N glyph was last painted (stale-N clear).
+// Compass cell: angles of the triangles last drawn (view-relative: in
+// heading-up the boat is 0, in wind-up the wind SOURCE is 0). -1 = nothing
+// drawn, -2 = cell not rendered yet (sentinel — forces ring+N+arrows on first
+// pass). prevNDeg tracks the angle where the N glyph was last painted
+// (stale-N clear).
 static int prevBoatDeg = -2;
 static int prevWindDeg = -2;
 static int prevArcDeg = -1;  // no-go arc center last drawn (-1 = none)
 static int prevNoGoHalf = -1; // no-go half-width last drawn (-1 = none)
-static int prevRingUp = -1;
 static int prevNDeg = -1;
-// Ring view: true = bearing-up (boat triangle points to the top, ring
-// rotates), false = N-up (compass). R short toggles; RAM only.
-static bool ringBrgUp = false;
+// Ring view, one rotation offset for the whole dial:
+//   0 north-up    - true north at the top (rot 0)
+//   1 heading-up  - the boat's own COG at the top (rot = COG)
+//   2 wind-up     - the direction the wind comes FROM at the top, so the
+//                   no-go arc is centred at 12 o'clock (rot = wind source)
+// `2S` cycles them; RAM only (a reboot comes back to north-up). A view whose
+// input is missing right now (no COG, no wind) draws as north-up while it is
+// missing and returns by itself when the input does - the MODE is never
+// silently changed by a data gap.
+static int ringView = 0;
+// Availability from the last draw pass, so the button can SKIP a view that
+// cannot be drawn instead of landing on a press with no visible effect.
+static bool ringCanHeading = false;
+static bool ringCanWind = false;
 // Instant speed: last string + font (width changes get a one-off wipe).
 static String lastSpdStr = "";
 static uint8_t lastSpdFont = 8;
@@ -879,9 +889,11 @@ void drawSpeed(TinyGPSPlus &gps)
   // close angles. The center shows the
   // boat/wind angle: 0 when the boat points directly into the wind source
   // and 180 when it sails dead downwind. The 60° no-go arc (3px, dark red) hugs the ring opposite the wind
-  // triangle — where the wind comes FROM. / View mode (R toggle): N-up =
-  // true north at the top; bearing-up = the boat always at the top, wind
-  // + arc shift bearing-relative and the N glyph sits where north is.
+  // triangle — where the wind comes FROM. / View mode (`2S`, three states):
+  // north-up = true north at the top; heading-up = the boat at the top;
+  // wind-up = the wind SOURCE at the top (no-go arc across 12 o'clock). The
+  // wind arrow, the arc and the N glyph all shift by the same rotation, so the
+  // picture is identical in every view — only the reference at the top changes.
   // Repaints ONLY when an angle / the arc / the mode changed: old shapes
   // erased in BG, stale N cleared, ring+N restored, arc + triangles
   // redrawn (arc under, wind under the boat).
@@ -906,20 +918,26 @@ void drawSpeed(TinyGPSPlus &gps)
   const bool wndValid = sesWind || envWind;
   const int wndKn = sesWind ? raceSession.windSpeed : raceSession.envWindSpeed;
   const int wndAbs = wndValid ? ((sesWind ? raceSession.windDir : raceSession.envWindDir) + 180) % 360 : -1;
-  const bool brgUp = ringBrgUp && brgDeg >= 0;  // no bearing → stay N-up
   // Upwind direction (where the wind comes FROM) — no-go arc center,
   // exactly opposite the downwind tip of the red wind triangle. The arc
   // width (total degrees) is the /nogo setting.
   const int noGoHalf = noGoArcDeg / 2;
   const int upwRaw = sesWind ? raceSession.windDir
                    : (envWind ? raceSession.envWindDir : -1);
-  int arcDeg = -1;
-  if (upwRaw >= 0) {
-    arcDeg = (brgUp && brgDeg >= 0) ? (upwRaw - brgDeg + 360) % 360 : upwRaw % 360;
-  }
-  const int boatDeg = brgDeg >= 0 ? (brgUp ? 0 : brgDeg) : -1;
-  const int windRel = wndAbs >= 0 ? (brgUp ? (wndAbs - brgDeg + 360) % 360 : wndAbs) : -1;
-  const int nDeg = brgUp ? (360 - brgDeg) % 360 : 0;
+  // ONE rotation for the whole dial. Every element below is its absolute
+  // bearing minus `rotDeg`, so a new view is a new offset, not a new code path:
+  // north-up 0, heading-up the boat's COG, wind-up the wind SOURCE (which puts
+  // the no-go arc at 12 o'clock and the red wind triangle at 6). A view whose
+  // input is missing draws as north-up (rot 0) for as long as it is missing.
+  ringCanHeading = brgDeg >= 0;
+  ringCanWind = upwRaw >= 0;
+  int rotDeg = 0;
+  if (ringView == 1 && ringCanHeading) rotDeg = brgDeg;
+  else if (ringView == 2 && ringCanWind) rotDeg = upwRaw;
+  const int arcDeg = upwRaw >= 0 ? (upwRaw - rotDeg + 360) % 360 : -1;
+  const int boatDeg = brgDeg >= 0 ? (brgDeg - rotDeg + 360) % 360 : -1;
+  const int windRel = wndAbs >= 0 ? (wndAbs - rotDeg + 360) % 360 : -1;
+  const int nDeg = (360 - rotDeg) % 360;
   int windAngleDeg = -1;
   if (brgDeg >= 0 && upwRaw >= 0) {
     const int rawAngle = (brgDeg - upwRaw + 360) % 360;
@@ -1060,7 +1078,6 @@ void drawSpeed(TinyGPSPlus &gps)
     prevWindDeg = windRel;
     prevArcDeg = arcDeg;
     prevNoGoHalf = noGoHalf;
-    prevRingUp = (int)brgUp;
     prevNDeg = nDeg;
   }
 
@@ -1127,7 +1144,6 @@ void initScreen() {
   prevWindDeg = -2;
   prevArcDeg = -1;
   prevNoGoHalf = -1;
-  prevRingUp = -1;
   prevNDeg = -1;
 }
 
@@ -1161,10 +1177,16 @@ void screenSpeedButton(
         return;
     }
 
-    // Right short: toggle the ring view N-up <-> bearing-up
+    // Right short: cycle the ring view north-up -> heading-up -> wind-up.
+    // A view that cannot be drawn right now is skipped (no COG / no wind), so a
+    // press always changes something; north-up is always available and closes
+    // the loop. RAM only, and a data gap degrades the drawing without losing
+    // the chosen mode (see ringView).
     if (button == Button::Right && event == ButtonEvent::ShortPress) {
-        ringBrgUp = !ringBrgUp;
-        return;
+      if (ringView == 0) ringView = ringCanHeading ? 1 : (ringCanWind ? 2 : 0);
+      else if (ringView == 1) ringView = ringCanWind ? 2 : 0;
+      else ringView = 0;
+      return;
     }
 
 // Right long: jump to the diagnostics screen (2L-only, not part of

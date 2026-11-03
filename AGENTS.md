@@ -153,7 +153,7 @@ narrower; col3 ring cell spans both rows — N-up ring
 top-aligned (diameter = cell width − 8px), RING_GRAY (0xC618) ring + 30° radial
 ticks inside (twice
 as long at 90/180/270, top skipped for the font-2 "N" which moves to the
-true-north angle in bearing-up view), two solid equilateral-shape minus-5px
+true-north angle in heading-up / wind-up view), two solid equilateral-shape minus-5px
 triangles sharing the ring tangent (green boat: tip tangent to the
 ring border, base pushed inward along the bearing; red wind: same size and
 same radial span, tip downwind = windDir+180, so the arrows can overlap at
@@ -225,8 +225,12 @@ for old scripts, nothing else.
 - `1S`-cycle = MAIN → RACE → MAIN (`PAGE_CYCLE=2`; the WAYPOINTS page was REMOVED
   on `feature/remove-waypoints` `9e55584`, flagged-post/delete plumbing
   included). DIAGNOSTICS + CONFIG excluded.
-- MAIN: `1S` next, `1L`→CONFIG, `2S` toggles the ring view N-up ↔ bearing-up
-  (RAM; boat triangle to the top, wind bearing-relative, N at true north),
+- MAIN: `1S` next, `1L`→CONFIG, `2S` cycles the ring view **north-up →
+  heading-up → wind-up** (RAM; heading-up puts the boat's own COG at the top,
+  wind-up puts the wind SOURCE at the top so the no-go arc is centred on 12
+  o'clock; the wind arrow, the arc and the N glyph all rotate by the same
+  offset, and a view whose input is missing — no COG, no wind — is skipped by
+  the button and drawn as north-up until the input returns),
   `2L`→DIAGNOSTICS. RACE: `1S` next, `2S` cycles the **view** Map → Target →
   Auto, `2L` toggles the **bearing** north-up ↔ heading-up, `1L`→MENU.
   DIAGNOSTICS/CONFIG: `1S` back to MAIN.
@@ -260,9 +264,11 @@ for old scripts, nothing else.
   - Naming trap: in `screen_race.cpp` the code's **`viewMode` is the bearing
     axis** and **`focusMode` is the view axis** — the opposite of the words
     above. Read the enum, not the name.
-  - Main-screen ring is a different thing with a confusingly similar label:
-    its `R` toggles N-up ↔ bearing-up where bearing-up puts **the boat's own
-    COG** at the top. The race screen's heading-up points at the *destination*.
+  - Main-screen ring is a different thing with confusingly similar labels: its
+    `2S` cycles north-up → heading-up → **wind-up**, where heading-up puts the
+    boat's own COG at the top and wind-up puts the wind SOURCE at the top (so
+    the no-go arc spans 12 o'clock). The race screen's heading-up points at the
+    *destination*.
 - RACE MENU `RACE/PRACTICE MENU` — rows are BUILT from live state
   (`buildMenuRows`), so you can never be offered an action that makes no
   sense: **Start** only with no session, **Repeat** only when a course is
