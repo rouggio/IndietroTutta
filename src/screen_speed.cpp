@@ -14,6 +14,7 @@
 #include "screen_speed.h"
 
 #include "canvas.h"
+#include "hint_bar.h"
 
 // ==== COLORS ====
 #define BG TFT_BLACK
@@ -23,7 +24,6 @@
 #define RED TFT_RED
 #define DARK_RED 0x8000
 #define GRAY 0x7BEF
-#define ORANGE 0xFD20        // #FFA500: the long-press hint colour (olive was invisible)
 #define RING_GRAY 0xC618 // brighter silver - ring circle and ticks (the N is text, so WHITE)
 #define ARC_RED RED      // no-go arc: the SAME red as the wind arrow, by identity
 #define RING_BAND 12     // no-go band thickness in px, inward from the ring (r-RING_BAND..r)
@@ -204,8 +204,8 @@ static const int ROW2_H = SCR_H - ROW2_Y;     // 102 (to the panel edge)
 //
 // The words are MAIN's words and page-specific on purpose; another page brings
 // its own. Static text: painted once per page init, never on the 200 ms path.
-static const int HINT_W = 29;                      // 4.5 mm: two glyph columns
-static const int HINT_X = SCR_W - HINT_W;          // 451: the column's left edge
+static const int HINT_W = HINT_BAR_W;            // 29 px (4.5 mm): shared hint spine
+static const int HINT_X = HINT_BAR_X;            // 451: the column's left edge
 static const int BODY_W = HINT_X;                  // 451: usable body width
 // Row 1: the speed cell keeps the room its segmented digits need, the ring cell
 // takes the rest - BRG_W = 188, so the dial is untouched at o172.
@@ -352,8 +352,6 @@ static String lastCenStr = "";
 // Padded to 5 chars so the opaque background erases the previous word: the
 // words differ in length and there is no fillRect on the 200 ms path.
 static String lastViewStr = "";
-static bool hintsDrawn = false;   // the strip is static text: page init only
-static int hintThirdMode = -1;    // -1 = cell 3 not painted yet (see drawHintThird)
 // Compass cell: angles of the triangles last drawn (view-relative: in
 // heading-up the boat is 0, in wind-up the wind SOURCE is 0). -1 = nothing
 // drawn, -2 = cell not rendered yet (sentinel — forces ring+N+arrows on first
@@ -438,124 +436,9 @@ static void drawMainGrid()
   for (int i = 1; i < 4; i++) {
     tft.drawFastVLine(ROW2_EDGE[i], ROW2_Y, ROW2_H, GRAY);
   }
-  // The hint column's edge runs the FULL panel height: the strip is the
-  // instrument's spine, crossing the header rather than sitting under it.
-  tft.drawFastVLine(HINT_X, 0, SCR_H, GRAY);
-  // ...and two rules cut that spine into one cell per button, at the thirds of
-  // the panel — the same boundaries the labels are centred between, so a label
-  // can never look like it belongs to the button next to it.
-  for (int i = 1; i < 3; i++) {
-    tft.drawFastHLine(HINT_X, (SCR_H * i) / 3, HINT_W, GRAY);
-  }
+  // The hint spine (rule + the two cell dividers) is shared chrome.
+  hintBarGrid();
 }
-
-// One ROTATED label per PHYSICAL button, at that button's position on the edge:
-// the three are evenly spaced down it, so the labels sit at the thirds of the
-// WHOLE panel (the strip runs the full height, header to bottom edge).
-//
-// The text is a SPINE label - turned 90 degrees, so the word reads top to bottom
-// with each glyph lying on its side - not upright glyphs stacked one under the
-// other. Rotation is what buys the room: "RACE CFG" is 8 glyphs, i.e. 16 px
-// across and 64 px down, where upright letters cost 128 px down AND a second
-// 8 px column beside them. So short press and long press fit one column as one
-// string, split by a single space, in capitals.
-//
-// The words are MAIN's, and page-specific on purpose (that is what makes them
-// worth printing), so another page brings its own three strings.
-// Static text: painted once per page init, never on the 200 ms path.
-
-// Draw `word` turned 90 deg clockwise with its top-left corner at (x, y): the
-// box is 16 px wide and 8 px per glyph tall. The glyph pixels come from a
-// throwaway 16-bit sprite (font 2, one 8x16 cell at a time) which we re-map
-// ourselves, so the result is a plain image and goes out through pushImage -
-// the path the /screen capture already understands. Drawing rotated text
-// directly is not an option: TFT_eSPI rotates per display, not per string, and
-// pushRotated() is non-virtual, i.e. it would bypass the capture target and
-// write to the panel mid-grab.
-static void drawSpineWord(int x, int y, const char *word, uint16_t fg)
-{
-  static const int BOX_W = 16;          // = one font-2 glyph height
-  static const int MAX_CH = 12;         // longest label we will ever print
-  static uint16_t buf[BOX_W * 8 * MAX_CH];
-  static TFT_eSprite glyph(gPanel);
-  static bool glyphReady = false;
-  if (!glyphReady) {
-    glyph.setColorDepth(16);
-    glyphReady = (glyph.createSprite(8, 16) != nullptr);
-  }
-  if (!glyphReady || !word) return;
-  const int n = (int)strlen(word);
-  if (n < 1 || n > MAX_CH) return;
-
-  const int boxH = n * 8;
-  for (int i = 0; i < BOX_W * boxH; i++) buf[i] = BG;
-
-  for (int k = 0; k < n; k++) {
-    glyph.fillSprite(BG);
-    glyph.setTextDatum(MC_DATUM);
-    glyph.setTextColor(fg, BG);
-    glyph.drawString(String(word[k]), 4, 8, 2);
-    for (int sy = 0; sy < 16; sy++)
-      for (int sx = 0; sx < 8; sx++) {
-        // A 16-bit TFT_eSprite keeps its pixels byte-swapped and readPixel()
-        // hands them back in THAT order, while pushImage() sends them straight
-        // out: 0xFD20 (orange) arrived as 0x20FD, i.e. blue. White and grey hid
-        // the bug for two rounds because they are near-symmetric under a byte
-        // swap. Undo it here, so everything downstream sees ordinary RGB565.
-        const uint16_t raw = glyph.readPixel(sx, sy);
-        const uint16_t c = (uint16_t)((raw >> 8) | (raw << 8));
-        if (c == BG) continue;
-        // 90 deg clockwise: the glyph's top-left corner lands top-right.
-        const int dx = BOX_W - 1 - sy;
-        const int dy = k * 8 + sx;
-        buf[dy * BOX_W + dx] = c;
-      }
-  }
-  tft.pushImage(x, y, BOX_W, boxH, buf);
-}
-
-static void drawHints()
-{
-  // All caps, two words per button, split by ONE glyph slot of space so the
-  // pair still reads as one rotated run. RACE / BEAR (the short press) are the
-  // primary layer in WHITE; the long press is one step back — CFG and DIAG take
-  // ORANGE. Button 3 is not a pair at all: see drawHintThird().
-  static const char *shortW[2] = { "RACE", "BEAR" };
-  static const char *longW[2]  = { "CFG", "DIAG" };
-  static const uint16_t shortC[2] = { WHITE, WHITE };
-  static const uint16_t longC[2]  = { ORANGE, ORANGE };
-  if (hintsDrawn) return;   // static text: page init only, never the 200 ms path
-  hintsDrawn = true;
-  const int cx = HINT_X + HINT_W / 2;      // 465: centre of the spine
-  for (int i = 0; i < 2; i++) {
-    const int cy = (SCR_H * (2 * i + 1)) / 6;         // 53 / 160
-    const int n1 = (int)strlen(shortW[i]);
-    const int n2 = (int)strlen(longW[i]);
-    const int top = cy - ((n1 + 1 + n2) * 8) / 2;     // whole pair, centred
-    drawSpineWord(cx - 8, top, shortW[i], shortC[i]);
-    drawSpineWord(cx - 8, top + (n1 + 1) * 8, longW[i], longC[i]);
-  }
-}
-
-// Button 3 does not have a "short press / long press" pair worth printing: 3S
-// toggles the stats between session totals and the partial. So its cell names
-// the state the NEXT press will select — PARTIAL while the session totals are
-// on screen, ALL while the partial is — which is what the sailor actually
-// wants from the label. One word, so the cell is cleared before each repaint
-// (the spine image is opaque but its height follows the word).
-static void drawHintThird(bool showPartial)
-{
-  const int mode = showPartial ? 1 : 0;
-  if (hintThirdMode == mode) return;
-  hintThirdMode = mode;
-  const int cellTop = (SCR_H * 4) / 6;                // 213: the divider above
-  tft.fillRect(HINT_X + 1, cellTop + 1, HINT_W - 2, SCR_H - cellTop - 2, BG);
-  const char *w = showPartial ? "ALL" : "PARTIAL";
-  const int n = (int)strlen(w);
-  const int cy = (SCR_H * 5) / 6;                     // 266: the cell's centre
-  drawSpineWord(HINT_X + (HINT_W - 16) / 2, cy - (n * 8) / 2, w, WHITE);
-}
-
 
 // ---- Ring cell (col 3, spans both rows) --------------------------------
 // "N" glyph on the ring (font 2 — one GLCD step up), centered at (x,y).
@@ -1419,8 +1302,7 @@ void initScreen() {
   lastBrgStr = "";
   lastCenStr = "";
   lastViewStr = "";   // the page was cleared: repaint the view tag
-  hintsDrawn = false; // ...and the hint strip with it
-  hintThirdMode = -1; // button 3's word follows the stats mode
+  hintBarReset();     // ...and the hint spine with it
   lastSpdStr = "";
   lastSpdFont = 8;
   lastSpdW = -1;
@@ -1442,8 +1324,13 @@ void drawScreenSpeed(TinyGPSPlus &gps, bool requiresInit)
   drawSpeed(gps);
 
   drawMainGrid();
-  drawHints();
-  drawHintThird(showPartial);   // button 3 names the state the next press selects
+  // MAIN's three cells. Words are page-specific on purpose: button 1 goes to
+  // RACE (long: CONFIG), button 2 cycles the ring view (long: DIAGNOSTICS), and
+  // button 3 toggles the stats - so its cell names the state the NEXT press
+  // selects, not a pair.
+  hintBarCell(0, "RACE", "CFG", WHITE, HINT_LONG);
+  hintBarCell(1, "BEAR", "DIAG", WHITE, HINT_LONG);
+  hintBarCell(2, showPartial ? "ALL" : "PARTIAL", nullptr, WHITE, WHITE);
 }
 
 void screenSpeedButton(
