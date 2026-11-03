@@ -23,7 +23,7 @@
 #define RED TFT_RED
 #define DARK_RED 0x8000
 #define GRAY 0x7BEF
-#define RING_GRAY 0xC618 // brighter silver — ring, ticks and N (contrast)
+#define RING_GRAY 0xC618 // brighter silver - ring circle and ticks (the N is text, so WHITE)
 #define ARC_RED RED      // no-go arc: the SAME red as the wind arrow, by identity
 #define RING_BAND 12     // no-go band thickness in px, inward from the ring (r-RING_BAND..r)
 
@@ -166,7 +166,57 @@ static bool fixFresh(TinyGPSPlus &gps)
   return age <= FX_STALE_MS && age <= sinceSwitch;
 }
 
-// ====== LAYOUT ======
+// ====== LAYOUT (measured in mm, converted at 6.49 px/mm) ======
+// Panel 74 x 52 mm, 480 x 320 px at rotation 1 -> 480/74 = 6.49 px/mm.
+// (Pixels are square, so 52 mm would be 337 px: the module carries a little
+// bezel; the width is the honest reference, usable height ~49.3 mm.)
+//
+// Row 1 (29 mm = 188 px):  instant speed (left, whatever is left) | bearing
+//                          ring, SQUARE (29 mm = 188 px wide)
+// Row 2 (all that remains, 104 px): four cells - max speed, session time, wind
+//                          speed, bearing. Not equal: the clock takes 136 px.
+// The hint strip (below) takes 4.5 mm off the right edge, so these cells share
+// 451 px instead of 480.
+static const int SCR_W = 480;                 // panel width at rotation 1
+static const int SCR_H = 320;                 // panel height at rotation 1
+static const int MM = 6.49;                   // px per millimetre (nominal)
+static const int TOP_H = 30;                  // 4.6 mm top bar (rule at y=29)
+static const int BODY_TOP = TOP_H;
+static const int ROW1_H = 188;                // 29 mm
+static const int ROW2_Y = BODY_TOP + ROW1_H;  // 218
+static const int ROW2_H = SCR_H - ROW2_Y;     // 102 (to the panel edge)
+
+// ---- hints strip (2026-11-03, branch feature/hint-bar) --------------------
+// A column of labels against the RIGHT EDGE, where the buttons are, running the
+// FULL height of the panel - top edge to bottom edge - so it reads as the
+// instrument's spine and not as a box beside the dial. That is why the top bar
+// is 4 px shorter and its rule stops at the column: the strip crosses it.
+//
+// One group per PHYSICAL button, centred on that button's position on the edge
+// (the three are evenly spaced, so the groups sit at the thirds of the whole
+// panel). The words are WRITTEN VERTICALLY, letters stacked upright: a word
+// costs one glyph of width and 16 px per letter of height, which is the only
+// way a real word fits a 4.5 mm spine. Each button gets TWO columns side by
+// side - short press on the left (white), long press on the right (grey) - so
+// "race/cfg" is one pair at button 1, not one 8-letter string that would need
+// 128 px of a 106 px slot.
+//
+// The words are MAIN's words and page-specific on purpose; another page brings
+// its own. Static text: painted once per page init, never on the 200 ms path.
+static const int HINT_W = 29;                      // 4.5 mm: two glyph columns
+static const int HINT_X = SCR_W - HINT_W;          // 451: the column's left edge
+static const int BODY_W = HINT_X;                  // 451: usable body width
+// Row 1: the speed cell keeps the room its segmented digits need, the ring cell
+// takes the rest - BRG_W = 188, so the dial is untouched at o172.
+static const int SPEED_W = 263;
+static const int BRG_W = BODY_W - SPEED_W;         // 188
+// Row 2 is NOT four equal cells: the session clock needs room for four font-6
+// digits plus a real 15px colon ("12:34" = 123px), which the 120px cell could
+// not hold - that is why it once fell back to font 4 (and then to a tiny font-2
+// colon). 136px gives the clock ~6px of air each side.
+static const int ROW2_EDGE[5] = {0, 100, 236, 336, BODY_W};
+static const int ROW2_CX[4] = {50, 168, 286, 393};   // max | session | wind | brg
+
 void drawTopBar(TinyGPSPlus &gps)
 {
   // left-aligned symbols
@@ -272,16 +322,22 @@ void drawTopBar(TinyGPSPlus &gps)
 
   int sats = (fixFresh(gps) && gps.satellites.isValid()) ? gps.satellites.value() : 0;
 
-  // GPS satellites (top-right)
-  canvasPushImage(tft.width() - 57, 7, 16, 16, icon_sat, TFT_BLACK);
+  // GPS satellites: right-aligned against the hints column now that the strip
+  // runs the full height — the old position was the panel's own corner, which
+  // the column occupies. The icon rides 2 px above the digit line (optically
+  // it was sitting low against them).
+  const int satRight = HINT_X + 4;
+  canvasPushImage(satRight - 57, 5, 16, 16, icon_sat, TFT_BLACK);
 
   tft.setTextColor(sats > 0 ? sats > MIN_SAT_THRESHOLD ? GREEN : TFT_YELLOW : TFT_RED, BG);
   tft.setTextDatum(TR_DATUM);
   String satStr = (sats < 10) ? "0" + String(sats) : String(sats);
-  tft.drawString(satStr, tft.width() - 10, 5, 4);
+  tft.drawString(satStr, satRight - 10, 1, 4);
 
 
-  tft.drawFastHLine(0, 30, tft.width(), GRAY);
+  // The header's rule stops at the column: the strip crosses the header, so a
+  // full-width line would cut through it.
+  tft.drawFastHLine(0, TOP_H - 1, HINT_X, GRAY);
 }
 
 // Cell caches: values redrawn only on change (no flicker), space-padded
@@ -295,6 +351,7 @@ static String lastCenStr = "";
 // Padded to 5 chars so the opaque background erases the previous word: the
 // words differ in length and there is no fillRect on the 200 ms path.
 static String lastViewStr = "";
+static bool hintsDrawn = false;   // the strip is static text: page init only
 // Compass cell: angles of the triangles last drawn (view-relative: in
 // heading-up the boat is 0, in wind-up the wind SOURCE is 0). -1 = nothing
 // drawn, -2 = cell not rendered yet (sentinel — forces ring+N+arrows on first
@@ -331,7 +388,9 @@ static int lastSpdW = -1;    // last drawn readout width  (px)
 static int lastSpdH = -1;    // last drawn readout height (px)
 
 static void drawCellLabel(const char* label, int cx, int y){
-  tft.setTextColor(GRAY, BG);
+  // White, not GRAY: the labels name what the number beside them is, and at
+  // arm's length on a bright deck the dim grey washed out first.
+  tft.setTextColor(WHITE, BG);
   tft.setTextDatum(TC_DATUM);
   tft.drawString(label, cx, y, 2);
 }
@@ -348,64 +407,24 @@ static uint8_t fitValueFont(const String& s, int maxWidth) {
   return tft.textWidth(t, 6) <= maxWidth ? 6 : 4;
 }
 
-// ====== LAYOUT (measured in mm, converted at 6.49 px/mm) ======
-// Panel 74 x 52 mm, 480 x 320 px at rotation 1 -> 480/74 = 6.49 px/mm.
-// (Pixels are square, so 52 mm would be 337 px: the module carries a little
-// bezel; the width is the honest reference, usable height ~49.3 mm.)
-//
-// Row 1 (29 mm = 188 px):  instant speed (left, whatever is left) | bearing
-//                          ring, SQUARE (29 mm = 188 px wide)
-// Row 2 (all that remains,100 px): four equal cells — max speed, session
-//                          time, wind speed, bearing
-// Row 2 (all that remains,100 px): four cells — max speed, session time, wind
-// speed, bearing.
-// The hint strip (below) takes 12 mm off the right edge, so these cells share
-// 402 px instead of 480.
-static const int SCR_W = 480;                 // panel width at rotation 1
-static const int SCR_H = 320;                 // panel height at rotation 1
-static const int MM = 6.49;                   // px per millimetre (nominal)
-static const int TOP_H = 32;                  // 5 mm top bar (separator at y=31)
-static const int BODY_TOP = TOP_H;
-static const int ROW1_H = 188;                // 29 mm
-static const int ROW2_Y = BODY_TOP + ROW1_H;  // 220
-static const int ROW2_H = SCR_H - ROW2_Y;     // 100 (to the panel edge)
 
-// ---- hints strip (2026-11-03, branch feature/hint-bar) --------------------
-// A thin column of press marks against the RIGHT EDGE, where the buttons are.
-// The page has had no hint bar at all since the buttons moved to the edge
-// (2026-11-01); this is not that bar come back — it carries no words. A name
-// written beside a button is read as that button's job, and these buttons
-// change job with the page (MAIN/ RACE/ DIAGNOSTICS/ CONFIG), so any word
-// would be wrong on most pages. What does NOT change is which PRESS is which:
-// short or long. So the strip is one group per physical button — S above L —
-// placed at the button's position on the edge, and nothing else.
-//
-// 3 mm wide (20 px: one font-2 glyph plus air). At 12 mm the words pushed the
-// ring cell down to o124 and the dial's own number to font 4; at 3 mm the dial
-// keeps its o172 and only the speed cell gives up 20 px (its segmented readout
-// re-fits, so the digits just come out a little shorter, never clipped).
-static const int HINT_W = 20;                      // 3 mm
-static const int HINT_X = SCR_W - HINT_W;          // 460: the column's left edge
-static const int BODY_W = HINT_X;                  // 460: usable body width
-// Row 1: the speed cell keeps the room its segmented digits need, the ring cell
-// takes the rest — BRG_W = 188, so the dial is untouched at o172.
-static const int SPEED_W = 272;
-static const int BRG_W = BODY_W - SPEED_W;         // 188
-// Row 2 is NOT four equal cells: the session clock needs room for four font-6
-// digits plus a real 15px colon ("12:34" = 123px), which the 120px cell could
-// not hold — that is why it once fell back to font 4 (and then to a tiny font-2
-// colon). 136px gives the clock ~6px of air each side; max, wind and bearing
-// take the cut for the column.
-static const int ROW2_EDGE[5] = {0, 108, 244, 344, BODY_W};
-static const int ROW2_CX[4] = {54, 176, 294, 402};   // max | session | wind | brg
 
 // Text anchors derived from the cells above.
 static const int SPEED_LABEL_Y = BODY_TOP + 10;                  // 42
 // Centre of the space BELOW the label (label is font 2, 16px): (58+220)/2.
 // Font 8 is 75px tall, so this leaves equal air above and below it.
 static const int SPEED_VALUE_Y = (SPEED_LABEL_Y + 16 + BODY_TOP + ROW1_H) / 2;  // 139
-static const int ROW2_LABEL_Y = ROW2_Y + 12;                     // 232
-static const int ROW2_VALUE_Y = ROW2_Y + ROW2_H * 3 / 5;         // 280
+// Row 2 cell anatomy (2026-11-03): the VALUE sits on top and its LABEL
+// underneath it, against the bottom edge of the panel. The number is what you
+// glance at, so it keeps the big font, and the label anchors the cell instead
+// of wedging itself between the rule and the digits. Block = 48 + 2 + 16 = 66
+// px in a 102 px cell, so the spare air is ABOVE the digits.
+// The value wipes are keyed to ROW2_VALUE_TOP, never to the label: the label
+// now sits where the value's clear-out used to reach.
+static const int ROW2_VALUE_Y = SCR_H - 54;                  // 266: font-6 block centre
+static const int ROW2_LABEL_Y = SCR_H - 28;                  // 292: label top (font 2)
+static const int ROW2_VALUE_TOP = ROW2_VALUE_Y - 24;         // 250: font-6 block top
+static const int ROW2_VALUE_H = 48;                          // font 6 height
 
 static void drawMainGrid()
 {
@@ -417,44 +436,97 @@ static void drawMainGrid()
   for (int i = 1; i < 4; i++) {
     tft.drawFastVLine(ROW2_EDGE[i], ROW2_Y, ROW2_H, GRAY);
   }
-  // The hint column's own edge — it runs the whole body, so the marks read as
-  // a column of the instrument rather than a box drawn around some text.
-  tft.drawFastVLine(HINT_X, BODY_TOP, SCR_H - BODY_TOP, GRAY);
-}
-
-// ---- Hints strip -----------------------------------------------------------
-// One word per PHYSICAL button, written DOWN the column and centred on that
-// button (the three are evenly spaced down the edge, so they sit at the thirds
-// of the body below the top bar).
-//
-// Two things make this fit in 3 mm. Vertical writing: letters stacked upright,
-// so a word costs WIDTH = one glyph and HEIGHT = 16 px per letter ("STATS" is
-// 8 px across, 80 px down) — a horizontal word would need ~50 px across, which
-// is the whole point of the thin column. And the short press only: it is the
-// primary layer, the long press is the secondary one (CONFIG / DIAGNOSTICS /
-// partial reset), and writing both would need 160 px of a 96 px slot.
-//
-// The words are MAIN's. They are page-specific on purpose — that is what makes
-// them worth printing — so a second page needs its own three words here, not a
-// shared list.
-// Static text: painted once per page init, never on the 200 ms path.
-static void drawHints()
-{
-  static const char *words[3] = { "NEXT", "VIEW", "STATS" };
-  const int cx = HINT_X + HINT_W / 2;
-  const int bodyH = SCR_H - BODY_TOP;                    // 288
-  tft.setTextColor(WHITE, BG);
-  tft.setTextDatum(MC_DATUM);
-  for (int i = 0; i < 3; i++) {
-    const char *w = words[i];
-    const int n = strlen(w);
-    const int cy = BODY_TOP + (bodyH * (2 * i + 1)) / 6;  // 80 / 176 / 272
-    const int top = cy - (n * 16) / 2 + 8;                // first glyph centre
-    for (int k = 0; k < n; k++) {
-      tft.drawString(String(w[k]), cx, top + k * 16, 2);
-    }
+  // The hint column's edge runs the FULL panel height: the strip is the
+  // instrument's spine, crossing the header rather than sitting under it.
+  tft.drawFastVLine(HINT_X, 0, SCR_H, GRAY);
+  // ...and two rules cut that spine into one cell per button, at the thirds of
+  // the panel — the same boundaries the labels are centred between, so a label
+  // can never look like it belongs to the button next to it.
+  for (int i = 1; i < 3; i++) {
+    tft.drawFastHLine(HINT_X, (SCR_H * i) / 3, HINT_W, GRAY);
   }
 }
+
+// One ROTATED label per PHYSICAL button, at that button's position on the edge:
+// the three are evenly spaced down it, so the labels sit at the thirds of the
+// WHOLE panel (the strip runs the full height, header to bottom edge).
+//
+// The text is a SPINE label - turned 90 degrees, so the word reads top to bottom
+// with each glyph lying on its side - not upright glyphs stacked one under the
+// other. Rotation is what buys the room: "RACE CFG" is 8 glyphs, i.e. 16 px
+// across and 64 px down, where upright letters cost 128 px down AND a second
+// 8 px column beside them. So short press and long press fit one column as one
+// string, split by a single space, in capitals.
+//
+// The words are MAIN's, and page-specific on purpose (that is what makes them
+// worth printing), so another page brings its own three strings.
+// Static text: painted once per page init, never on the 200 ms path.
+
+// Draw `word` turned 90 deg clockwise with its top-left corner at (x, y): the
+// box is 16 px wide and 8 px per glyph tall. The glyph pixels come from a
+// throwaway 16-bit sprite (font 2, one 8x16 cell at a time) which we re-map
+// ourselves, so the result is a plain image and goes out through pushImage -
+// the path the /screen capture already understands. Drawing rotated text
+// directly is not an option: TFT_eSPI rotates per display, not per string, and
+// pushRotated() is non-virtual, i.e. it would bypass the capture target and
+// write to the panel mid-grab.
+static void drawSpineWord(int x, int y, const char *word, uint16_t fg)
+{
+  static const int BOX_W = 16;          // = one font-2 glyph height
+  static const int MAX_CH = 12;         // longest label we will ever print
+  static uint16_t buf[BOX_W * 8 * MAX_CH];
+  static TFT_eSprite glyph(gPanel);
+  static bool glyphReady = false;
+  if (!glyphReady) {
+    glyph.setColorDepth(16);
+    glyphReady = (glyph.createSprite(8, 16) != nullptr);
+  }
+  if (!glyphReady || !word) return;
+  const int n = (int)strlen(word);
+  if (n < 1 || n > MAX_CH) return;
+
+  const int boxH = n * 8;
+  for (int i = 0; i < BOX_W * boxH; i++) buf[i] = BG;
+
+  for (int k = 0; k < n; k++) {
+    glyph.fillSprite(BG);
+    glyph.setTextDatum(MC_DATUM);
+    glyph.setTextColor(fg, BG);
+    glyph.drawString(String(word[k]), 4, 8, 2);
+    for (int sy = 0; sy < 16; sy++)
+      for (int sx = 0; sx < 8; sx++) {
+        const uint16_t c = glyph.readPixel(sx, sy);
+        if (c == BG) continue;
+        // 90 deg clockwise: the glyph's top-left corner lands top-right.
+        const int dx = BOX_W - 1 - sy;
+        const int dy = k * 8 + sx;
+        buf[dy * BOX_W + dx] = c;
+      }
+  }
+  tft.pushImage(x, y, BOX_W, boxH, buf);
+}
+
+static void drawHints()
+{
+  // All caps, two words per button, split by ONE glyph slot of space so the
+  // pair still reads as one rotated run. The short press is the primary layer
+  // (WHITE) and the long press one step back (GRAY): the button's main job is
+  // what you reach for, the long press is the secondary one.
+  static const char *shortW[3] = { "RACE", "BEAR", "PART" };
+  static const char *longW[3]  = { "CFG", "DIAG", "ALL" };
+  if (hintsDrawn) return;   // static text: page init only, never the 200 ms path
+  hintsDrawn = true;
+  const int cx = HINT_X + HINT_W / 2;      // 465: centre of the spine
+  for (int i = 0; i < 3; i++) {
+    const int cy = (SCR_H * (2 * i + 1)) / 6;         // 53 / 160 / 266
+    const int n1 = (int)strlen(shortW[i]);
+    const int n2 = (int)strlen(longW[i]);
+    const int top = cy - ((n1 + 1 + n2) * 8) / 2;     // whole pair, centred
+    drawSpineWord(cx - 8, top, shortW[i], WHITE);
+    drawSpineWord(cx - 8, top + (n1 + 1) * 8, longW[i], GRAY);
+  }
+}
+
 
 // ---- Ring cell (col 3, spans both rows) --------------------------------
 // "N" glyph on the ring (font 2 — one GLCD step up), centered at (x,y).
@@ -466,6 +538,38 @@ static void drawCompassN(int x, int y, const char* s, uint16_t color)
   tft.drawString(s, x, y, 2);
 }
 
+// Radial ticks every 30 deg of the COMPASS CARD, just inside the ring: short at
+// 30/60/..., twice as long at 90/180/270 (the card's own north is skipped - the
+// N glyph sits there).
+//
+// The ticks are true-bearing marks, so they rotate with the card exactly like
+// the N. The screen angle of absolute bearing d is (d - rotDeg), and nDeg IS
+// rotDeg negated, so (d + nDeg) is that same offset. Leaving them fixed was a
+// second reference fighting the first: in heading-up the N swung round while
+// the ticks did not, so neither the boat nor the ring could be read against a
+// tick. The length class keys off the ABSOLUTE d (north/east/south/west), not
+// the rotated screen angle, or the long ticks would travel with the card too.
+static void drawCompassTicks(int cx, int cy, int r, int nDeg, uint16_t color)
+{
+  for (int d = 30; d < 360; d += 30) {
+    const double a = ((d + nDeg) % 360) * M_PI / 180.0;
+    const double sx = sin(a), cz = cos(a);
+    const int ra = r - 2, rb = (d % 90 == 0) ? r - 9 : r - 5;
+    tft.drawLine(cx + (int)(ra * sx), cy - (int)(ra * cz),
+                 cx + (int)(rb * sx), cy - (int)(rb * cz), color);
+  }
+}
+
+// The ring line is 2 px thick: TFT_eSPI has no pen width, so it is two adjacent
+// circles. The inner one is drawn at r-1 rather than r+1 so the ring grows
+// INWARD: r is the inscribed radius the cell's 8 px margin was measured from,
+// and the ticks (r-2..r-9) stay clear of it either way.
+static void drawCompassCircle(int cx, int cy, int r)
+{
+  tft.drawCircle(cx, cy, r, RING_GRAY);
+  tft.drawCircle(cx, cy, r - 1, RING_GRAY);
+}
+
 // N-up ring, top-aligned in the cell (4px margins); "N" glyph just inside
 // the top — or, in bearing-up view, at the angle where true north sits
 // (`nDeg`, 0 = top). Drawn BEFORE the arrows so the solid triangles cover
@@ -473,21 +577,14 @@ static void drawCompassN(int x, int y, const char* s, uint16_t color)
 // lives in the same repaint step as the triangles.
 static void drawCompassRing(int cx, int cy, int r, int nDeg)
 {
-  tft.drawCircle(cx, cy, r, RING_GRAY);
-  // Radial ticks every 30°, just inside the ring: short at 30/60/...,
-  // twice as long at 90/180/270; 0 (top) is skipped — the N sits there.
-  // Ticks are static ring pixels like the N, repainted by the gate's ring
-  // pass (arrow erases may clip them).
-  for (int d = 30; d < 360; d += 30) {
-    const double a = d * M_PI / 180.0;
-    const double sx = sin(a), cz = cos(a);
-    const int ra = r - 2, rb = (d % 90 == 0) ? r - 9 : r - 5;
-    tft.drawLine(cx + (int)(ra * sx), cy - (int)(ra * cz),
-                 cx + (int)(rb * sx), cy - (int)(rb * cz), RING_GRAY);
-  }
+  drawCompassCircle(cx, cy, r);
+  drawCompassTicks(cx, cy, r, nDeg, RING_GRAY);
   const double a = nDeg * M_PI / 180.0;
-  const int nr = r - RING_BAND - 12;  // inboard of the no-go band
-  drawCompassN(cx + (int)(nr * sin(a)), cy - (int)(nr * cos(a)), "N", RING_GRAY);
+  // N sits hard against the no-go band's inner edge: 12 px gave it a visible
+  // moat that made it read as loose text rather than a mark on the card. 8 px
+  // is exactly half a glyph, so the N's outer edge just touches the band.
+  const int nr = r - RING_BAND - 8;
+  drawCompassN(cx + (int)(nr * sin(a)), cy - (int)(nr * cos(a)), "N", WHITE);
 }
 
 // Upwind no-go arc: ±`half` degrees around `centerDeg` (0 = up), a solid
@@ -866,7 +963,7 @@ void drawSpeed(TinyGPSPlus &gps)
   // centered below — sized for "88.8" (font 8) + margins top and bottom.
   // A 5-char value ("123.4" in km/h) drops to the narrower font 7.
   const int cx = SPEED_W / 2;
-  tft.setTextColor(GRAY, BG);
+  tft.setTextColor(WHITE, BG);
   tft.setTextDatum(TC_DATUM);
   String label = "Speed (" + String(unitLabels[config.speedUnit]) + ")";
 // Font 2 is 16px tall: the label sits just under the top-bar separator
@@ -918,19 +1015,25 @@ void drawSpeed(TinyGPSPlus &gps)
   static int lastLabelMode = -1;
   const int labelMode = showPartial ? 1 : 0;
   if (labelMode != lastLabelMode) {
-    tft.fillRect(1, ROW2_LABEL_Y - 3, ROW2_EDGE[3] - 2, 22, BG);
+    // From just under the value block to the bottom edge: the value's own clear
+    // -out stops at ROW2_VALUE_Y + 24, and a wipe that started any higher would
+    // shave the digits' last rows on every 3S toggle.
+    tft.fillRect(1, ROW2_VALUE_Y + 25, ROW2_EDGE[3] - 2,
+                 SCR_H - (ROW2_VALUE_Y + 25), BG);
     lastLabelMode = labelMode;
   }
 
-  drawCellLabel(showPartial ? "Avg Speed" : "Max Speed", cellMaxX, ROW2_LABEL_Y);  if (maxPadded != lastMaxStr) {
+  if (maxPadded != lastMaxStr) {
     if (maxPadded.length() < lastMaxStr.length())
-      tft.fillRect(ROW2_EDGE[0] + 3, ROW2_LABEL_Y + 15, ROW2_EDGE[1] - ROW2_EDGE[0] - 6, 60, BG);
+      tft.fillRect(ROW2_EDGE[0] + 3, ROW2_VALUE_TOP - 4,
+                   ROW2_EDGE[1] - ROW2_EDGE[0] - 6, ROW2_VALUE_H + 8, BG);
     tft.setTextColor(WHITE, BG);
     tft.setTextDatum(MC_DATUM);
     tft.drawString(maxPadded, cellMaxX, ROW2_VALUE_Y,
                    fitValueFont(maxPadded, ROW2_EDGE[1] - ROW2_EDGE[0] - 4));
     lastMaxStr = maxPadded;
   }
+  drawCellLabel(showPartial ? "Avg Speed" : "Max Speed", cellMaxX, ROW2_LABEL_Y);
 
   // Cell 2: session time (since boot) or the partial's clock (since 3L).
   // One font-6 string, real colon: the cell is 136px and "12:34" is 123px.
@@ -940,17 +1043,17 @@ void drawSpeed(TinyGPSPlus &gps)
   snprintf(sesBuf, sizeof(sesBuf), "%02lu:%02lu",
            (sesSec / 60UL) % 100UL, sesSec % 60UL);
   String sesTxt = String(sesBuf);
-  drawCellLabel(showPartial ? "Partial time" : "Session time", cellSesX, ROW2_LABEL_Y);
   if (sesTxt != lastSesStr) {
     if (sesTxt.length() < lastSesStr.length())
-      tft.fillRect(ROW2_EDGE[1] + 3, ROW2_LABEL_Y + 15,
-                   ROW2_EDGE[2] - ROW2_EDGE[1] - 6, 60, BG);
+      tft.fillRect(ROW2_EDGE[1] + 3, ROW2_VALUE_TOP - 4,
+                   ROW2_EDGE[2] - ROW2_EDGE[1] - 6, ROW2_VALUE_H + 8, BG);
     tft.setTextColor(WHITE, BG);
     tft.setTextDatum(MC_DATUM);
     tft.drawString(sesTxt, cellSesX, ROW2_VALUE_Y,
                    fitValueFont(sesTxt, ROW2_EDGE[2] - ROW2_EDGE[1] - 4));
     lastSesStr = sesTxt;
   }
+  drawCellLabel(showPartial ? "Partial time" : "Session time", cellSesX, ROW2_LABEL_Y);
 
   // Ring cell (col 3, rows 1-2): N-up ring, top-aligned. Boat = green
   // triangle and wind = same-size red triangle; BOTH tips are tangent to
@@ -1021,9 +1124,9 @@ void drawSpeed(TinyGPSPlus &gps)
     String tag = viewNames[effView];
     while (tag.length() < 5) tag += ' ';
     if (tag != lastViewStr) {
-      tft.setTextColor(GRAY, BG);
+      tft.setTextColor(WHITE, BG);
       tft.setTextDatum(TL_DATUM);
-      tft.drawString(tag, SPEED_W + 3, BODY_TOP + 2, 2);
+      tft.drawString(tag, SPEED_W + 8, BODY_TOP + 2, 2);
       lastViewStr = tag;
     }
   }
@@ -1082,11 +1185,23 @@ void drawSpeed(TinyGPSPlus &gps)
           (angleWithin(prevWindDeg, arcDeg, bandDeg) ||
            angleWithin(windRel, arcDeg, bandDeg))) redrawArc = true;
     }
-    if (redrawArc && arcDeg >= 0) {
-      if (angleWithin(windRel, arcDeg, bandDeg) ||
-          angleWithin(prevWindDeg, arcDeg, bandDeg)) redrawWind = true;
-      if (angleWithin(boatDeg, arcDeg, bandDeg) ||
-          angleWithin(prevBoatDeg, arcDeg, bandDeg)) redrawBoat = true;
+    if (redrawArc && (arcDeg >= 0 || prevArcDeg >= 0)) {
+      // The band is ERASED at its previous geometry and repainted at its new
+      // one, so a triangle within reach of EITHER end needs repainting — the
+      // old end is where the erase bit into it. Testing only arcDeg (the new
+      // centre) left a notch in the green arrow every time the band swung away
+      // from it, and a wider /nogo moves the inner edge even when the centre
+      // stands still, hence the larger of the two halves.
+      const int bandBig = ((noGoHalf > prevNoGoHalf) ? noGoHalf : prevNoGoHalf) +
+                          TRI_HALF_DEG;
+      const int centres[2] = { arcDeg, prevArcDeg };
+      for (int c = 0; c < 2; c++) {
+        if (centres[c] < 0) continue;
+        if (angleWithin(windRel, centres[c], bandBig) ||
+            angleWithin(prevWindDeg, centres[c], bandBig)) redrawWind = true;
+        if (angleWithin(boatDeg, centres[c], bandBig) ||
+            angleWithin(prevBoatDeg, centres[c], bandBig)) redrawBoat = true;
+      }
     }
 
     // Erase in reverse z-order: shapes first, then whatever is under them.
@@ -1100,13 +1215,16 @@ void drawSpeed(TinyGPSPlus &gps)
     // A triangle's tip is tangent to the ring, so erasing one shaves the border:
     // restore the 1px circle (not the ticks, not the N).
     if (boatMoved || windMoved || arcMoved || redrawBoat || redrawWind) {
-      tft.drawCircle(cmpCx, cmpCy, cmpR, RING_GRAY);
+      drawCompassCircle(cmpCx, cmpCy, cmpR);
     }
     if (ringMoved) {
       if (prevNDeg >= 0) {   // stale N from an old angle
         const double pa = prevNDeg * M_PI / 180.0;
-        drawCompassN(cmpCx + (int)((cmpR - RING_BAND - 12) * sin(pa)),
-                     cmpCy - (int)((cmpR - RING_BAND - 12) * cos(pa)), " N ", BG);
+        drawCompassN(cmpCx + (int)((cmpR - RING_BAND - 8) * sin(pa)),
+                     cmpCy - (int)((cmpR - RING_BAND - 8) * cos(pa)), " N ", BG);
+        // ...and the ticks, which ride the card too now: a view change leaves
+        // the old ones a whole rotation away from where the new ones land.
+        drawCompassTicks(cmpCx, cmpCy, cmpR, prevNDeg, BG);
       }
       drawCompassRing(cmpCx, cmpCy, cmpR, nDeg);
       // The ring's 30-deg ticks reach inboard to r-9, i.e. INSIDE the band's
@@ -1118,7 +1236,7 @@ void drawSpeed(TinyGPSPlus &gps)
       if (boatDeg >= 0) redrawBoat = true;
     }
 
-    // The N glyph sits at r-RING_BAND-12 = 62px, which is INSIDE a triangle's
+    // The N glyph sits at r-RING_BAND-8 = 66px, which is INSIDE a triangle's
     // radial span (base at r-30 = 56 .. tip at r): a triangle parked on the
     // same bearing covers it, and when it moves away the N must come back.
     // Only a ring rotation marks N dirty otherwise, so repair it here — before
@@ -1129,8 +1247,8 @@ void drawSpeed(TinyGPSPlus &gps)
           angleWithin(windRel, nDeg, pairDeg) ||
           angleWithin(prevWindDeg, nDeg, pairDeg)) {
         const double na = nDeg * M_PI / 180.0;
-        drawCompassN(cmpCx + (int)((cmpR - RING_BAND - 12) * sin(na)),
-                     cmpCy - (int)((cmpR - RING_BAND - 12) * cos(na)), "N", RING_GRAY);
+        drawCompassN(cmpCx + (int)((cmpR - RING_BAND - 8) * sin(na)),
+                     cmpCy - (int)((cmpR - RING_BAND - 8) * cos(na)), "N", WHITE);
       }
     }
 
@@ -1168,6 +1286,13 @@ void drawSpeed(TinyGPSPlus &gps)
       tft.drawString(cenTxt, cmpCx - total / 2 + tw / 2, cmpCy + cenShift, cenFont);
       tft.drawCircle(cmpCx - total / 2 + tw + gap + dotD / 2, cmpCy + cenDotY, 3,
                      windAngleDeg >= 0 ? WHITE : BG);
+      // Caption for the number, inside the dial: "Wind" at the top of the
+      // centre block. It sits at radius 34 while a triangle's base starts at
+      // r-30 = 56, and the number's wipe only reaches +-24, so neither the
+      // arrows nor a value change can touch it - which is why it needs no
+      // erase bookkeeping of its own (it is drawn with the text it captions).
+      tft.setTextColor(WHITE, BG);
+      tft.drawString("Wind", cmpCx, cmpCy - 34, 2);
       lastCenStr = cenTxt;
     }
 
@@ -1183,8 +1308,6 @@ void drawSpeed(TinyGPSPlus &gps)
   // gives the ring the full square.
   const int cellWndX = ROW2_CX[2];                  // 305
   const int cellBrgX = ROW2_CX[3];                  // 420
-  drawCellLabel("Wind (kn)", cellWndX, ROW2_LABEL_Y);
-  drawCellLabel("Bearing", cellBrgX, ROW2_LABEL_Y);
 
   String wndTxt = "---";
   if (wndValid) {
@@ -1218,6 +1341,10 @@ void drawSpeed(TinyGPSPlus &gps)
     tft.drawCircle(cellBrgX - 6 + tft.textWidth(degTxt, brgFont) / 2 + 7,
                    ROW2_VALUE_Y - glyphHalf + 4, 3, brgDeg >= 0 ? WHITE : BG);
   }
+  // Labels last: they sit UNDER their values now, and a value's clear-out runs
+  // before them (it reaches down to the label's first row).
+  drawCellLabel("Wind (kn)", cellWndX, ROW2_LABEL_Y);
+  drawCellLabel("Bearing", cellBrgX, ROW2_LABEL_Y);
 }
 
 void initScreen() {
@@ -1233,6 +1360,7 @@ void initScreen() {
   lastBrgStr = "";
   lastCenStr = "";
   lastViewStr = "";   // the page was cleared: repaint the view tag
+  hintsDrawn = false; // ...and the hint strip with it
   lastSpdStr = "";
   lastSpdFont = 8;
   lastSpdW = -1;

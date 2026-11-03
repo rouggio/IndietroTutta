@@ -1,26 +1,25 @@
 # AGENTS.md — IndietroTutta device firmware (ESP32 v1 / ESP32-S3 v2)
 
-Portable marine GPS instrument: ST7789 240×320 (a 320×480 ST7796S is the v2
-target, not wired yet), 2 buttons on v1 / 3 on v2, GPS UART2, WiFi AP+STA,
-OTA self-update on a per-variant channel. Main screen body = 2 rows × 3 cols:
-instant speed (row 1, cols 1-2), max speed + session time (row 2), wind/bearing
-ring cell (col 3, spans both rows). Top bar (WiFi/data/FX icons + DEV tile when
-server mode is DEV) + bottom hints untouched.
+Portable marine GPS instrument: ST7796 **480×320** on the ESP32-S3 (the only board
+since 2026-11-01; the classic-ESP32 240×320 build is retired), 3 buttons, GPS
+UART2, WiFi AP+STA, OTA self-update on the `/ota/v2` channel. Main screen: top
+bar (WiFi/data/FX tiles + DEV tile when the server mode is DEV, sat count right),
+then row 1 = instant speed + a square bearing-ring cell, row 2 = max speed,
+session time, wind and bearing, plus a hint spine down the right edge naming each
+of the three buttons.
 
 Board-level facts (variants, wiring, flashing, port matrix) live in
 `DEVICE_NOTES.md`; this file is behaviour.
 
 ## Hardware / toolchain
 
-- **Two variants, ONE `src/`** (2026-10-31): one PlatformIO env each, selected with
-  `PIOENV`. `esp32dev` = **v1** (classic ESP32, in the field) stays the default;
-  `esp32s3` = **v2** (ESP32-S3 N16R8: 16 MB QIO flash + 8 MB OPI PSRAM,
-  `default_16MB.csv` dual-OTA). The per-variant differences are the board/flash
-  flags, the **pin map** (`include/board_pins.h`, selected by
-  `-DDEVICE_VARIANT_V2`) and the **display setup header**
-  (`-include include/User_Setup.h`); shared flags/libs live in `[common]`.
-  `make compile|upload|monitor|clean [PIOENV=esp32s3]`, e.g.
-  `make upload PORT=COM3 PIOENV=esp32s3`.
+- **ONE board since 2026-11-01: ESP32-S3 N16R8** (16 MB QIO flash + 8 MB OPI
+  PSRAM, `default_16MB.csv` dual-OTA). The classic-ESP32 (`esp32dev`) env and its
+  buildchain were retired; `platformio.ini` keeps the `[env]` + `[env:esp32s3]`
+  structure so a second variant later is a block, not a refactor, and `PIOENV`
+  defaults to `esp32s3` in the Makefile. `include/board_pins.h` carries the pin
+  map and `include/User_Setup.h` the display setup (`-include`).
+  `make compile|upload|monitor|clean`, e.g. `make upload PORT=COM3`.
   - The S3's only USB is the native CDC/JTAG: the env sets
     `-DARDUINO_USB_CDC_ON_BOOT=1 -DARDUINO_USB_MODE=1`, without which `Serial`
     goes to the unconnected UART0 pins and `/serial` stays empty. A dual-USB S3
@@ -52,16 +51,17 @@ Board-level facts (variants, wiring, flashing, port matrix) live in
     in the enum and the table is built from the macros, so v1 (whose
     `PIN_BTN_THIRD` is -1) compiles the two-button table. `POST /btn` takes
     `b=L|R|3`.
-  - **Display config is per variant**: v1 `include/User_Setup.h` (ST7789
-    240×320, MOSI 23), v2 `include/User_Setup_v2.h` (ST7796_DRIVER 320×480,
+  - **Display config**: `include/User_Setup.h` (ST7796_DRIVER 480×320 — the panel
+    is 320×480 native, drawn at rotation 1,
     CS 10 / MOSI 11 / SCLK 12 / DC 2 / RST 4 — the SPI2-native pins, because
     **the S3 has no GPIO 23**, and driving it produced a dark panel plus two
-    `Invalid pin selected` boot warnings). Rotation is `setRotation(3)` in
-    `screens.cpp` → 480×320 landscape. The **layout is still the 320×240 frame**
-    (`screen_race.cpp`: `MAP_W = 320`, `CELL_EDGE {0,107,213,320}`), so on v2 the
-    UI paints into the top-left corner until that port lands; the driver and
-    geometry are correct, so a panel can be wired and checked now. No backlight
-    control: no `TFT_BL`, the panel's LED is tied to 3.3 V.
+    `Invalid pin selected` boot warnings). Rotation is `TFT_ROTATION 1` in
+    `User_Setup.h` → 480×320 landscape. The **MAIN screen is laid out for
+    480×320** (module list below); `screen_race.*`, `screen_diagnostics.*` and
+    `screen_config.*` still paint the legacy 320×240 frame, so those pages sit in
+    the top-left corner until they are ported — the panel, driver and geometry
+    are correct, only that frame is left. No backlight control: no `TFT_BL`, the
+    panel's LED is tied to 3.3 V.
   - **OTA is split per variant** (`OTA_CHANNEL` in `config.h`, used by
     `ota.cpp`): v1 pulls `/ota`, v2 pulls `/ota/v2`, and `make dist
     PIOENV=esp32s3` stages into `public/ota/v2/`. One shared channel would let a
@@ -143,36 +143,39 @@ new retry path needs the same discipline.
   `/status` `mem` also carries `loopStack` / `backendStack` / `healthStack`
   high-water marks (bytes free at the worst moment since boot).
 
-Key modules: `screens.*` router + 200ms throttle, `screen_speed.*` main
-(body grid 2×3 under the top bar: instant speed cell = row1 cols1-2 —
-"Speed (kn)" label at y=40 + font-8 value centered y=105, font 7 when 5chars
-("123.4"), one-off fillRect wipe y59..148 on width change; `ROW_MID=152` gives
-the speed row 121px; row2 col1 "Max Speed", col2 "Session time" — labels
-font-2 gray at ROW_MID+7, values font-4 at ROW_MID+42, each center-wiped when
-narrower; col3 ring cell spans both rows — N-up ring
-top-aligned (diameter = cell width − 8px), a **view tag in the cell's top-left
-corner** (`North` / `Head` / `Wind`, font 2 gray, the one patch the inscribed
-ring leaves free; it names the view ACTUALLY drawn, so a degraded view honestly
-reads `North` and flips back by itself, and it is padded to 5 chars so the
-opaque background erases the previous word — no fillRect on the 200 ms path,
-one-off redraw on change, reset in `initScreen`), RING_GRAY (0xC618) ring + 30° radial
-ticks inside (twice
-as long at 90/180/270, top skipped for the font-2 "N" which moves to the
-true-north angle in heading-up / wind-up view), two solid equilateral-shape minus-5px
-triangles sharing the ring tangent (green boat: tip tangent to the
-ring border, base pushed inward along the bearing; red wind: same size and
-same radial span, tip downwind = windDir+180, so the arrows can overlap at
-close angles; each with a 4px-thick
-15px color-matched tail; session wind wins, else env wind), center boat/wind
-angle (font 2 + drawn degree ring: 0 dead-on upwind, 180 dead downwind),
-plus the no-go
-arc (9px radial band, pure TFT_RED, width via /nogo, centered on the upwind
-direction opposite the red tip, moves bearing-relative);
-below the ring "Wind (kn)" (x=221) and "BRG" (x=290) gray font-2 labels at
-y=166 + font-4 values at y=187 (wind centered at x-8, bearing right-anchored
-at x+20 with a drawn degree ring at x+26) — all four redraw only on change
-(prev -1/-2 sentinels), one-off fillRect
-wipe only on speed-width change; POS line removed),
+Key modules: `screens.*` router + 200ms throttle, `screen_speed.*` main —
+**480×320** (v2, the only board since 2026-11-01), geometry given in mm at
+6.49 px/mm. Top bar `TOP_H` 30 px (4.6 mm, rule at y=29; WiFi/data/FX/DEV tiles
+left, sat icon+count right-aligned against the hint spine — the icon rides 2 px
+above the digit line). Row 1 (`ROW1_H` 188 px = 29 mm): instant speed cell
+(`SPEED_W` 263: "Speed (kn)" label at `SPEED_LABEL_Y`, segmented value that
+re-fits its font and height to the cell, per-glyph diff + one-off wipe on a
+width change) | SQUARE bearing-ring cell (`BRG_W` 188, dial `cmpR` 86 = o172,
+inscribed with an 8 px margin). Row 2 (`ROW2_Y` 218, 102 px): four cells —
+max speed | session time (136 px: the clock needs it, "12:34" is 123 px) | wind |
+bearing — each a font-6 VALUE with its font-2 label **UNDERNEATH it** (`ROW2_VALUE_Y`
+266, `ROW2_LABEL_Y` 292), and the wipes keyed to `ROW2_VALUE_TOP`, never to the
+label. Right edge: a 29 px (4.5 mm) **hint spine** running the FULL panel height,
+cut into three cells at the panel thirds — one label per physical button, turned
+90° (spine text: letters on their side, read top to bottom), short press WHITE
+and long press GRAY: `RACE CFG`, `BEAR DIAG`, `PART ALL`. It replaces the old
+"No hint bar" rule; the words are page-specific, and RACE/DIAG/CONFIG would need
+their own three (`drawHints()` paints once per page init, `hintsDrawn`).
+Ring cell (spans both rows, `cmpCx` = `SPEED_W` + 94, `cmpCy` = `BODY_TOP` + 94):
+a **2 px** ring line (TFT_eSPI has no pen width, so two adjacent circles at r and
+r-1 — `drawCompassCircle()`), 30° radial ticks that are TRUE-BEARING marks and
+therefore rotate with the card like the N (`d + nDeg`; length class keyed off the
+ABSOLUTE d), the font-2 "N" at `r - RING_BAND - 8` (flush against the no-go band,
+WHITE), two solid triangles sharing the ring tangent (green boat tip at r-1, red
+wind tip downwind = windDir+180, 16°/side base), the no-go band (RING_BAND 12 px,
+`TFT_RED`, width via `/nogo`) and the centre readout under a small WHITE "Wind"
+caption (font 6 boat/wind angle + drawn degree dot; 0 = dead upwind). Zero
+flicker rule: every element is change-detected on its own angle, erased in BG at
+its PREVIOUS geometry and repainted in z-order band → wind → boat, with damage
+propagation in both directions (a moved shape drags its neighbours and the band
+back in) — see the block comment before the gate.
+`screen_race.*` shared RACE/PRAC screen (map viewport = left 4/5; wireframe +
+
 `screen_race.*` shared RACE/PRAC screen (map viewport = left 4/5; wireframe +
 boat triangle/edge-dot + ~1 cm dashed yellow stub toward the next mark (2/3 the
 length of the COG stub) + a cyan dashed stub along the boat's own COG (`gps.course`,
@@ -323,6 +326,15 @@ for old scripts, nothing else.
   A capture re-renders the CURRENT page with `requiresInit`, which has one side
   effect that bites scripts: the CONFIG screen resets its highlight to the first
   row, so count `R` presses from `OTA on boot` after every grab.
+- **A capture desynchronises the PANEL from the change-detect caches, so every
+  grab used to plant a ghost arrow.** `initScreen()` resets `prevBoatDeg`/
+  `prevWindDeg` to -2 while the capture draws into a sprite and never touches the
+  panel; the next 200 ms pass then finds `prevBoatDeg < 0`, SKIPS the erase and
+  paints the new arrow beside the old one — permanently, because from then on
+  prev is the angle drawn, not the angle on screen. `handleScreen()` therefore
+  calls `redrawCurrentPage()` when it finishes (and on a truncated capture): the
+  panel blanks for <=200 ms and repaints, so what is on screen always matches the
+  caches. Anything that resets the state without repainting inherits the same bug.
 - Race screen states: **empty / pre-start / racing / finished**. On the finish
   edge the screen snapshots the result (todo 38): `FINISHED` in green in the
   banner slot and the elapsed time frozen in the header, both held **after the
