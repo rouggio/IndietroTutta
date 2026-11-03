@@ -887,6 +887,7 @@ static void handleScreen()
             gScreenBands = -1;
             gScreenMs    = millis() - t0;
             gScreenBusy  = false;
+            redrawCurrentPage();   // the capture reset the change-detect state anyway
             return; // Content-Length is already out: the caller sees a short body
         }
 
@@ -920,6 +921,16 @@ static void handleScreen()
     gScreenMs   = millis() - t0;
     gScreenOk   = true;
     gScreenBusy = false;
+
+    // A capture is a REPLAY, not a read: the page is redrawn into the sprite and
+    // the panel never sees any of it. But drawScreen(.., requiresInit=true) DID
+    // reset every change-detect cache of the page on the way — so the panel's
+    // pixels and the caches now disagree. Left alone, the next 200 ms pass finds
+    // prevBoatDeg == -2, skips the erase of the arrow that is really there and
+    // paints the new one beside it: a ghost green arrow that never leaves
+    // (prevBoatDeg is the angle drawn, not the angle on screen, from now on).
+    // One clean repaint after the capture puts the two back in step.
+    redrawCurrentPage();
 }
 
 static void handleRedirect()
