@@ -58,6 +58,14 @@ void raceFinishHoldClear()
 }
 static const uint16_t MENU_GRAY = 0x7BEF; // CONFIG gray: menu reference color
 
+// The race menu is a CONFIG-style table (2026-11-04): the LABEL sits at the left
+// of the row and its VALUE is right-aligned against the far edge of the content
+// area, exactly like the settings page — so "Auto distance   100m" lines its
+// numbers up instead of dangling a value in the middle of the row. Rows that
+// are pure actions have no value and simply end before the column.
+static const int MENU_LABEL_X = 18;
+static const int MENU_VALUE_R = HINT_BAR_X - 18;   // 433: right edge of the values
+
 // Frame: full-bleed N/W/E border, south edge +4.
 //
 // Layout rule (todo 37): the map is ONE rectangle and it owns every pixel
@@ -1638,7 +1646,7 @@ enum MenuRow : uint8_t {
 };
 
 static MenuRow menuRows[5];
-static char menuAutoDistLabel[24] = {0};
+static char menuAutoDistVal[12] = {0};
 
 static uint8_t buildMenuRows()
  {
@@ -1651,7 +1659,7 @@ static uint8_t buildMenuRows()
     if (race) menuRows[n++] = MenuResync;
     menuRows[n++] = MenuAutoDist;   // always adjustable
     if (has) menuRows[n++] = MenuAbandon;
-    snprintf(menuAutoDistLabel, sizeof(menuAutoDistLabel), "Auto distance %dm", autoDistM);
+    snprintf(menuAutoDistVal, sizeof(menuAutoDistVal), "%dm", autoDistM);
     return n;
 }
 
@@ -1661,32 +1669,54 @@ static const char* menuRowText(MenuRow r)
         case MenuStart: return "Start practice session";
         case MenuRepeat: return "Repeat last session";
         case MenuResync: return "Resync now";
-        case MenuAutoDist: return menuAutoDistLabel;
+        case MenuAutoDist: return "Auto distance";
         case MenuAbandon: return "Abandon session";
     }
     return "";
+}
+
+// The row's right-hand value: "" when the row is a pure action. Owned by the
+// menu, not the label, so the two columns stay independent.
+static const char* menuRowValue(MenuRow r)
+{
+    return r == MenuAutoDist ? menuAutoDistVal : "";
 }
 
 static void drawRaceMenu(bool full)
 {
     // Same chrome as CONFIG: brand-navy title bar, rows in font 4 with a
     // yellow selection (colour is the ONLY cursor: the old "> " prefix pushed
-    // every label 26 px right and read as clutter at arm's length).
+    // every label 26 px right and read as clutter at arm's length). The bar and
+    // the row band stop at the hint spine, so the column keeps its own pixels
+    // and its cells survive a selection change (same rule as MAIN's header).
     if (full) {
         tft.fillScreen(TFT_BLACK);
-        tft.fillRect(0, 0, tft.width(), 44, brandNavy());
+        tft.fillRect(0, 0, HINT_BAR_X, 44, brandNavy());
         tft.setTextColor(TFT_WHITE, brandNavy());
         tft.setTextDatum(MC_DATUM);
-        tft.drawString("RACE/PRACTICE MENU", tft.width() / 2, 22, 4);
-        tft.drawFastHLine(0, 44, tft.width(), MENU_GRAY);
+        tft.drawString("RACE OPTIONS", HINT_BAR_X / 2, 22, 4);
+        tft.drawFastHLine(0, 44, HINT_BAR_X, MENU_GRAY);
     } else {
-        tft.fillRect(0, 52, tft.width(), 200, TFT_BLACK);
+        tft.fillRect(0, 52, HINT_BAR_X, 200, TFT_BLACK);
     }
     for (uint8_t i = 0; i < menuN; i++) {
+        const uint16_t fg = i == menuSel ? TFT_YELLOW : TFT_WHITE;
+        tft.setTextColor(fg, TFT_BLACK);
         tft.setTextDatum(TL_DATUM);
-        tft.setTextColor(i == menuSel ? TFT_YELLOW : TFT_WHITE, TFT_BLACK);
-        tft.drawString(menuRowText(menuRows[i]), 12, 60 + i * 34, 4);
+        tft.drawString(menuRowText(menuRows[i]), MENU_LABEL_X, 60 + i * 34, 4);
+        const char* v = menuRowValue(menuRows[i]);
+        if (v && v[0]) {
+            tft.setTextDatum(TR_DATUM);
+            tft.drawString(v, MENU_VALUE_R, 60 + i * 34, 4);
+        }
     }
+    // The menu's own spine: 1S (or 1L - anything but the right button) backs
+    // out, 2S walks the rows, 3S picks the highlighted one. Only the open
+    // transition is a full clear, so the cells repaint themselves here.
+    hintBarGrid();
+    hintBarCell(0, "BACK", nullptr, TFT_WHITE, TFT_WHITE);
+    hintBarCell(1, "SELECT", nullptr, TFT_WHITE, TFT_WHITE);
+    hintBarCell(2, "PICK", nullptr, TFT_WHITE, TFT_WHITE);
 }
 
 static void menuClose()
@@ -1743,18 +1773,26 @@ static void drawCourseOptions()
 
     const int g = practicePrefs().gunSec;
     const int d = practicePrefs().distM;
-    char rowG[28], rowD[28];
-    snprintf(rowG, sizeof(rowG), "Gun      %d:%02d", g / 60, g % 60);
-    snprintf(rowD, sizeof(rowD), "Distance %3d m", d);
+    char valG[16], valD[16];
+    snprintf(valG, sizeof(valG), "%d:%02d", g / 60, g % 60);
+    snprintf(valD, sizeof(valD), "%3d m", d);
 
-    tft.setTextDatum(TL_DATUM);
-    tft.setTextColor(optRow == 0 ? TFT_YELLOW : RFG, RBG);
-    tft.drawString(rowG, bx + 12, by + 46, 2);
-    tft.setTextColor(optRow == 1 ? TFT_YELLOW : RFG, RBG);
-    tft.drawString(rowD, bx + 12, by + 76, 2);
+    // Label left, value right-aligned — the same two-column split as the race
+    // menu and CONFIG, so the numbers line up on their own instead of leaning on
+    // hand-padded spaces inside one string.
+    const int lx = bx + 14, vr = bx + bw - 14;
+    for (int row = 0; row < 2; row++) {
+        const int y = by + (row == 0 ? 46 : 76);
+        tft.setTextColor(optRow == row ? TFT_YELLOW : RFG, RBG);
+        tft.setTextDatum(TL_DATUM);
+        tft.drawString(row == 0 ? "Gun" : "Distance", lx, y, 2);
+        tft.setTextDatum(TR_DATUM);
+        tft.drawString(row == 0 ? valG : valD, vr, y, 2);
+    }
 
     tft.setTextColor(RDIM, RBG);
-    tft.drawString("course placed upwind of you", bx + 12, by + 116, 2);
+    tft.setTextDatum(TL_DATUM);
+    tft.drawString("course placed upwind of you", lx, by + 116, 2);
 }
 
 // Course browse list (below header; map frozen behind it). Repainted on
@@ -1894,8 +1932,7 @@ static void menuConfirm()
             break;
         case MenuAutoDist: {
             int nv = autoDistNext();
-            snprintf(menuAutoDistLabel, sizeof(menuAutoDistLabel),
-                     "Auto distance %dm", nv);
+            snprintf(menuAutoDistVal, sizeof(menuAutoDistVal), "%dm", nv);
             showTransient("AUTO DIST");
             menuDirty = true;
             return; // stay in menu, like config rows
@@ -1922,6 +1959,22 @@ static void menuConfirm()
 static void raceHints()
 {
     hintBarGrid();
+    // A practice setup owns the buttons while it is open, so the page's words
+    // would be a lie there: list = 1S close, 2S next course, 3S into the options;
+    // options = 1S move between the two rows, 1L back to the list, 2S change the
+    // highlighted value, 3S start.
+    if (courseOpen) {
+        if (courseView == 1) {
+            hintBarCell(0, "ROW", "BACK", TFT_WHITE, HINT_LONG);
+            hintBarCell(1, "CHANGE", nullptr, TFT_WHITE, TFT_WHITE);
+            hintBarCell(2, "START", nullptr, TFT_WHITE, TFT_WHITE);
+        } else {
+            hintBarCell(0, "BACK", nullptr, TFT_WHITE, TFT_WHITE);
+            hintBarCell(1, "NEXT", nullptr, TFT_WHITE, TFT_WHITE);
+            hintBarCell(2, "PICK", nullptr, TFT_WHITE, TFT_WHITE);
+        }
+        return;
+    }
     if (raceSession.valid) {
         hintBarCell(0, "MAIN", "MENU", TFT_WHITE, HINT_LONG);
         hintBarCell(1, "VIEW", "BEAR", TFT_WHITE, HINT_LONG);

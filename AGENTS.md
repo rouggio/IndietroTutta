@@ -168,8 +168,10 @@ one cell only, so no `requiresInit` bookkeeping is needed, but a FULL-SCREEN
 clear (page switch, `/screen` grab, the race menu's `fillScreen`) must call
 `hintBarReset()` or the warm cache leaves a blank column. MAIN: `RACE CFG` /
 `BEAR DIAG` / `PARTIAL` (`ALL` when a partial is running), RACE: `MAIN MENU` /
-`VIEW BEAR` (and `MENU` alone when there is no session), CONFIG: `BACK OTA` /
-`SELECT` / `TOGGLE`. **The renderer advances by each glyph's MEASURED width**
+`VIEW BEAR` (and `MENU` alone when there is no session), `RACE OPTIONS` menu:
+`BACK` / `SELECT` / `PICK`, course picker: `BACK` / `NEXT` / `PICK`, course
+options: `ROW`+`BACK` / `CHANGE` / `START`, CONFIG: `BACK OTA` / `SELECT` /
+`TOGGLE`. **The renderer advances by each glyph's MEASURED width**
 (`spineCharW`/`spineLen`): a fixed 8 px step out of an 8 px sprite shaved the wide
 font-2 letters, so `MENU` came out with its stems cut — the sprite is now 16 px
 and the box length is the word's own advance.
@@ -295,18 +297,25 @@ for old scripts, nothing else.
     boat's own COG at the top and wind-up puts the wind SOURCE at the top (so
     the no-go arc spans 12 o'clock). The race screen's heading-up points at the
     *destination*.
-- RACE MENU `RACE/PRACTICE MENU` — rows are BUILT from live state
+- RACE MENU **`RACE OPTIONS`** (renamed from `RACE/PRACTICE MENU` 2026-11-04) —
+  rows are BUILT from live state
   (`buildMenuRows`), so you can never be offered an action that makes no
   sense: **Start** only with no session, **Repeat** only when a course is
   remembered and the session is not a committee race, **Resync** only in a
-  race, **Abandon** only with a session. `R` cycles, `RR` picks, `L` backs out.
-- PRACTICE SETUP: Start → course picker (`R` next, `RR` choose, `L` back;
+  race, **Abandon** only with a session. `2S` walks the rows, `3S` picks, `1S`
+  backs out. It is a **CONFIG-style table** — label left at `MENU_LABEL_X` 18,
+  value right-aligned at `MENU_VALUE_R` 433 (`Auto distance` is the only row
+  with one) — and it carries its own spine: `BACK` / `SELECT` / `PICK`.
+- PRACTICE SETUP: Start → course picker (`2S` next, `3S` choose, `1S` back;
   pre-selected on the remembered course, else Windward-Leeward) → **Options**
-  (`R` cycles the highlighted row's value, `L` moves between the two rows,
-  `LL` back to the list, `RR` start). Gun 10/30/60/120/300s, line 10/20/30m;
+  (`2S` cycles the highlighted row's value, `1S` moves between the two rows,
+  `1L` back to the list, `3S` start). Gun 10/30/60/120/300s, line 10/20/30m;
   the line sits `distM` metres UPWIND of the boat. Values + course are
   remembered in NVS (`race` ns `prefCourse`/`prefGun`/`prefDist`) and are
-  written **only on confirm**, so browsing never changes a default.
+  written **only on confirm**, so browsing never changes a default. Both boxes
+  live inside the body and are **two-column tables** (label left, value
+  right-aligned), and each has its own spine: picker `BACK`/`NEXT`/`PICK`,
+  options `ROW`+`BACK`/`CHANGE`/`START`.
 - Confirming a practice start does BOTH: builds the local session (countdown
   to `startTime = now + gun`) and `POST /sessions` on the backend task with
   `courseId` + placement + `startTime` + this boat, so the session is real on
