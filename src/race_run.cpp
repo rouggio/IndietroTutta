@@ -208,7 +208,7 @@ void raceRunReset()
     wrongRun = 0;
     wrongRunMark = 255;
     legReset(progIdx);
-    strncpy(runResult, "FINISHED", sizeof(runResult) - 1);
+    snprintf(runResult, sizeof(runResult), "%s", "FINISHED");
     scpSec = 0;
     evCount = 0;
     wrongFlag = false;

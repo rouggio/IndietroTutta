@@ -117,9 +117,9 @@ static const int CELL_CX[3] = {(CELL_EDGE[0] + CELL_EDGE[1]) / 2,
 static const int BAND_Y = 288;
 static const int BAND_H = 30;
 static const int BAND_BANNER_Y = BAND_Y + 2;  // TC top of a font-4 banner
-// Right values pane: 1/5 width, six mini-labeled rows filling the height.
-static const int PANE_X = 256;
-static const int PANE_W = 64;
+// The values pane (1/5 width, six mini-labelled rows) is GONE (2026-11-04): the
+// readouts moved into the header row, and the map owns the body. PANE_TOP/PANE_H
+// survive because the empty state still clears from the top edge.
 static const int PANE_TOP = 1;                 // starts at the very top (under the 1px frame)
 static const int PANE_H = WIRE_Y1 - PANE_TOP;  // fills down to the map bottom
 // Top edge of pane row r (6 equal rows filling the pane, no top gap).
@@ -491,25 +491,6 @@ static void drawRoundArrows(int cx, int cy, int rr, char side, uint16_t color)
     }
 }
 
-// Small wind arrow at (cx,cy): points toward `fromDeg` (the direction the
-// wind comes FROM, meteorological) with a barbed head at the tip.
-static void drawWindArrow(int cx, int cy, int fromDeg, int r, uint16_t color)
-{
-    const double a = fromDeg * M_PI / 180.0;
-    const double sx = sin(a), cz = cos(a);
-    const int tx = cx + (int)(r * sx), ty = cy - (int)(r * cz); // tip (upwind)
-    const int bx = cx - (int)(r * sx), by = cy + (int)(r * cz); // tail
-    tft.drawLine(bx, by, tx, ty, color);
-    // Head: two barbs off the tip, unit tail-ward vector rotated ±25°.
-    const double ux = -sx, uy = cz;
-    const double hd = r * 0.5;
-    for (double s = -25.0; s <= 25.0; s += 50.0) {
-        const double w = s * M_PI / 180.0;
-        const double rx = ux * cos(w) - uy * sin(w);
-        const double ry = ux * sin(w) + uy * cos(w);
-        tft.drawLine(tx, ty, tx + (int)(rx * hd), ty + (int)(ry * hd), color);
-    }
-}
 // pre-start = start, racing = marks[progIdx], finished = finish).
 // Current target identity for map highlighting (mirrors nextDestination:
 // pre-start = start, racing = marks[progIdx], finished = finish).
@@ -1038,7 +1019,9 @@ static void drawStaticLayer(const RaceProj& p, double rotEff,
                 (tGate && pj.type == RaceMarkGate && pj.gate[0] &&
                  strcmp(pj.gate, tGateId) == 0) ||
                 (!tGate && !tLine && j == tIdx);
-            char idx[4];
+            // Two digits max, but the buffer is sized for the %d contract so a
+            // course with >99 marks cannot truncate silently.
+            char idx[12];
             snprintf(idx, sizeof(idx), "%d", j + 1);
             tft.setTextDatum(ML_DATUM);
             tft.setTextColor(jTgt ? RBOAT : RDIM, RBG);

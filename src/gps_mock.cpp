@@ -52,13 +52,6 @@ void gpsMockSet(bool on)
     bufferedSerialPrintln(on ? "[MOCK] mock GPS on" : "[MOCK] mock GPS off");
 }
 
-static uint8_t nmeaChecksum(const char* s)
-{
-    uint8_t cs = 0;
-    while (*s) cs ^= (uint8_t)(*s++);
-    return cs;
-}
-
 // Decimal degrees → NMEA dm.mmmm + hemisphere. Returns chars written.
 static void fmtLat(double lat, char* buf, size_t n, char& hemi)
 {

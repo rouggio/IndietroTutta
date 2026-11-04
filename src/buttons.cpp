@@ -8,19 +8,20 @@ struct ButtonState {
     bool pressed;
     bool longPressDetected;
     unsigned long pressStart;
-    unsigned long lastDebounce;
 };
 
-static const unsigned long DEBOUNCE_MS = 50;
+// No debounce timer: the edge test is (level changed since the last poll) and the
+// loop runs every few ms, so a real bounce can at most tick `soundButtonPress()`
+// twice — the old DEBOUNCE_MS/lastDebounce pair was never read.
 static const unsigned long LONG_PRESS_MS = 500;
 
 // Order MUST match the Button enum (the index is cast back to Button).
 // PIN_BTN_THIRD is negative on v1, where the third button does not exist.
 static ButtonState buttons[] = {
-    { .pin = PIN_BTN_LEFT,  .pressed = false, .longPressDetected = false, .pressStart = 0, .lastDebounce = 0 }, // Left
-    { .pin = PIN_BTN_RIGHT, .pressed = false, .longPressDetected = false, .pressStart = 0, .lastDebounce = 0 }, // Right
+    { .pin = PIN_BTN_LEFT,  .pressed = false, .longPressDetected = false, .pressStart = 0 }, // Left
+    { .pin = PIN_BTN_RIGHT, .pressed = false, .longPressDetected = false, .pressStart = 0 }, // Right
 #if PIN_BTN_THIRD >= 0
-    { .pin = PIN_BTN_THIRD, .pressed = false, .longPressDetected = false, .pressStart = 0, .lastDebounce = 0 }, // Third
+    { .pin = PIN_BTN_THIRD, .pressed = false, .longPressDetected = false, .pressStart = 0 }, // Third
 #endif
 };
 

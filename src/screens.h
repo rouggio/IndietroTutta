@@ -3,11 +3,6 @@
 #include <TinyGPSPlus.h>
 #include "buttons.h"
 
-enum class UIState {
-    Screens,
-    Menu
-};
-
 // The top-level pages cycle with a left short click.
 // The config page is a jump target from MAIN (left long) and is
 // exited with a left short click back to MAIN.
@@ -17,11 +12,6 @@ enum ScreenPage {
     PageRace = 2,
     PageConfig = 3
 };
-
-// Number of pages in the L-short cycle. DIAGNOSTICS and CONFIG are
-// intentionally excluded — reachable only via speed-screen gestures
-// (RR = diagnostics, LL = config).
-static constexpr int PAGE_CYCLE = 2;
 
 // Currently displayed page (read by the /screen capture path).
 extern ScreenPage page;

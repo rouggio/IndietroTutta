@@ -13,7 +13,8 @@
 #include <SPI.h>
 #include <string.h>
 
-static UIState uiState = UIState::Screens;
+// (the old `UIState uiState` switch stood here; nothing ever read it - the page
+// router is `page`/`screenLoop`, and every overlay owns its own flag.)
 
 // (Full-screen messages centre themselves on tft.width()/height(); the old
 // 320x240 CX/CY constants are gone with that panel.)

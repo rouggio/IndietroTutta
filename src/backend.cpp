@@ -724,9 +724,9 @@ void backendLoop(TinyGPSPlus &gps)
         gps.speed.knots(),
         gps.course.deg(),
         gps.altitude.meters(),
-        gps.satellites.value()
+        (int)gps.satellites.value(),
+        mock // simulated
     };
-    w.simulated = mock;
 
     enqueueWork(w);
 }

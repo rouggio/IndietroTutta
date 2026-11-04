@@ -253,7 +253,7 @@ void practicePrefsLoad()
     sPrefs.placeAhead = prefs.getInt("prefAhead", 0) != 0;
     prefs.end();
     // Snap a stale/hand-edited value back to the offered set.
-    unsigned gi = 0, di = 0;
+    unsigned gi = 0;
     while (gi + 1 < sizeof(PRACTICE_GUNS) / sizeof(PRACTICE_GUNS[0]) && PRACTICE_GUNS[gi] != sPrefs.gunSec) gi++;
     unsigned dj = 0;
     while (dj + 1 < sizeof(PRACTICE_DISTS) / sizeof(PRACTICE_DISTS[0]) && PRACTICE_DISTS[dj] != sPrefs.distM) dj++;
@@ -337,8 +337,8 @@ bool courseStartSession(uint8_t i, double boatLat, double boatLon, long nowEpoch
     RaceSession next;
     next.valid = true;
     next.sessionId = -1; // until the backend hands back a real id
-    strncpy(next.mode, "practice", sizeof(next.mode) - 1);
-    strncpy(next.status, "scheduled", sizeof(next.status) - 1);
+    snprintf(next.mode, sizeof(next.mode), "%s", "practice");
+    snprintf(next.status, sizeof(next.status), "%s", "scheduled");
     next.startTime = nowEpoch + p.gunSec; // the gun the countdown runs to
     next.windDir = place; // the frame the shape was just resolved in (see above)
     next.windSpeed = practiceWindSpeed();

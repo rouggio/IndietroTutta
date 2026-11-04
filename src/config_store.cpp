@@ -287,7 +287,8 @@ bool loadWiFiNetwork(
         ssidSize
     );
 
-    size_t passLen = prefs.getString(
+    // (the password length is not used: an empty password is a valid one)
+    prefs.getString(
         passKey,
         password,
         passwordSize

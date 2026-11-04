@@ -178,9 +178,7 @@ static bool fixFresh(TinyGPSPlus &gps)
 //                          speed, bearing. Not equal: the clock takes 136 px.
 // The hint strip (below) takes 4.5 mm off the right edge, so these cells share
 // 451 px instead of 480.
-static const int SCR_W = 480;                 // panel width at rotation 1
 static const int SCR_H = 320;                 // panel height at rotation 1
-static const int MM = 6.49;                   // px per millimetre (nominal)
 static const int TOP_H = 30;                  // 4.6 mm top bar (rule at y=29)
 static const int BODY_TOP = TOP_H;
 static const int ROW1_H = 188;                // 29 mm
@@ -204,7 +202,6 @@ static const int ROW2_H = SCR_H - ROW2_Y;     // 102 (to the panel edge)
 //
 // The words are MAIN's words and page-specific on purpose; another page brings
 // its own. Static text: painted once per page init, never on the 200 ms path.
-static const int HINT_W = HINT_BAR_W;            // 29 px (4.5 mm): shared hint spine
 static const int HINT_X = HINT_BAR_X;            // 451: the column's left edge
 static const int BODY_W = HINT_X;                  // 451: usable body width
 // Row 1: the speed cell keeps the room its segmented digits need, the ring cell
@@ -688,27 +685,6 @@ static void segDigitMask(int x, int y, int w, int h, uint8_t m, uint16_t c)
   if (m & 0b0010000) segBarV(xl, y1 + 1, y2, t, c);  // e
   if (m & 0b0100000) segBarV(xl, y0, y1 - 1, t, c);  // f
   if (m & 0b1000000) segBarH(xl, xr, y1, t, c);  // g
-}
-
-static void segDigit(int x, int y, int w, int h, char ch, uint16_t c)
-{
-  uint8_t m;
-  switch (ch) {
-    case '0': m = 0b0111111; break;
-    case '1': m = 0b0000110; break;
-    case '2': m = 0b1011011; break;
-    case '3': m = 0b1001111; break;
-    case '4': m = 0b1100110; break;
-    case '5': m = 0b1101101; break;
-    case '6': m = 0b1111101; break;
-    case '7': m = 0b0000111; break;
-    case '8': m = 0b1111111; break;
-    case '9': m = 0b1101111; break;
-    case '-': m = 0b1000000; break;   // middle bar: the no-fix placeholder
-    default:  m = 0; break;           // space / anything else: nothing
-  }
-  if (!m) return;
-  segDigitMask(x, y, w, h, m, c);
 }
 
 // Cell width of one glyph at height h.

@@ -82,7 +82,9 @@ Board-level facts (variants, wiring, flashing, port matrix) live in
 - Display ST7789 CS5 DC2 RST4 MOSI23 SCLK18, rotation 3, `TFT_BGR` in `platformio.ini`.
   Pins in `include/User_Setup.h` force-included via `-DUSER_SETUP_LOADED -include`.
 - Buttons GPIO21=Left GPIO22=Right (v1); the map lives in `include/board_pins.h`
-  (`PIN_BTN_LEFT/RIGHT/THIRD`), active-low, 50ms debounce, 500ms long-press.
+  (`PIN_BTN_LEFT/RIGHT/THIRD`), active-low, edge-detected, 500 ms long-press. There
+  is **no debounce timer**: the old `DEBOUNCE_MS`/`lastDebounce` pair was never
+  read and is gone (a bounce can at most tick the press sound twice).
 - Buzzer `PIN_SOUND` (`sound.h`): 19 on v1, **47 on v2** — never 19/20 on an S3.
 - GPS UART2 RX16 TX17 @9600, parsed by TinyGPSPlus in `gps.cpp`.
 - **Power: 3.3 V buck-boost, NOT a 5→3.3 V linear regulator (changed 2026-10-21).**
