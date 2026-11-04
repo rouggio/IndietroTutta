@@ -22,22 +22,16 @@ static const uint16_t RBG = TFT_BLACK;
 static const uint16_t RFG = TFT_WHITE;
 static const uint16_t RDIM = 0x8410; // neutral gray
 static const uint16_t RBOAT = TFT_YELLOW;
-// Second dynamic segment (todo 39): the boat's own course over ground. Cyan is
-// the one bright colour this screen does not already spend — yellow is the
-// boat, the mark circles and the target stub, green the course lines, red the
-// buoys themselves (todo 43; the first red OBJECT on this map, which used to be
-// alerts only) and red every alert — so the two stubs are distinguishable
-// without a legend.
-static const uint16_t RCOG = TFT_CYAN;
 // Below this the COG is noise: gps.course is direction of TRAVEL (there is no
-// compass on the device), so at rest it wanders around the mast. The stub is
-// then simply absent instead of pointing somewhere that means nothing.
+// compass on the device), so at rest it wanders around the mast. The arrow tail
+// is then simply absent instead of pointing somewhere that means nothing.
 static const double COG_MIN_KN = 0.5;
-// Both dynamic stubs: the length is what tells them apart at a glance as much
-// as the colour. The destination stub is 2/3 of the COG stub's length
-// (2026-10-20, user) — 40 * 2/3 = 26.7, kept as 27 px.
-static const int STUB_PX = 40;      // the boat's own COG
-static const int STUB_DEST_PX = 27; // toward the destination
+// The boat's arrow tail. There used to be two stubs from the boat (a yellow
+// dashed one toward the destination and a cyan dashed one along the COG); both
+// went on 2026-11-04 - the fit and the target ring say where the mark is, and the
+// boat now carries ONE solid tail behind it, making the pair read as an arrow
+// pointing where the boat is actually going.
+static const int STUB_PX = 40;
 
 // Finished-race hold (todo 38). The backend stops pushing a session the moment
 // it derives `finished` — i.e. right after our run uploads — and the page then
@@ -325,24 +319,33 @@ static void buildFitProjection(RaceProj& p, double rotDeg,
     p.cosLat = cos(p.lat0 * M_PI / 180.0);
     if (p.cosLat < 0.2) p.cosLat = 0.2;
 
-    double pts[3][2] = {{boatLat, boatLon}, {tgtLat, tgtLon}, {prevLat, prevLon}};
+    const double pts[3][2] = {{boatLat, boatLon}, {tgtLat, tgtLon}, {prevLat, prevLon}};
     const int n = havePrev ? 3 : 2;
-    double rminx = 1e9, rmaxx = -1e9, rminy = 1e9, rmaxy = -1e9;
+    double r[3][2];
     for (int i = 0; i < n; i++) {
         const double dE = (pts[i][1] - p.lon0) * p.cosLat;
         const double dN = pts[i][0] - p.lat0;
-        const double er = dE * p.cosH - dN * p.sinH;
-        const double nr = dE * p.sinH + dN * p.cosH;
-        if (er < rminx) rminx = er;
-        if (er > rmaxx) rmaxx = er;
-        if (nr < rminy) rminy = nr;
-        if (nr > rmaxy) rmaxy = nr;
+        r[i][0] = dE * p.cosH - dN * p.sinH;
+        r[i][1] = dE * p.sinH + dN * p.cosH;
+    }
+    // The frame looks AHEAD: the target pulls the centre 2:1 against the boat
+    // (user, 2026-11-04), so the mark has room around it and the boat sits nearer
+    // the edge - the leg is what you are sailing to, not what you are leaving.
+    const double cxr = (2.0 * r[1][0] + r[0][0]) / 3.0;
+    const double cyr = (2.0 * r[1][1] + r[0][1]) / 3.0;
+    // Box: symmetric around that centre and big enough for EVERY anchor (the
+    // past mark on a leg's first frame included).
+    double hx = 0.0, hy = 0.0;
+    for (int i = 0; i < n; i++) {
+        const double ax = fabs(r[i][0] - cxr), ay = fabs(r[i][1] - cyr);
+        if (ax > hx) hx = ax;
+        if (ay > hy) hy = ay;
     }
     // Grow by the target's rounding circle, then hold a floor of twice it: the
     // last few metres to a buoy must not become a close-up of that buoy.
     const double grow = radiusM / DEG_M;
-    double spanX = (rmaxx - rminx) + 2 * grow;
-    double spanY = (rmaxy - rminy) + 2 * grow;
+    double spanX = 2.0 * hx + 2 * grow;
+    double spanY = 2.0 * hy + 2 * grow;
     const double floorDeg = floorM / DEG_M;
     if (spanX < floorDeg) spanX = floorDeg;
     if (spanY < floorDeg) spanY = floorDeg;
@@ -350,8 +353,8 @@ static void buildFitProjection(RaceProj& p, double rotDeg,
     const double sx = (MAP_W - 2 * pad) / spanX;
     const double sy = ((WIRE_Y1 - WIRE_TOP) - 2 * pad) / spanY;
     p.scale = sx < sy ? sx : sy;
-    p.rcx = (rminx + rmaxx) / 2.0;
-    p.rcy = (rminy + rmaxy) / 2.0;
+    p.rcx = cxr;
+    p.rcy = cyr;
     p.ox = MAP_X + MAP_W / 2;
     p.oy = WIRE_TOP + (WIRE_Y1 - WIRE_TOP) / 2;
     p.ok = true;
@@ -610,25 +613,10 @@ static int oldBx = -1, oldBy = -1;
 static double oldAng = 0.0;
 static bool oldWasDot = false;
 static bool oldHaveBoat = false;
-static int oldDash[4] = {0, 0, 0, 0};
-static bool oldHaveDash = false;
-static int oldCog[2] = {0, 0};
-static bool oldHaveCog = false;
+// The boat's arrow tail (solid, behind it along its own COG).
+static int oldTail[2] = {0, 0};
+static bool oldHaveTail = false;
 static bool dynOk = false;
-
-static void drawDashed(int x0, int y0, int x1, int y1, uint16_t color)
-{
-    const double len = hypot((double)(x1 - x0), (double)(y1 - y0));
-    if (len < 2.0) return;
-    const double dash = 5.0, gap = 4.0;
-    double d = 0.0;
-    while (d < len) {
-        const double d2 = d + dash < len ? d + dash : len;
-        tft.drawLine((int)(x0 + (x1 - x0) * d / len), (int)(y0 + (y1 - y0) * d / len),
-                     (int)(x0 + (x1 - x0) * d2 / len), (int)(y0 + (y1 - y0) * d2 / len), color);
-        d += dash + gap;
-    }
-}
 
 // Clamp an off-frame point onto the wire rect border (from the rect center).
 // Returns false when already inside.
@@ -1155,12 +1143,12 @@ static void drawRaceMap(TinyGPSPlus& gps, bool full)
 
     // Boat: triangle on the chart, or a projected dot on the frame edge.
     // Dashed yellow stub from the boat (or edge dot) toward the destination.
-    // Dirty path: erase old dash + old boat, repaint identical static pixels,
-    // draw the new dash + boat. Skipped entirely when nothing moved.
+    // Dirty path: erase old tail + old boat, repaint identical static pixels,
+    // draw the new ones. Skipped entirely when nothing moved.
     int px = 0, py = 0;
-    int bx = -1, by = -1, dx = -1, dy = -1, ex = -1, ey = -1;
-    int cogX = -1, cogY = -1;
-    bool haveBoat = false, haveDash = false, isDot = false, haveCog = false;
+    int bx = -1, by = -1;
+    int tailX = -1, tailY = -1;
+    bool haveBoat = false, isDot = false, haveTail = false;
     double ang = 0.0;
     if (gps.location.isValid()) {
         projToPx(p, gps.location.lat(), gps.location.lng(), px, py);
@@ -1168,64 +1156,40 @@ static void drawRaceMap(TinyGPSPlus& gps, bool full)
         bx = px; by = py;
         isDot = clampToWire(cx, cy, bx, by);
         haveBoat = true;
-        double dLat = 0.0, dLon = 0.0;
-        char tag[12] = {0};
-        if (nextDestination(gps, dLat, dLon, tag, sizeof(tag))) {
-            projToPx(p, dLat, dLon, dx, dy);
-            haveDash = true;
-            // Short fixed stub (~1 cm) toward the checkpoint, not the whole leg.
-            const double vx = dx - bx, vy = dy - by;
-            const double len = hypot(vx, vy);
-            const int stub = STUB_DEST_PX;
-            if (len > stub) {
-                ex = (int)(bx + vx / len * stub);
-                ey = (int)(by + vy / len * stub);
-            } else {
-                ex = dx; ey = dy;
-            }
-            // The stub must not cross the window border either (todo 36): the
-            // target can sit outside the rect in Focus/heading-up, and this is
-            // the only line that starts at the boat rather than at a mark.
-            clampToWire(bx, by, ex, ey);
-        }
         ang = gps.course.isValid() ? (gps.course.deg() - rotEff) : 0.0;
-        // Second stub (todo 39): where the boat is ACTUALLY going. Same length
-        // and dash pattern as the yellow destination stub, in cyan, so the pair
-        // reads "steering this way / need to go that way" at a glance.
+        // The boat IS the arrow now (user, 2026-11-04): a solid tail behind it
+        // along its own course over ground, no separate stub. The dashed line
+        // toward the destination went with it - the fit, the target ring and the
+        // pane distance already say where the mark is, and the pair of stubs
+        // just drew over the leg.
         if (gps.course.isValid() && gps.speed.isValid() &&
             gps.speed.knots() >= COG_MIN_KN) {
             const double a = ang * M_PI / 180.0;
-            cogX = (int)(bx + sin(a) * STUB_PX);
-            cogY = (int)(by - cos(a) * STUB_PX);
-            // The COG points anywhere — up into the header band included, which
-            // the destination stub can never do (its target is inside the fit
-            // box). Shorten it at the race window's border (todo 37's rect),
-            // then hard-clamp as a net for the boat-sitting-on-the-border case,
-            // where the ray leaves at t == 0 and clampToWire declines to act.
-            clampToWire(bx, by, cogX, cogY);
-            if (cogX < MAP_X + 5) cogX = MAP_X + 5;
-            else if (cogX > MAP_X + MAP_W - 5) cogX = MAP_X + MAP_W - 5;
-            if (cogY < WIRE_TOP + 5) cogY = WIRE_TOP + 5;
-            else if (cogY > WIRE_Y1 - 5) cogY = WIRE_Y1 - 5;
-            haveCog = true;
+            // Behind = the opposite of the heading (heading is (sin a, -cos a)).
+            tailX = (int)(bx - sin(a) * STUB_PX);
+            tailY = (int)(by + cos(a) * STUB_PX);
+            // It must never reach the chrome: shorten at the map's border, then
+            // hard-clamp for the boat-sitting-on-the-border case (the ray leaves
+            // at t == 0, where clampToWire declines to act).
+            clampToWire(bx, by, tailX, tailY);
+            if (tailX < MAP_X + 5) tailX = MAP_X + 5;
+            else if (tailX > MAP_X + MAP_W - 5) tailX = MAP_X + MAP_W - 5;
+            if (tailY < WIRE_TOP + 5) tailY = WIRE_TOP + 5;
+            else if (tailY > WIRE_Y1 - 5) tailY = WIRE_Y1 - 5;
+            haveTail = true;
         }
     }
     if (!dynOk) {
         // Fresh draw, nothing to erase.
     } else if (haveBoat == oldHaveBoat && (!haveBoat ||
                (bx == oldBx && by == oldBy && ang == oldAng && isDot == oldWasDot &&
-                haveDash == oldHaveDash && (!haveDash ||
-                 (ex == oldDash[0] && ey == oldDash[1])) &&
-                haveCog == oldHaveCog && (!haveCog ||
-                 (cogX == oldCog[0] && cogY == oldCog[1]))))) {
+                haveTail == oldHaveTail && (!haveTail ||
+                 (tailX == oldTail[0] && tailY == oldTail[1]))))) {
         return; // nothing moved
     } else {
-        // Erase old dash + old boat, then restore identical static pixels.
-        if (oldHaveDash) {
-            drawDashed(oldBx, oldBy, oldDash[0], oldDash[1], RBG);
-        }
-        if (oldHaveCog) {
-            drawDashed(oldBx, oldBy, oldCog[0], oldCog[1], RBG);
+        // Erase old tail + old boat, then restore identical static pixels.
+        if (oldHaveTail) {
+            tft.drawLine(oldBx, oldBy, oldTail[0], oldTail[1], RBG);
         }
         if (oldHaveBoat) {
             if (oldWasDot) {
@@ -1239,11 +1203,10 @@ static void drawRaceMap(TinyGPSPlus& gps, bool full)
         drawStaticLayer(p, rotEff);
         drawFrameChrome();
     }
-    if (haveDash) {
-        drawDashed(bx, by, ex, ey, RBOAT);
-    }
-    if (haveCog) {
-        drawDashed(bx, by, cogX, cogY, RCOG);
+    if (haveTail) {
+        // Solid, and UNDER the triangle so the joint is hidden: triangle + tail
+        // read as one arrow pointing where the boat is actually going.
+        tft.drawLine(bx, by, tailX, tailY, RBOAT);
     }
     if (haveBoat) {
         if (isDot) {
@@ -1253,9 +1216,8 @@ static void drawRaceMap(TinyGPSPlus& gps, bool full)
         }
     }
     oldBx = bx; oldBy = by; oldAng = ang; oldWasDot = isDot;
-    oldHaveBoat = haveBoat; oldHaveDash = haveDash;
-    oldDash[0] = ex; oldDash[1] = ey; oldDash[2] = 0; oldDash[3] = 0;
-    oldCog[0] = cogX; oldCog[1] = cogY; oldHaveCog = haveCog;
+    oldHaveBoat = haveBoat;
+    oldTail[0] = tailX; oldTail[1] = tailY; oldHaveTail = haveTail;
     dynOk = true;
 }
 

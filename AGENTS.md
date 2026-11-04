@@ -199,9 +199,12 @@ back in) — see the block comment before the gate.
 header grid and every clip derive from `MAP_W`, so nothing paints over the
 spine). Header = one font-4 row DST | SPD | TIME, plus the 30 px alert banner
 over the map's bottom edge; map = wireframe +
-boat triangle/edge-dot + ~1 cm dashed yellow stub toward the next mark (2/3 the
-length of the COG stub) + a cyan dashed stub along the boat's own COG (`gps.course`,
-only above 0.5 kn, clipped to the map rect — it can point into the header band);
+**the boat as an arrow** — the usual triangle (or an edge dot when clamped) plus
+one **solid yellow tail behind it**, `STUB_PX` 40 px along its own course over
+ground (`gps.course`, only above 0.5 kn, clipped to the map rect). The two dashed
+stubs it replaced (yellow toward the destination, cyan along the COG) went on
+2026-11-04: the fit and the target ring already say where the mark is, and the
+destination line was drawing over the leg;
 mark numbers drawn above the circles; empty state clears the body and
 shows a 3-line message; map ≤1Hz, text padded. Spine words (`raceHints()`):
 `MAIN`/`MENU` and the **current view**, `FULL` or `AUTO` (`2S` flips it); cells 2
@@ -288,8 +291,13 @@ for old scripts, nothing else.
     just rounded, so the picture keeps a reference of where you came from), or
     * the boat has closed **20 %** of the leg since the last fit
     (`d < 0.8·d0`), or lost a quarter of it (`d > 1.25·d0`, a downwind leg).
-    Between fits only the boat and its stubs move (the dirty path), so a leg
+    Between fits only the boat and its tail move (the dirty path), so a leg
     costs ~5 full repaints, not one per fix and not one per 200 ms pass.
+  - **The frame looks ahead.** The box is centred on a **2:1 weighted point**
+    between the target and the boat (target twice), then sized symmetrically
+    around it so every anchor still fits: the mark gets the room, the boat sits
+    nearer the edge. On a leg's first frame the past mark is included too, which
+    is what pushes the picture out for that one frame.
   - **The zoom floor is twice the target's rounding radius** (`2r`, 60 m for the
     default 30 m circle): the last metres to a buoy must not become a close-up.
     A line target (start/finish) has no radius of its own and uses the session's
@@ -491,27 +499,19 @@ for old scripts, nothing else.
   because they are drawn centred on the segment. `circleOnMap()` (+12 px: the
   round arrows stand outside the ring) culls marks, their labels and the
   deferred target ring — a circle centred in the header band is not clipped by
-  the rect, it **paints** there. The boat's destination stub is clamped with
-  `clampToWire()` like the COG stub. Any new map geometry goes through one of
-  the two.
+  the rect, it **paints** there. The boat's arrow tail is clamped with
+  `clampToWire()` (plus a hard clamp for a boat sitting on the border). Any new
+  map geometry goes through one of the two.
 - **The dirty map path is only valid while the CAMERA is unchanged** (todo 46).
   `drawStaticLayer()` *paints but never clears*, so it is only "identical
-  pixels" for a fixed projection. The map repaints fully only on a session
-  change (`mapFull = mapDirty || courseChanged`), so a camera move with no
-  session change (Target view re-centres on each mark switch — the span is
-  fixed, the origin moves — and `focusEnabled` never toggles there) would leave
-  the previous projection's labels, circles and legs standing. `drawRaceMap`
-  therefore fingerprints the camera (`p.lat0/lon0` in screen px + `p.scale`)
-  and forces one full repaint when it moves. **The rotation test must run
-  BEFORE the fingerprint and gate it** (`camMoved && !rotating`): the fit origin
-  is computed in rotated space, so in heading-up the fingerprint otherwise
-  promotes every pass to `full` and the 1 Hz rotating throttle never runs — a
-  full wipe at the 200 ms pass rate, which is what "heading-up flickers" was.
-  Its epsilon is **2.0°**, not 0.1 (0.1 is under GPS noise: 2 m of jitter 30 m
-  out swings the bearing ~4°), so a boat holding a course does not re-fill the
-  map at all. Mark labels are also clamped to `WIRE_TOP + 9`: anything drawn
-  above the map's clear rect can never be erased again (the hole todo 35
-  found).
+  pixels" for a fixed projection. The map repaints fully on a session change
+  (`mapFull = mapDirty || courseChanged`) and whenever the camera moves;
+  `drawRaceMap` fingerprints the camera (`p.lat0/lon0` in screen px + `p.scale`)
+  and forces one full repaint when it moves. In AUTO that is exactly what happens
+  at a refit (the 20 % step), and never between them — the fit is held, so a pass
+  with no camera change costs the boat's own dirty box. Mark labels are clamped
+  to `WIRE_TOP + 9`: anything drawn above the map's clear rect can never be
+  erased again (the hole todo 35 found).
 - **A REPAINT MUST NEVER RESET THE RUN** (todo 47). `requiresInit` is true for
   every `redrawCurrentPage()` (R, closing a menu, OTA), and `raceRunStarted()`
   only means "the START was **scored**" — so gating a reset on
