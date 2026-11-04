@@ -1285,6 +1285,47 @@ static void drawReadoutC(int x, int y, uint8_t font, const char* txt,
     last[lastLen - 1] = '\0';
 }
 
+// --- Mode tag (bottom-left) -------------------------------------------------
+// Answers "where am I" for the two axes the buttons walk: the VIEW (`2S`:
+// Map -> Target -> Auto) and the BEARING (`2L`: N-up -> Hdg -> Wide). It names
+// the SELECTED option - the one the next press moves away from - and not the
+// fallback the picture may be drawing (heading-up with no destination still
+// draws north-up, and Auto has not engaged yet: the tag confirms the pick, which
+// is what tells you where you are in the cycle).
+//
+// Why here: the scale bar owns the map's bottom-RIGHT corner, so this mirrors it
+// on the left, 20 px clear of the banner band (the band is the alert strip and
+// its clear would take the tag with it). The map repaints without clearing, but
+// a full repaint DOES clear the rect, so `mapRepainted` forgets the cache.
+static const int MODE_TAG_X = MAP_X + 6;
+static const int MODE_TAG_Y = BAND_Y - 22; // 266: above the banner band
+static char pMode[18] = {0};
+static int16_t pModeW = 0;
+
+static void drawModeTag()
+{
+    if (mapRepainted) pMode[0] = 0; // the map just wiped the rect under us
+    if (!raceSession.valid) {       // empty state: there is no picture to name
+        pMode[0] = 0;
+        return;
+    }
+    const char* v = focusMode == 1 ? "Target" : (focusMode == 2 ? "Auto" : "Map");
+    const char* b = viewMode == 1 ? "Hdg" : (viewMode == 2 ? "Wide" : "N-up");
+    char t[18];
+    snprintf(t, sizeof(t), "%s %s", v, b);
+    if (strcmp(t, pMode) == 0) return;
+    // Wipe the wider of the old and new strings: "Target N-up" -> "Map N-up"
+    // shortens, and a right-tail erase would leave the tail of the old one.
+    const int w = (int)tft.textWidth(t, 2);
+    const int wipeW = (w > pModeW ? w : pModeW) + 4;
+    tft.fillRect(MODE_TAG_X - 2, MODE_TAG_Y - 2, wipeW, 20, RBG);
+    snprintf(pMode, sizeof(pMode), "%s", t);
+    pModeW = (int16_t)w;
+    tft.setTextDatum(TL_DATUM);
+    tft.setTextColor(RFG, RBG);
+    tft.drawString(t, MODE_TAG_X, MODE_TAG_Y, 2);
+}
+
 static char pBan[12] = {0};
 static int16_t pBanW = 0;
 // Right-pane cells (mini label + value each).
@@ -1390,6 +1431,7 @@ static void resetRaceText()
 {
     // Called on full clears so change-detect redraws everything next pass.
     pBan[0] = 0; pBanW = 0;
+    pMode[0] = 0; pModeW = 0; // the mode tag is a full-clear casualty too
     // The header readouts are wiped by the same clears, and they are
     // change-detected caches too: leave a stale extent here and the next
     // erase would blank a box that no longer exists.
@@ -1632,6 +1674,9 @@ static void drawRaceText(TinyGPSPlus& gps)
         drawSmart(MAP_W / 2, BAND_BANNER_Y, 4, TC_DATUM,
                   finBanner ? TFT_GREEN : RFG, ban, pBan, sizeof(pBan), pBanW);
     }
+    // Last, so the tag sits above the band and over the chart: it names the two
+    // modes the buttons are cycling (`2S` view, `2L` bearing).
+    drawModeTag();
 }
 
 // LL menu: explicit race actions (map frozen while open, box repainted on

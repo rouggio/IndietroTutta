@@ -196,7 +196,13 @@ over the map's bottom edge; map = wireframe +
 boat triangle/edge-dot + ~1 cm dashed yellow stub toward the next mark (2/3 the
 length of the COG stub) + a cyan dashed stub along the boat's own COG (`gps.course`,
 only above 0.5 kn, clipped to the map rect — it can point into the header band);
-mark numbers drawn above the circles; view tag; empty state clears the body and
+mark numbers drawn above the circles; **mode tag** bottom-left (`drawModeTag()`:
+`Map|Target|Auto` + `N-up|Hdg|Wide`, the two axes `2S`/`2L` walk, naming the
+**selected** option — the picture may still fall back, e.g. Auto not engaged or
+heading-up with no destination; it mirrors the scale bar's corner on the right,
+sits 20 px above the banner band, and is a change-detected cache like the rest:
+`mapRepainted` and `resetRaceText()` forget it because both wipe its rect); empty
+state clears the body and
 shows a 3-line message; map ≤1Hz, text padded. Spine words (`raceHints()`):
 `MAIN`/`MENU` and `VIEW`/`BEAR`, cell 3 empty (no action on this page) — and
 **with no session the only cell is `MENU`, alone and in the long-press colour**,
