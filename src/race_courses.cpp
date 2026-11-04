@@ -16,7 +16,26 @@
 static Course coursePool[COURSE_MAX];
 static bool courseHave = false;
 
+// Fetch state the UI has to know about (written on the backend task).
+//
+// The picker draws straight out of coursePool while that pool is being
+// rebuilt, so two things matter and used to be wrong:
+//  - `courseBusy` is set for the (sub-millisecond) clear+fill window, and the
+//    page shows "asking backend" instead of rows read mid-rebuild. Before this
+//    the clear happened BEFORE the HTTP round-trip, so for 1-2 seconds the UI
+//    drawn on a mid-fetch keypress saw zero or half-filled rows: the empty /
+//    corrupted course list.
+//  - `courseGen` changes only when a fetch actually landed. courseReady() is
+//    true across a refresh, so the old `ready changed?` test never fired after
+//    a re-fetch and a bad frame stayed on screen until the page was left.
+static volatile bool courseBusy = false;
+static volatile uint32_t courseGen = 0;
+
 bool courseReady() { return courseHave; }
+
+bool courseFetching() { return courseBusy; }
+
+uint32_t courseGeneration() { return courseGen; }
 
 uint8_t courseCount()
 {
@@ -135,36 +154,54 @@ static bool courseFill(JsonObject o, long id)
 // ~2KB each -> safe off the task stack). One fetch: built-in and user
 // courses are all rows of GET /courses, id-keyed (builtinKey marks the
 // read-only built-ins, which the device just shows like any other).
-static void courseFetchOnce(const String& url)
+// Returns true only when the payload ARRIVED and PARSED: the caller keeps the
+// previous library on false, so an offline or cold-backend refresh no longer
+// takes the practice setup down with it.
+static bool courseFetchOnce(const String& url)
 {
-    if (WiFi.status() != WL_CONNECTED) return;
+    if (WiFi.status() != WL_CONNECTED) return false;
     ServerLink link;
-    if (!link.begin(url)) return;
+    if (!link.begin(url)) return false;
     link.http.addHeader("DeviceId", String(WiFi.macAddress()));
     const int code = link.http.GET();
     if (code != HTTP_CODE_OK) {
         link.http.end();
-        return;
+        return false;
     }
     String body = link.http.getString();
     link.http.end();
-    if (body.length() == 0 || body.length() > 16384) return;
+    if (body.length() == 0 || body.length() > 16384) return false;
     DynamicJsonDocument doc(12288);
-    if (deserializeJson(doc, body)) return;
+    if (deserializeJson(doc, body)) return false;
     JsonArray arr = doc.as<JsonArray>();
+    if (arr.isNull()) return false;
+    // The whole payload is in RAM and parsed: only NOW is the live pool
+    // replaced. `used` goes false first and each slot's is set again on
+    // courseFill()'s last line, so a reader sees whole rows or none - never a
+    // half-written name - and the busy flag covers even that window.
+    courseBusy = true;
+    courseClear();
     for (JsonObject o : arr) {
         const long id = o["id"] | 0L;
         if (id <= 0) continue;
         courseFill(o, id);
     }
+    courseBusy = false;
+    return true;
 }
 
 void courseFetch()
 {
-    courseClear();
-    courseFetchOnce(serverBaseUrl() + "/courses");
-    courseHave = true;
-    bufferedSerialPrintln("[CRS] library ready");
+    const bool ok = courseFetchOnce(serverBaseUrl() + "/courses");
+    if (ok) {
+        courseHave = true;
+        courseGen++;
+        bufferedSerialPrintln("[CRS] library ready");
+    } else {
+        // Keep the pool: the library you already have is better than an empty
+        // list, and courseReady() must not claim a fetch that never happened.
+        bufferedSerialPrintln("[CRS] fetch failed, keeping RAM library");
+    }
 }
 
 // Wind-frame resolve (mirror of the backend/js math, scale 1 -> the builder

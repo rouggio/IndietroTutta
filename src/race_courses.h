@@ -67,7 +67,9 @@ struct Course {
 // Fetch state (backend task context writes, UI thread reads).
 void backendFetchCourses(); // ask the backend task to (re)fetch; returns immediately
 void courseFetch();              // blocking fetch+parse (backend task only)
-bool courseReady();              // fetch completed (possibly zero courses)
+bool courseReady();              // a fetch has landed (possibly zero courses)
+bool courseFetching();           // the pool is being rebuilt RIGHT NOW (~1 ms)
+uint32_t courseGeneration();     // changes only when a fetch landed: follow this
 uint8_t courseCount();
 const Course* courseGet(uint8_t i);
 bool courseHaveId(long id);      // is this course in RAM right now?

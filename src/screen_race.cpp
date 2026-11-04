@@ -1382,8 +1382,8 @@ static uint8_t courseSel = 0;
 static bool coursePreselected = false; // picker already jumped to the default
 static bool courseDirty = false;
 static bool setupFull = false; // next pass repaints the setup page's title too
+static uint32_t courseSeenGen = 0; // library generation already on screen
 static bool courseAsked = false;
-static bool courseWasReady = false;
 static unsigned long courseT0 = 0;
 
 static void resetRaceText()
@@ -1848,7 +1848,10 @@ static void drawSetupPage(bool full)
         drawTableRow(0, "Gun", vg, optRow == 0);
         drawTableRow(1, "Distance", vd, optRow == 1);
         clearTableRowsFrom(2);
-    } else if (!courseReady()) {
+    } else if (!courseReady() || courseFetching()) {
+        // Not "no courses saved": the pool may still be on its way (or, for a
+        // few milliseconds, being rebuilt), and claiming zero rows there is
+        // what used to leave an empty list behind.
         drawTableRow(0, "COURSES ...", nullptr, false);
         drawTableRow(1, "asking backend", nullptr, false);
         clearTableRowsFrom(2);
@@ -1913,7 +1916,6 @@ static void openCoursePicker()
     }
     courseDirty = true;
     courseAsked = false;
-    courseWasReady = courseReady();
     setupFull = true;   // the setup page takes the whole panel
     redrawCurrentPage();
 }
@@ -2146,17 +2148,23 @@ void drawScreenRace(TinyGPSPlus &gps, bool requiresInit)
                 courseT0 = millis();
                 backendFetchCourses();
             }
-            if (courseReady() != courseWasReady) {
-                courseWasReady = courseReady();
+            // Follow the library's GENERATION, not its ready flag: ready stays
+            // true across a refresh, so "did it become ready?" never fired for
+            // the fetch the picker itself asked for — a list drawn while that
+            // fetch was rebuilding the pool (empty or half-filled) stayed on
+            // screen until the page was left and re-entered.
+            const uint32_t gen = courseGeneration();
+            if (gen != courseSeenGen) {
+                courseSeenGen = gen;
                 // First time the library lands: jump to the remembered
                 // course (or the Windward-Leeward default) instead of row 1.
-                if (courseWasReady && !coursePreselected) {
+                if (courseReady() && !coursePreselected) {
                     courseSel = coursePreselectIndex();
                     coursePreselected = true;
                 }
                 courseDirty = true;
             }
-            if (!courseReady() && millis() - courseT0 > 8000) {
+            if (!courseReady() && !courseFetching() && millis() - courseT0 > 8000) {
                 courseOpen = false;
                 showTransient("OFFLINE ");
                 redrawCurrentPage();

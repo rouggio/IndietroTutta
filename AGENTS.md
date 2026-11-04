@@ -321,6 +321,22 @@ for old scripts, nothing else.
   where the setup was entered from and the race page has nothing to add while it
   is unfinished. Spine: picker `BACK`/`NEXT`/`PICK`, options
   `ROW`+`BACK`/`CHANGE`/`START`.
+- **The course library is in RAM and refreshed on the backend task, so the
+  picker must never read it mid-rebuild.** Three rules keep the list honest
+  (`race_courses.cpp`): a fetch replaces the pool **only after the payload has
+  parsed**, so an offline or cold-backend refresh keeps the library you already
+  had (it used to clear first, and opening the picker with no link left "no
+  courses saved" over a full pool); `courseFetching()` is true for the
+  millisecond-wide clear+fill window and the page shows `COURSES ... / asking
+  backend` instead of torn rows; and the UI follows **`courseGeneration()`**,
+  which changes only when a fetch landed — `courseReady()` stays true across a
+  refresh, so "did it become ready?" never fired for the fetch the picker itself
+  asked for, and a list drawn during the rebuild (empty or half-filled) stayed
+  on screen until the page was left and re-entered. That was the "course list
+  comes up empty or corrupted" report: the clear happened *before* the HTTP
+  round-trip, a 1-2 s hole right after the picker opened. Each pool slot is
+  written with `used = false` first and `used` set last (`courseFill`), so even
+  a reader that slips through sees whole rows or none, never a half name.
 - Confirming a practice start does BOTH: builds the local session (countdown
   to `startTime = now + gun`) and `POST /sessions` on the backend task with
   `courseId` + placement + `startTime` + this boat, so the session is real on
