@@ -168,9 +168,8 @@ one cell only, so no `requiresInit` bookkeeping is needed, but a FULL-SCREEN
 clear (page switch, `/screen` grab, the race menu's `fillScreen`) must call
 `hintBarReset()` or the warm cache leaves a blank column. MAIN: `RACE CFG` /
 `BEAR DIAG` / `PARTIAL` (or `SESSION` when the partial is on screen: that cell
-names the scope the next `3S` selects), RACE: `MAIN MENU` / the next view & the
-next bearing (`TARGET`/`AUTO`/`MAP` + `HDG`/`WIDE`/`N-UP`; `MENU` alone when
-there is no session), `RACE OPTIONS` menu:
+names the scope the next `3S` selects), RACE: `MAIN MENU` / the current view
+(`FULL`/`AUTO`; `MENU` alone when there is no session), `RACE OPTIONS` menu:
 `BACK` / `SELECT` / `PICK`, course picker: `BACK` / `NEXT` / `PICK`, course
 options: `ROW`+`BACK` / `CHANGE` / `START`, CONFIG: `BACK OTA` / `SELECT` /
 `TOGGLE`. **The renderer advances by each glyph's MEASURED width**
@@ -205,10 +204,8 @@ length of the COG stub) + a cyan dashed stub along the boat's own COG (`gps.cour
 only above 0.5 kn, clipped to the map rect — it can point into the header band);
 mark numbers drawn above the circles; empty state clears the body and
 shows a 3-line message; map ≤1Hz, text padded. Spine words (`raceHints()`):
-`MAIN`/`MENU` and the **next option of each axis** — `2S`'s view next
-(`TARGET`/`AUTO`/`MAP`) over `2L`'s bearing next (`HDG`/`WIDE`/`N-UP`), so the
-spine says where you are in both cycles and the chart needs no tag; cell 3 empty
-(no action on this page) — and
+`MAIN`/`MENU` and the **current view**, `FULL` or `AUTO` (`2S` flips it); cells 2
+and 3 are empty — nothing else has a button on this page — and
 **with no session the only cell is `MENU`, alone and in the long-press colour**,
 because it is the one thing an empty page can do; `2S` is a hard no-op there (it
 used to force a redraw of the empty state, which read as a flicker),
@@ -268,45 +265,46 @@ for old scripts, nothing else.
   the button and drawn as north-up until the input returns; the view in effect
   is named in the cell's top-left corner `North`/`Head`/`Wind`, with
   `/status` `sys.ring` reporting mode vs drawn),
-  `2L`→DIAGNOSTICS. RACE: `1S` next, `2S` cycles the **view** Map → Target →
-  Auto (**no-op with no session** — there is no picture to re-frame), `2L`
-  toggles the **bearing** north-up ↔ heading-up, `1L`→MENU.
+  `2L`→DIAGNOSTICS. RACE: `1S` next, `2S` toggles the **view** FULL ↔ AUTO
+  (**no-op with no session** — there is no picture to re-frame), `2L`/`3S`/`3L`
+  do nothing (all of them are hard no-ops with no session too), `1L`→MENU.
   DIAGNOSTICS/CONFIG: `1S` back to MAIN.
 - **Terminology, race screen — canonical, use these words in code comments,
   docs and bug reports**:
-  - **`2S` = view mode.** Three states, **Map → Target → Auto**.
-    **Map** = the whole course fitted to the window — *overview* is a synonym.
-    **Target** = the next destination centred at a fixed zoom — *focus* is a
-    synonym. **Auto** = Target engages by distance (`autoDistM`,
-    10/50/100/200 m, NVS) and **holds the zoom on the mark just rounded** until
-    the boat is clear of it, then falls back to Map for the new leg. Code:
-    `focusMode` 0/1/2, NVS `race`/`viewMode`.
-  - **`2L` = bearing mode.** Three states, **north-up → heading-up →
-    wide**. **North-up** = true north up (`N`). **Heading-up** = the direction
-    toward the next destination is up (`BRG` — it is
-    `courseTo(boat, destination)`, the *bearing to the mark*, not the boat's
-    COG; the two agree while you are steering at the mark, and the mark's
-    bearing is what the chart should point at). **Wide** (todo 48) = the
-    course's own orientation: `wideRotation()` tries every 5° and keeps the fit
-    with the largest scale, so the whole course stays on screen while the
-    picture grows to fill the window (on a N-S course in the 320×150 frame that
-    is twice the zoom of the north-up fit). In Target/Auto framing the span is
-    fixed, every angle scores the same, so wide resolves to north-up. Code:
-    `viewMode` 0/1/2, RAM only.
-  - The two axes are **orthogonal**: any view can be north-up or heading-up,
-    and the hint shows the states **in effect**, not the next action.
-  - **Do not say** "focus view" for the bearing axis, "overview" for a fourth
-    mode, or **"FIT"/"best-fit"**. That dead third state (`viewMode == 2`,
-    0°/90° whichever filled the screen, left unreachable by the old `% 2`
-    cycle) is now implemented properly as **wide** — use that word.
-  - Naming trap: in `screen_race.cpp` the code's **`viewMode` is the bearing
-    axis** and **`focusMode` is the view axis** — the opposite of the words
-    above. Read the enum, not the name.
+  - **`2S` = view.** Two states, **FULL ↔ AUTO** (refactor 2026-11-04; the old
+    Map/Target/Auto axis and the whole bearing axis are gone).
+    **FULL** = the whole course fitted to the window.
+    **AUTO** = the *dynamic* fit: the boat and the next destination framed
+    together, the zoom closing as the leg is eaten.
+  - **Orientation is a property of the course**, not a button: both views draw at
+    `wideRotation()` — the angle that fits the course best (5° search, largest
+    scale) — so the chart never spins while you sail and there is no north-up,
+    heading-up or wide state to pick. The only 0° case is a course that cannot be
+    fitted (empty page).
+  - **AUTO is a HELD camera, not a live one.** It fits `boat → destination`
+    (midpoint-centred, uniform scale) and then **freezes**: a full map repaint is
+    the flicker we spent a day killing, so the fit is rebuilt only when
+    * the target changed (a new leg — and that first fit ALSO frames the mark
+    just rounded, so the picture keeps a reference of where you came from), or
+    * the boat has closed **20 %** of the leg since the last fit
+    (`d < 0.8·d0`), or lost a quarter of it (`d > 1.25·d0`, a downwind leg).
+    Between fits only the boat and its stubs move (the dirty path), so a leg
+    costs ~5 full repaints, not one per fix and not one per 200 ms pass.
+  - **The zoom floor is twice the target's rounding radius** (`2r`, 60 m for the
+    default 30 m circle): the last metres to a buoy must not become a close-up.
+    A line target (start/finish) has no radius of its own and uses the session's
+    largest one. There is no ceiling: a leg longer than the course just fits.
+  - Code: `viewKind` 0/1, NVS `race`/`viewMode` (a stored ≥1 — the old Target or
+    Auto — migrates to AUTO). The camera lives in `AutoCam` (`lat0/lon0/rcx/rcy/
+    scale/d0/tgt`), rebuilt by `buildFitProjection()` and replayed by
+    `buildStoredCam()`. **The old `autoDist` and `bearMode` NVS keys are retired**
+    and their menu row (`Auto distance`) is gone.
+  - **Do not say** "focus view", "north-up", "heading-up" or "wide" about this
+    page any more. The words are **FULL** and **AUTO**.
   - Main-screen ring is a different thing with confusingly similar labels: its
     `2S` cycles north-up → heading-up → **wind-up**, where heading-up puts the
     boat's own COG at the top and wind-up puts the wind SOURCE at the top (so
-    the no-go arc spans 12 o'clock). The race screen's heading-up points at the
-    *destination*.
+    the no-go arc spans 12 o'clock).
 - RACE MENU **`RACE OPTIONS`** (renamed from `RACE/PRACTICE MENU` 2026-11-04) —
   rows are BUILT from live state
   (`buildMenuRows`), so you can never be offered an action that makes no
@@ -314,8 +312,9 @@ for old scripts, nothing else.
   remembered and the session is not a committee race, **Resync** only in a
   race, **Abandon** only with a session. `2S` walks the rows, `3S` picks, `1S`
   backs out. It is a **CONFIG-style table** — label left at `MENU_LABEL_X` 18,
-  value right-aligned at `MENU_VALUE_R` 433 (`Auto distance` is the only row
-  with one) — and it carries its own spine: `BACK` / `SELECT` / `PICK`.
+  value right-aligned at `MENU_VALUE_R` 433; no row carries a value since the
+  `Auto distance` row went (2026-11-04) — and it carries its own spine: `BACK` /
+  `SELECT` / `PICK`.
 - PRACTICE SETUP: Start → course picker (`2S` next, `3S` choose, `1S` back;
   pre-selected on the remembered course, else Windward-Leeward) → **Options**
   (`2S` cycles the highlighted row's value, `1S` moves between the two rows,

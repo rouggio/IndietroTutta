@@ -139,122 +139,62 @@ static void drawFrameChrome()
     tft.drawFastHLine(0, HDR_RULE_Y, MAP_W, RDIM);
 }
 
-static const int AUTO_DIST_OPTIONS[] = {10, 50, 100, 200};
-static const uint8_t AUTO_DIST_N = 4;
-static int autoDistM = -1;
-// Auto-mode clearance hold. The engine advances progIdx at the clear-route
-// event, i.e. the instant the pass is scored — and for a rounding that is
-// still ON the buoy, so dropping the zoom on that edge (the old behaviour)
-// cut it before the boat had actually got round the mark, which on the last
-// mark looked like the view abandoning it mid-turn. Keep the zoom pinned to
-// the point being rounded until the boat is clear of it by this much, then
-// hand back to the overview and let the normal distance rule re-engage.
-static const double AUTO_CLEAR_MARGIN_M = 30.0; // added to the mark's radius
-static const double AUTO_CLEAR_MIN_M = 60.0;    // never release closer than this
-static const double AUTO_CLEAR_MAX_M = 150.0;   // a huge radius must not pin the view
-static uint8_t focusMode = 0; // 0 map,1 target,2 auto
-static bool focusEnabled = false;
-static bool focusNext = false;
+// ---- View (2S): FULL | AUTO (2026-11-04) -----------------------------------
+//
+// FULL = the whole course fitted, in the course's own best orientation.
+// AUTO = a continuous fit of the boat and the next destination, at that SAME
+//        orientation, re-fitted only when the boat has closed a fifth of the
+//        distance since the last fit.
+//
+// There is no Target any more (it was a constant zoom that wasted the window)
+// and no north-up anywhere: the orientation is a property of the COURSE, so the
+// chart does not spin while you sail and there is nothing to press or throttle.
+//
+// The camera is HELD between fits. That is the whole point: a full map repaint
+// per fix (or per 200 ms pass) is the flicker we spent a day killing, so the
+// fit is only rebuilt when it is worth a repaint, and in between the boat and
+// its stubs are the only things that move (the dirty path).
+static uint8_t viewKind = 0; // 0 = FULL, 1 = AUTO (NVS race/viewMode, >=1 -> AUTO)
+
+struct AutoCam {
+    bool valid = false;
+    double lat0 = 0.0, lon0 = 0.0; // camera origin (the projection's lat0/lon0)
+    double rcx = 0.0, rcy = 0.0;   // rotated centre, as buildProjection stores it
+    double scale = 1.0;            // px per degree
+    double d0 = 0.0;               // boat -> target distance at the last fit (m)
+    double tgtLat = 0.0, tgtLon = 0.0; // the target this fit was built for
+};
+static AutoCam autoCam;
+// Boat -> next destination, sampled once per pass: the header DST cell, the
+// pane readout and AUTO's own refit all use the same anchor.
 static double targetDistM = -1.0;
-static bool focusValid = false;
-static double focusLat = 0.0, focusLon = 0.0;
-static char autoHoldTag[12] = {0};
-// The point the zoom was centred on during the PREVIOUS pass — i.e. the mark
-// being rounded when a pass advances progIdx. Captured before the new target
-// overwrites focusLat/focusLon (nextDestination has already switched by the
-// time the pass is seen).
-static double prevFocusLat = 0.0, prevFocusLon = 0.0;
-// Active clearance hold: keep zooming on (lat,lon) until the boat is
-// autoClearR metres from it (see AUTO_CLEAR_*).
-static bool autoClearHold = false;
-static double autoClearLat = 0.0, autoClearLon = 0.0, autoClearR = 0.0;
-// Was the zoom ON during the PREVIOUS pass? The auto block above re-qualifies
-// the NEW target before the pass is even looked at, and the new leg is
-// usually out of range, so focusEnabled is already false by then: the
-// clearance hold has to ask what the view was doing a pass earlier.
-static bool prevZoomOn = false;
-
-static void autoDistEnsure()
-{
-    if (autoDistM >= 0) return;
-    autoDistM = 100;
-    Preferences p;
-    if (p.begin("race", true)) { autoDistM = (int)p.getInt("autoDist", 100); p.end(); }
-}
-
-static void autoDistSave(int v)
-{
-    Preferences p;
-    if (p.begin("race", false)) { p.putInt("autoDist", v); p.end(); }
-}
-
-static int autoDistNext()
-{
-    autoDistEnsure();
-    for (uint8_t i = 0; i < AUTO_DIST_N; i++) {
-        if (autoDistM <= AUTO_DIST_OPTIONS[i]) {
-            int n = AUTO_DIST_OPTIONS[(i + 1) % AUTO_DIST_N];
-            autoDistM = n; autoDistSave(n); return n;
-        }
-    }
-    autoDistM = AUTO_DIST_OPTIONS[0]; autoDistSave(autoDistM); return autoDistM;
-}
-
-static void viewModeEnsure()
-{
-    static bool done = false;
-    if (done) return;
-    done = true;
-    Preferences p;
-    if (p.begin("race", true)) {
-        int v = (int)p.getInt("viewMode", 0);
-        if (v < 0 || v > 2) v = 0;
-        focusMode = (uint8_t)v;
-        p.end();
-    }
-}
-
-static void viewModeSave()
-{
-    Preferences p;
-    if (p.begin("race", false)) { p.putInt("viewMode", focusMode); p.end(); }
-}
 
 static const double DEG_M = 111320.0;
 
-// Bearing state (NVS `race/bearMode` since 2026-11-04, on `3S`): 0 north-up,
-// 1 heading-up (bearing to the next destination up), 2 WIDE — the course's own
-// orientation, chosen to fill the window. In Target/Auto framing the span is
-// fixed, so no rotation can help and wide resolves to north-up.
-//
-// NAMING TRAP (also in AGENTS.md): this variable is the BEARING axis while
-// `focusMode` is the VIEW axis — the names are the other way round.
-static uint8_t viewMode = 0;
-
-static void bearModeEnsure()
+static void viewKindEnsure()
 {
     static bool done = false;
     if (done) return;
     done = true;
     Preferences p;
     if (p.begin("race", true)) {
-        int v = (int)p.getInt("bearMode", 0);
-        if (v < 0 || v > 2) v = 0;
-        viewMode = (uint8_t)v;
+        // Migration: the old axis was 0 map / 1 target / 2 auto, and the bearing
+        // lived in its own key. Anything that is not FULL is AUTO.
+        int v = (int)p.getInt("viewMode", 0);
+        viewKind = (v >= 1) ? 1 : 0;
         p.end();
     }
 }
 
-static void bearModeSave()
+static void viewKindSave()
 {
     Preferences p;
-    if (p.begin("race", false)) { p.putInt("bearMode", (int)viewMode); p.end(); }
+    if (p.begin("race", false)) { p.putInt("viewMode", (int)viewKind); p.end(); }
 }
 
 static int lastRaceCourseKey = -1; // sessionId+version fingerprint
 static int lastResetCourseKey = -2; // tracks the session key raceRun was last reset for
 static bool mapDirty = true;       // a full clear is waiting for a map redraw
-static unsigned long lastMapDraw = 0;
 // Set when the map actually repainted this pass. The view tag lives in the
 // map's bottom-right corner (the only free space large enough), so it must
 // be redrawn with the map, not just when viewMode changes — otherwise the
@@ -316,12 +256,8 @@ static void buildProjection(RaceProj& p, double rotDeg)
         p.ok = false;
         return;
     }
-    if (focusNext && focusValid) {
-        p.lat0 = focusLat; p.lon0 = focusLon;
-    } else {
-        p.lat0 = (minLat + maxLat) / 2.0;
-        p.lon0 = (minLon + maxLon) / 2.0;
-    }
+    p.lat0 = (minLat + maxLat) / 2.0;
+    p.lon0 = (minLon + maxLon) / 2.0;
     p.cosLat = cos(p.lat0 * M_PI / 180.0);
     if (p.cosLat < 0.2) p.cosLat = 0.2;
 
@@ -357,9 +293,6 @@ static void buildProjection(RaceProj& p, double rotDeg)
     const double rGrowth = maxR / DEG_M;
     spanX += 2 * rGrowth;
     spanY += 2 * rGrowth;
-    if (focusNext && focusValid) {
-        spanX = 0.0003; spanY = 0.0003;
-    }
     if (spanX < 0.0005) spanX = 0.0005;
     if (spanY < 0.0005) spanY = 0.0005;
     const int pad = 12;
@@ -368,11 +301,106 @@ static void buildProjection(RaceProj& p, double rotDeg)
     const double sx = ww / spanX;
     const double sy = wh / spanY;
     p.scale = sx < sy ? sx : sy;
-    if (focusNext && focusValid) { p.rcx = 0.0; p.rcy = 0.0; }
-    else { p.rcx = (rminx + rmaxx) / 2.0; p.rcy = (rminy + rmaxy) / 2.0; }
+    p.rcx = (rminx + rmaxx) / 2.0;
+    p.rcy = (rminy + rmaxy) / 2.0;
     p.ox = MAP_X + MAP_W / 2;
     p.oy = WIRE_TOP + (WIRE_Y1 - WIRE_TOP) / 2;
     p.ok = true;
+}
+
+// ---- AUTO fit --------------------------------------------------------------
+// Fit a handful of anchors — the boat, the next destination, and on a leg's
+// first fit the mark just rounded — at the COURSE's orientation. Same tail as
+// the course fit: uniform scale off the padded rect, centred on the box.
+static void buildFitProjection(RaceProj& p, double rotDeg,
+                               double boatLat, double boatLon,
+                               double tgtLat, double tgtLon,
+                               bool havePrev, double prevLat, double prevLon,
+                               double radiusM, double floorM)
+{
+    const double H = rotDeg * M_PI / 180.0;
+    p.cosH = cos(H); p.sinH = sin(H);
+    p.lat0 = (boatLat + tgtLat) / 2.0; // stable cosLat; the box centre is below
+    p.lon0 = (boatLon + tgtLon) / 2.0;
+    p.cosLat = cos(p.lat0 * M_PI / 180.0);
+    if (p.cosLat < 0.2) p.cosLat = 0.2;
+
+    double pts[3][2] = {{boatLat, boatLon}, {tgtLat, tgtLon}, {prevLat, prevLon}};
+    const int n = havePrev ? 3 : 2;
+    double rminx = 1e9, rmaxx = -1e9, rminy = 1e9, rmaxy = -1e9;
+    for (int i = 0; i < n; i++) {
+        const double dE = (pts[i][1] - p.lon0) * p.cosLat;
+        const double dN = pts[i][0] - p.lat0;
+        const double er = dE * p.cosH - dN * p.sinH;
+        const double nr = dE * p.sinH + dN * p.cosH;
+        if (er < rminx) rminx = er;
+        if (er > rmaxx) rmaxx = er;
+        if (nr < rminy) rminy = nr;
+        if (nr > rmaxy) rmaxy = nr;
+    }
+    // Grow by the target's rounding circle, then hold a floor of twice it: the
+    // last few metres to a buoy must not become a close-up of that buoy.
+    const double grow = radiusM / DEG_M;
+    double spanX = (rmaxx - rminx) + 2 * grow;
+    double spanY = (rmaxy - rminy) + 2 * grow;
+    const double floorDeg = floorM / DEG_M;
+    if (spanX < floorDeg) spanX = floorDeg;
+    if (spanY < floorDeg) spanY = floorDeg;
+    const int pad = 12;
+    const double sx = (MAP_W - 2 * pad) / spanX;
+    const double sy = ((WIRE_Y1 - WIRE_TOP) - 2 * pad) / spanY;
+    p.scale = sx < sy ? sx : sy;
+    p.rcx = (rminx + rmaxx) / 2.0;
+    p.rcy = (rminy + rmaxy) / 2.0;
+    p.ox = MAP_X + MAP_W / 2;
+    p.oy = WIRE_TOP + (WIRE_Y1 - WIRE_TOP) / 2;
+    p.ok = true;
+}
+
+// Rebuild the projection a HELD AUTO fit produced, so a pass between refits
+// draws the exact camera that was committed (and camMoved sees no change).
+static void buildStoredCam(RaceProj& p, double rotDeg, const AutoCam& c)
+{
+    const double H = rotDeg * M_PI / 180.0;
+    p.cosH = cos(H); p.sinH = sin(H);
+    p.lat0 = c.lat0;
+    p.lon0 = c.lon0;
+    p.cosLat = cos(p.lat0 * M_PI / 180.0);
+    if (p.cosLat < 0.2) p.cosLat = 0.2;
+    p.rcx = c.rcx;
+    p.rcy = c.rcy;
+    p.scale = c.scale;
+    p.ox = MAP_X + MAP_W / 2;
+    p.oy = WIRE_TOP + (WIRE_Y1 - WIRE_TOP) / 2;
+    p.ok = true;
+}
+
+// The rounding radius at the target: the AUTO zoom floor is twice it. A line
+// target (start/finish) has no radius of its own, so the session's largest one
+// stands in; 30 m is the default r everywhere else.
+static double targetRadiusM()
+{
+    if (!raceSession.valid) return 30.0;
+    const uint8_t idx = raceProgIdx();
+    if (idx < raceSession.markCount && raceSession.marks[idx].r > 0) {
+        return (double)raceSession.marks[idx].r;
+    }
+    double r = 0.0;
+    for (uint8_t i = 0; i < raceSession.markCount; i++) {
+        if (raceSession.marks[i].r > r) r = (double)raceSession.marks[i].r;
+    }
+    return r > 0.0 ? r : 30.0;
+}
+
+// Refit only when the frame would actually be different: the boat has closed a
+// fifth of the leg since the last fit, or lost a quarter of it (a downwind leg
+// opens the gap), or this is the first fit. Everything else is held.
+static bool autoFitDue(double d)
+{
+    if (!autoCam.valid || autoCam.d0 <= 0.0) return true;
+    if (d < autoCam.d0 * 0.8) return true;
+    if (d > autoCam.d0 * 1.25) return true;
+    return false;
 }
 
 static void projToPx(const RaceProj& p, double lat, double lon, int& x, int& y)
@@ -587,7 +615,6 @@ static bool oldHaveDash = false;
 static int oldCog[2] = {0, 0};
 static bool oldHaveCog = false;
 static bool dynOk = false;
-static double oldRotEff = 0.0;
 
 static void drawDashed(int x0, int y0, int x1, int y1, uint16_t color)
 {
@@ -1037,62 +1064,76 @@ static void drawRaceMap(TinyGPSPlus& gps, bool full)
         dynOk = false;
         return;
     }
-    // Effective rotation: 0 north-up, bearing-to-destination up, or wide — the
-    // course's own orientation from wideRotation(). Falls back to north-up
-    // whenever the fix/destination is missing.
-    double rotEff = 0.0;
+    // Orientation: the COURSE's own best fit, once per course, for BOTH views.
+    // There is no bearing axis any more (no north-up, no heading-up): the chart
+    // never spins while you sail, so there is nothing to rotate, throttle or
+    // press. `wideRotation()` is pure arithmetic over the course, so it cannot
+    // jitter; 0 means "no course to orient" (empty page).
+    const double rotEff = wideRotation();
     double destLat = 0.0, destLon = 0.0;
     char destTag[12] = {0};
-    const bool haveDestHere = nextDestination(gps, destLat, destLon, destTag, sizeof(destTag));
-    if (viewMode == 1 && gps.location.isValid() && haveDestHere) {
-        double brg = TinyGPSPlus::courseTo(
-            gps.location.lat(), gps.location.lng(), destLat, destLon);
-        if (brg < 0) brg += 360.0;
-        if (brg >= 360.0) brg -= 360.0;
-        rotEff = brg;
-    } else if (viewMode == 2) {
-        rotEff = wideRotation();
-    }
+    const bool haveDestHere = nextDestination(gps, destLat, destLon, destTag,
+                                              sizeof(destTag));
 
     RaceProj p;
-    buildProjection(p, rotEff);
+    bool autoFit = false;
+    if (viewKind == 1 && gps.location.isValid() && haveDestHere) {
+        const double bLat = gps.location.lat(), bLon = gps.location.lng();
+        const double d = TinyGPSPlus::distanceBetween(bLat, bLon, destLat, destLon);
+        // A target that moved is a new leg: its first fit also frames the mark we
+        // rounded (the OLD target), so the picture keeps a reference of where we
+        // came from until the next step-in.
+        const bool newLeg = autoCam.valid &&
+            TinyGPSPlus::distanceBetween(autoCam.tgtLat, autoCam.tgtLon,
+                                         destLat, destLon) > 2.0;
+        if (newLeg || autoFitDue(d)) {
+            const double rTgt = targetRadiusM();
+            buildFitProjection(p, rotEff, bLat, bLon, destLat, destLon,
+                               newLeg, autoCam.tgtLat, autoCam.tgtLon,
+                               rTgt, 2.0 * rTgt);
+            if (p.ok) {
+                autoCam.valid = true;
+                autoCam.lat0 = p.lat0;
+                autoCam.lon0 = p.lon0;
+                autoCam.rcx = p.rcx;
+                autoCam.rcy = p.rcy;
+                autoCam.scale = p.scale;
+                autoCam.d0 = d;
+                autoCam.tgtLat = destLat;
+                autoCam.tgtLon = destLon;
+                autoFit = true;
+                // A handful of lines per leg, so the ring can still hold a race.
+                char b[96];
+                snprintf(b, sizeof(b), "[RACE] auto fit %.0fm r=%.0f%s", d, rTgt,
+                         newLeg ? " +past" : "");
+                bufferedSerialPrintln(b);
+            }
+        }
+        if (!autoFit && autoCam.valid) {
+            buildStoredCam(p, rotEff, autoCam); // between fits: the SAME camera
+            autoFit = p.ok;
+        }
+    }
+    if (!autoFit) {
+        autoCam.valid = false; // FULL, no fix or no destination: the course fit
+        buildProjection(p, rotEff);
+    }
     if (!p.ok) return;
 
-    // Todo 46: the dirty path below erases the boat and dashes, then REPAINTS
-    // the static layer — which paints but never clears, so it is only "identical
-    // pixels" while the PROJECTION is unchanged. In Target view every mark
-    // switch re-centres the fit on the new target (the span is fixed, the origin
-    // moves), and no focus switch happens there (focusEnabled never toggles), so
-    // nothing asked for a clear: the old mark labels, circles and legs stayed
-    // standing beside the new view. Fingerprint the camera — origin and scale —
-    // and force one full repaint whenever it moves. Rotation itself is not
-    // compared here (the throttled branch below owns it), but the origin it
-    // produces must be: see the ordering note.
-    // Rotating views can't use dirty updates (the whole frame turns): throttle
-    // them to 1Hz full redraws instead. Decide this FIRST: the fit origin is
-    // computed in ROTATED space, so every heading change moves p.lat0/lon0 —
-    // if the fingerprint below were allowed to read that as "the camera moved"
-    // it would promote every rotating pass to `full` and the throttle would
-    // never run (the map was cleared and repainted at the 200ms pass rate, up
-    // to 5x/s, which is what heading-up flicker was). The epsilon is degrees of
-    // bearing-to-destination: 0.1 was noise-level (2 m of GPS jitter 30 m out
-    // moves the bearing by ~4 deg), 2 deg is under what the eye can see on a
-    // still picture and above what a boat holding a course produces.
-    static const double ROT_EPS_DEG = 2.0;
-    const bool rotating = fabs(rotEff - oldRotEff) > ROT_EPS_DEG;
-
+    // The dirty path below erases the boat and dashes, then REPAINTS the static
+    // layer — which paints but never clears, so it is only "identical pixels"
+    // while the PROJECTION is unchanged. The AUTO camera moves in steps, and a
+    // step changes both the origin and the scale: fingerprint them and force one
+    // full repaint when the camera moves. Between steps nothing here changes, so
+    // a pass costs the boat's own dirty box and nothing else.
     static double lastLat0 = 1e9, lastLon0 = 1e9, lastScale = 0.0;
     const bool camMoved =
         fabs(p.lat0 - lastLat0) * p.scale > 0.5 ||
         fabs((p.lon0 - lastLon0) * p.cosLat) * p.scale > 0.5 ||
         fabs(p.scale - lastScale) > lastScale * 0.001;
-    if (camMoved && !rotating) full = true;
+    if (camMoved) full = true;
 
-    if (!full && rotating) {
-        if (millis() - lastMapDraw < 1000) return;
-        full = true;
-    }
-    // Fix gain/loss changes the in-frame NO FIX overlay — full path redraws it.
+    // Fix gain/loss changes the in-frame NO FIX overlay - full path redraws it.
     static bool lastFixOk = false;
     const bool fixOk = gps.location.isValid();
     if (fixOk != lastFixOk) {
@@ -1108,8 +1149,6 @@ static void drawRaceMap(TinyGPSPlus& gps, bool full)
         drawFrameChrome();
         drawStaticLayer(p, rotEff);
         lastLat0 = p.lat0; lastLon0 = p.lon0; lastScale = p.scale;
-        oldRotEff = rotEff;
-        lastMapDraw = millis();
         dynOk = false;
         mapRepainted = true; // the view tag lives in this area; see below
     }
@@ -1676,25 +1715,20 @@ enum MenuRow : uint8_t {
     MenuStart = 0,  // start a practice session (no session running)
     MenuRepeat,     // re-create the last practice session at the boat
     MenuResync,     // pull the committee session now (race mode)
-    MenuAutoDist,   // cycle auto focus switch distance (10/50/100/200 m)
     MenuAbandon,    // end the running session
 };
 
 static MenuRow menuRows[5];
-static char menuAutoDistVal[12] = {0};
 
 static uint8_t buildMenuRows()
  {
-    autoDistEnsure();
     const bool has = raceSession.valid;
     const bool race = has && strcmp(raceSession.mode, "race") == 0;
     uint8_t n = 0;
     if (!has) menuRows[n++] = MenuStart;
     if (!race && practicePrefsValid()) menuRows[n++] = MenuRepeat;
     if (race) menuRows[n++] = MenuResync;
-    menuRows[n++] = MenuAutoDist;   // always adjustable
     if (has) menuRows[n++] = MenuAbandon;
-    snprintf(menuAutoDistVal, sizeof(menuAutoDistVal), "%dm", autoDistM);
     return n;
 }
 
@@ -1704,17 +1738,19 @@ static const char* menuRowText(MenuRow r)
         case MenuStart: return "Start practice session";
         case MenuRepeat: return "Repeat last session";
         case MenuResync: return "Resync now";
-        case MenuAutoDist: return "Auto distance";
         case MenuAbandon: return "Abandon session";
     }
     return "";
 }
 
 // The row's right-hand value: "" when the row is a pure action. Owned by the
-// menu, not the label, so the two columns stay independent.
+// menu, not the label, so the two columns stay independent. No row carries one
+// since the auto-distance option went (2026-11-04) — the view is a two-way
+// switch now, so there is nothing to dial in.
 static const char* menuRowValue(MenuRow r)
 {
-    return r == MenuAutoDist ? menuAutoDistVal : "";
+    (void)r;
+    return "";
 }
 
 // ---- Table rows: one page, three faces ------------------------------------
@@ -2029,13 +2065,6 @@ static void menuConfirm()
         case MenuResync:
             backendPollHealthNow();
             break;
-        case MenuAutoDist: {
-            int nv = autoDistNext();
-            snprintf(menuAutoDistVal, sizeof(menuAutoDistVal), "%dm", nv);
-            showTransient("AUTO DIST");
-            menuDirty = true;
-            return; // stay in menu, like config rows
-        }
         case MenuAbandon:
             courseAbandonSession();
             showSignal("ABANDON ");
@@ -2075,16 +2104,13 @@ static void raceHints()
         return;
     }
     if (raceSession.valid) {
-        // The label is the CURRENT selection, and the press advances it — so the
-        // spine answers "where am I" for both axes at a glance: 2S walks the
-        // view (cell 1), 3S the bearing (cell 2). Neither has a long-press
-        // action any more, and with no session both are dead (the cells are
-        // blanked below), which is why nothing is printed there.
-        static const char* const VIEW_NAME[3] = {"MAP", "TARGET", "AUTO"};
-        static const char* const BEAR_NAME[3] = {"N-UP", "HDG", "WIDE"};
+        // The label is the CURRENT view, and `2S` flips it: FULL (whole course)
+        // ↔ AUTO (boat + next destination). Nothing else on this page has a
+        // button any more — the bearing axis went with 2026-11-04's refactor, so
+        // cell 2 is empty and `3S`/`3L`/`2L` do nothing.
         hintBarCell(0, "MAIN", "MENU", TFT_WHITE, HINT_LONG);
-        hintBarCell(1, VIEW_NAME[focusMode % 3], nullptr, TFT_WHITE, TFT_WHITE);
-        hintBarCell(2, BEAR_NAME[viewMode % 3], nullptr, TFT_WHITE, TFT_WHITE);
+        hintBarCell(1, viewKind == 1 ? "AUTO" : "FULL", nullptr, TFT_WHITE, TFT_WHITE);
+        hintBarCell(2, "", nullptr, TFT_WHITE, TFT_WHITE);
     } else {
         hintBarCell(0, "MENU", nullptr, HINT_LONG, HINT_LONG);
         hintBarCell(1, "", nullptr, HINT_LONG, HINT_LONG);
@@ -2095,9 +2121,7 @@ static void raceHints()
 void drawScreenRace(TinyGPSPlus &gps, bool requiresInit)
 {
     raceSampleFix(gps);
-    autoDistEnsure();
-    viewModeEnsure();
-    bearModeEnsure();
+    viewKindEnsure();
     if (requiresInit) {
         tft.fillScreen(RBG);
         mapDirty = true; // force a full map redraw after the clear
@@ -2218,22 +2242,17 @@ void drawScreenRace(TinyGPSPlus &gps, bool requiresInit)
             }
         }
     }
+    // Distance to the next destination: the header's DST cell, the pane readout
+    // and AUTO's fit all use this one anchor, so it is sampled once here.
     char tTag[12] = {0};
     if (raceSession.valid) {
         double tLat = 0, tLon = 0;
         if (nextDestination(gps, tLat, tLon, tTag, sizeof(tTag))) {
-            // Remember where the zoom was pointed before this pass's target
-            // takes over: a pass switches progIdx to the NEXT leg, but the
-            // rounding of the mark just taken is not over yet (see the
-            // clearance hold below).
-            if (focusValid) { prevFocusLat = focusLat; prevFocusLon = focusLon; }
-            focusLat = tLat; focusLon = tLon; focusValid = true;
             if (gps.location.isValid()) targetDistM =
                 TinyGPSPlus::distanceBetween(gps.location.lat(), gps.location.lng(),
                                              tLat, tLon);
-            // TEMPORARY DST-jump diagnostic (user-reported +80 m jumps just
-            // before the focus engages): log ONLY anomalous single-eval
-            // jumps and target changes — quiet otherwise. Remove once settled.
+            // TEMPORARY DST-jump diagnostic (user-reported +80 m jumps): log ONLY
+            // anomalous single-eval jumps and target changes - quiet otherwise.
             {
                 static double lastDstShown = -1.0;
                 static char lastDstTag[12] = {0};
@@ -2261,96 +2280,15 @@ void drawScreenRace(TinyGPSPlus &gps, bool requiresInit)
                 }
             }
         } else {
-            focusValid = false; targetDistM = -1.0; tTag[0] = '\0';
+            targetDistM = -1.0;
+            tTag[0] = '\0';
         }
     } else {
-        focusValid = false; targetDistM = -1.0;
-    }
-    autoDistEnsure();
-    if (focusMode == 1) focusEnabled = true;
-    else if (focusMode == 2 && focusValid) {
-        if (autoHoldTag[0] == '\0' || strcmp(autoHoldTag, tTag) != 0) {
-            if (targetDistM >= 0 && targetDistM <= (double)autoDistM) {
-                strcpy(autoHoldTag, tTag); // engage
-                focusEnabled = true;
-            } else {
-                autoHoldTag[0] = '\0';
-                focusEnabled = false;
-            }
-        } else {
-            focusEnabled = true;
-        }
-    } else {
-        focusEnabled = false; autoHoldTag[0] = '\0';
-    }
-    if (focusMode == 0) autoHoldTag[0] = '\0';
-    // A scored switch does NOT leave the zoom any more: the engine advances
-    // progIdx at the clear-route event, which for a rounding is still at the
-    // buoy (on the last mark that cut the view off mid-turn). Pin the zoom to
-    // the point that was being rounded and release it only once the boat is
-    // clear of that mark; then the overview returns and the new leg (the
-    // finish line included) re-engages by distance as usual.
-    static uint8_t lastFocusProg = 255;
-    const uint8_t nowProg = raceProgIdx();
-    if (lastFocusProg != nowProg) {
-        const uint8_t prevProg = lastFocusProg;
-        lastFocusProg = nowProg;
-        if (focusMode == 2 && nowProg > prevProg && prevProg < raceSession.markCount) {
-            if (prevZoomOn) {
-                autoClearHold = true;
-                autoClearLat = prevFocusLat;
-                autoClearLon = prevFocusLon;
-                double cr = (double)raceSession.marks[prevProg].r + AUTO_CLEAR_MARGIN_M;
-                if (cr < AUTO_CLEAR_MIN_M) cr = AUTO_CLEAR_MIN_M;
-                if (cr > AUTO_CLEAR_MAX_M) cr = AUTO_CLEAR_MAX_M;
-                autoClearR = cr;
-                char cmsg[96];
-                snprintf(cmsg, sizeof(cmsg),
-                         "[RACE] auto zoom held on mark %u until clear (%.0fm)",
-                         (unsigned)(prevProg + 1), autoClearR);
-                bufferedSerialPrintln(cmsg);
-            } else {
-                autoClearHold = false;
-                autoHoldTag[0] = '\0';
-            }
-        } else if (focusMode == 2) {
-            focusEnabled = false;
-            autoHoldTag[0] = '\0';
-            autoClearHold = false;
-        }
-    }
-    if (focusMode != 2) autoClearHold = false;
-    if (autoClearHold) {
-        if (autoHoldTag[0] != '\0') {
-            // The NEW target already qualified by distance (legs shorter than
-            // the threshold, e.g. a scaled test course): no reason to hold.
-            autoClearHold = false;
-        } else {
-            double d = -1.0;
-            if (gps.location.isValid()) d = TinyGPSPlus::distanceBetween(
-                gps.location.lat(), gps.location.lng(), autoClearLat, autoClearLon);
-            if (d >= 0.0 && d <= autoClearR) {
-                focusLat = autoClearLat; focusLon = autoClearLon;
-                focusValid = true;
-                focusEnabled = true;
-            } else {
-                autoClearHold = false; // rounded and gone: back to the overview
-                focusEnabled = false;
-            }
-        }
-    }
-    focusNext = focusEnabled;
-    prevZoomOn = focusEnabled; // what a pass next time must hold on to
-    static bool lastFocusEnabled = false;
-    const bool focusSwitch = (focusEnabled != lastFocusEnabled);
-    lastFocusEnabled = focusEnabled;
-    if (focusSwitch) {
-        tft.fillRect(MAP_X, WIRE_TOP, MAP_W, WIRE_Y1 - WIRE_TOP, RBG);
-        mapDirty = true;
+        targetDistM = -1.0;
     }
     if (!courseOpen) {
         mapRepainted = false;
-        drawRaceMap(gps, mapFull || focusSwitch);
+        drawRaceMap(gps, mapFull);
         if (mapRepainted) {
             // NOTHING MAY LIVE OUTSIDE THE CHART. Lines are clipped to the map
             // rect (todo 36) and labels are clamped, but a mark CIRCLE is only
@@ -2500,28 +2438,17 @@ void screenRaceButton(Button button, ButtonEvent event)
         menuFull = true;
         return;
     }
-    // Right short: `2S` cycles the VIEW (framing) — Map, Target, Auto. With NO
-    // session there is no picture to re-frame: the cycle would only force a
-    // redraw of the empty state, which reads as a flicker and changes nothing,
-    // so the press is a no-op (the mode is not even advanced).
+    // Right short: `2S` flips the view — FULL (whole course) ↔ AUTO (boat + next
+    // destination, re-fitted as you eat the leg). With NO session there is no
+    // picture to re-frame, so the press is a hard no-op: it would only force a
+    // repaint of the empty state, which reads as a flicker.
+    // `2L`, `3S`, `3L`: no action on this page any more — the bearing axis is
+    // gone (the chart's orientation comes from the course itself).
     if (button == Button::Right && event == ButtonEvent::ShortPress) {
         if (!raceSession.valid) return;
-        focusMode = (focusMode + 1) % 3;
-        focusEnabled = (focusMode == 1); // auto upgrades in draw pass
-        focusNext = focusEnabled;
-        viewModeSave();
-        redrawCurrentPage();
-        return;
-    }
-    // `3S` cycles the BEARING — north-up, heading-up, wide (todo 48). It lives
-    // on button 3 since 2026-11-04 (it was `2L`) so each axis has its own
-    // button, one spine cell each. Saved, so it survives a reboot.
-    // `2L`, `3L`: no action on this page; with no session every one of these is
-    // a hard no-op (there is nothing to re-frame or re-orient).
-    if (button == Button::Third && event == ButtonEvent::ShortPress) {
-        if (!raceSession.valid) return;
-        viewMode = (uint8_t)((viewMode + 1) % 3);
-        bearModeSave();
+        viewKind = (viewKind == 1) ? 0 : 1;
+        viewKindSave();
+        autoCam.valid = false;   // the other view owns the camera from here
         redrawCurrentPage();
         return;
     }
