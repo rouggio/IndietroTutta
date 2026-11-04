@@ -31,7 +31,12 @@ static const double COG_MIN_KN = 0.5;
 // went on 2026-11-04 - the fit and the target ring say where the mark is, and the
 // boat now carries ONE solid tail behind it, making the pair read as an arrow
 // pointing where the boat is actually going.
-static const int STUB_PX = 40;
+static const int STUB_PX = 20;
+// The tail leaves the boat at the BASE of its triangle, 0.7 * the triangle's
+// s = 7 px behind the origin, NOT at the origin itself: a line drawn from the
+// origin ran under the fill and left a stray pixel where the triangle's edge
+// steps (user, 2026-11-04).
+static const int BOAT_BASE_PX = 5;
 
 // Finished-race hold (todo 38). The backend stops pushing a session the moment
 // it derives `finished` — i.e. right after our run uploads — and the page then
@@ -1165,9 +1170,11 @@ static void drawRaceMap(TinyGPSPlus& gps, bool full)
         if (gps.course.isValid() && gps.speed.isValid() &&
             gps.speed.knots() >= COG_MIN_KN) {
             const double a = ang * M_PI / 180.0;
-            // Behind = the opposite of the heading (heading is (sin a, -cos a)).
-            tailX = (int)(bx - sin(a) * STUB_PX);
-            tailY = (int)(by + cos(a) * STUB_PX);
+            // Start at the triangle's BASE, then run STUB_PX further back.
+            const int sx = (int)(bx - sin(a) * BOAT_BASE_PX);
+            const int sy = (int)(by + cos(a) * BOAT_BASE_PX);
+            tailX = (int)(sx - sin(a) * STUB_PX);
+            tailY = (int)(sy + cos(a) * STUB_PX);
             // It must never reach the chrome: shorten at the map's border, then
             // hard-clamp for the boat-sitting-on-the-border case (the ray leaves
             // at t == 0, where clampToWire declines to act).
@@ -1189,7 +1196,19 @@ static void drawRaceMap(TinyGPSPlus& gps, bool full)
     } else {
         // Erase old tail + old boat, then restore identical static pixels.
         if (oldHaveTail) {
-            tft.drawLine(oldBx, oldBy, oldTail[0], oldTail[1], RBG);
+            // Wipe the tail's BOUNDING RECT rather than redrawing the line in
+            // BG: a 1 px BG line leaves the anti-brake pixels of a 2 px shaft
+            // (and any pixel the previous angle put a hair off) behind, which is
+            // what the stray nub at the boat's tip was. The static layer repaints
+            // right after, so the box costs nothing visually.
+            const double a = oldAng * M_PI / 180.0;
+            const int sx = (int)(oldBx - sin(a) * BOAT_BASE_PX);
+            const int sy = (int)(oldBy + cos(a) * BOAT_BASE_PX);
+            const int x0 = (sx < oldTail[0] ? sx : oldTail[0]) - 3;
+            const int y0 = (sy < oldTail[1] ? sy : oldTail[1]) - 3;
+            const int x1 = (sx > oldTail[0] ? sx : oldTail[0]) + 3;
+            const int y1 = (sy > oldTail[1] ? sy : oldTail[1]) + 3;
+            tft.fillRect(x0, y0, x1 - x0 + 1, y1 - y0 + 1, RBG);
         }
         if (oldHaveBoat) {
             if (oldWasDot) {
@@ -1204,9 +1223,14 @@ static void drawRaceMap(TinyGPSPlus& gps, bool full)
         drawFrameChrome();
     }
     if (haveTail) {
-        // Solid, and UNDER the triangle so the joint is hidden: triangle + tail
-        // read as one arrow pointing where the boat is actually going.
-        tft.drawLine(bx, by, tailX, tailY, RBOAT);
+        // Solid, starting at the triangle's base (never under the fill: a line
+        // through it leaves a stray pixel at the tip), so triangle + tail read as
+        // one arrow pointing where the boat is actually going. 2 px wide so it
+        // reads as a shaft at arm's length instead of a hairline.
+        const double a = ang * M_PI / 180.0;
+        const int sx = (int)(bx - sin(a) * BOAT_BASE_PX);
+        const int sy = (int)(by + cos(a) * BOAT_BASE_PX);
+        tft.drawWideLine(sx, sy, tailX, tailY, 2, RBOAT);
     }
     if (haveBoat) {
         if (isDot) {

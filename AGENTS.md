@@ -200,8 +200,13 @@ header grid and every clip derive from `MAP_W`, so nothing paints over the
 spine). Header = one font-4 row DST | SPD | TIME, plus the 30 px alert banner
 over the map's bottom edge; map = wireframe +
 **the boat as an arrow** — the usual triangle (or an edge dot when clamped) plus
-one **solid yellow tail behind it**, `STUB_PX` 40 px along its own course over
-ground (`gps.course`, only above 0.5 kn, clipped to the map rect). The two dashed
+one **solid yellow tail behind it** — 2 px wide (a shaft, not a hairline),
+`STUB_PX` 20 px, starting at the triangle's **base** (`BOAT_BASE_PX` 5 px behind
+its origin, never under the fill: a line drawn from the origin left a stray pixel
+at the tip) and running backwards along its own course over
+ground (`gps.course`, only above 0.5 kn, clipped to the map rect). Its erase is a
+**bounding-rect wipe**, not a BG line — a BG redraw left the odd pixel of the
+previous angle behind, which read as a nub at the tip. The two dashed
 stubs it replaced (yellow toward the destination, cyan along the COG) went on
 2026-11-04: the fit and the target ring already say where the mark is, and the
 destination line was drawing over the leg;
