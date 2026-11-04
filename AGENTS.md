@@ -409,7 +409,21 @@ for old scripts, nothing else.
   already says it and the header holds the time, so only the "start a practice
   session from menu / or await committee instructions" lines are drawn (centred
   where the old `Race finished` headline sat). Banner precedence: signal (8 s) →
-  FINISHED → countdown → OCS → transient.
+  FINISHED → countdown → OCS → transient. **`FINISHED` is an announcement, not a
+  label: it times out `FIN_BANNER_MS` (30 s) after the finish edge** — the frozen
+  header time stays, the band goes back to the chart (the band's own clear
+  repaints the frame inset, see below).
+- **NOTHING MAY LIVE OUTSIDE THE CHART.** Lines are clipped (`clipToMap`) and
+  labels are clamped, but a mark **circle** is only culled when it is *wholly*
+  outside, so a buoy near an edge paints its arc over the hint spine or the header
+  readouts — and both are change-detected, so the damage would sit there until
+  their text happened to change. After any map repaint (`mapRepainted`) the screen
+  therefore forgets the three header readout caches and `hintBarReset()`s the
+  spine (both repaint next pass) and re-stamps `drawFrameChrome()`. The banner
+  band is chart chrome too: its clear is **inset by the frame's 1 px border**
+  (`fillRect(1, BAND_Y, MAP_W - 2, ...)`) — the old full-width fill left a gap in
+  the left and right rules over the band's height, which read as the frame being
+  cut at the bottom-left corner.
 - Race screen overlays (**`RACE OPTIONS`, the course picker and that course's
   options**) are the SAME page in three faces: navy title bar, a column of
   label/value rows, the hint spine — and **no `>` cursor** (the yellow row is the

@@ -49,6 +49,11 @@ static const int STUB_DEST_PX = 27; // toward the destination
 static bool finHold = false;
 static long finHoldSession = -1; // the session the held result belongs to
 static long finHoldElapsed = 0;  // gun -> finish, seconds
+// The BANNER is an announcement, not a permanent label: after half a minute the
+// result is the frozen header time, and the band goes back to the chart. Cleaning
+// up the words is what keeps the page honest once the sailor has read them.
+static const unsigned long FIN_BANNER_MS = 30000;
+static unsigned long finBannerAt = 0;
 
 void raceFinishHoldClear()
 {
@@ -217,11 +222,34 @@ static void viewModeSave()
 
 static const double DEG_M = 111320.0;
 
-// View state (RAM only). RR cycles the BEARING: 0 north-up, 1 bearing-up
-// (next destination up), 2 WIDE — the course's own orientation, chosen to fill
-// a 320x150 window. In Target/Auto framing the span is fixed, so no rotation
-// can help and wide resolves to north-up.
+// Bearing state (NVS `race/bearMode` since 2026-11-04, on `3S`): 0 north-up,
+// 1 heading-up (bearing to the next destination up), 2 WIDE — the course's own
+// orientation, chosen to fill the window. In Target/Auto framing the span is
+// fixed, so no rotation can help and wide resolves to north-up.
+//
+// NAMING TRAP (also in AGENTS.md): this variable is the BEARING axis while
+// `focusMode` is the VIEW axis — the names are the other way round.
 static uint8_t viewMode = 0;
+
+static void bearModeEnsure()
+{
+    static bool done = false;
+    if (done) return;
+    done = true;
+    Preferences p;
+    if (p.begin("race", true)) {
+        int v = (int)p.getInt("bearMode", 0);
+        if (v < 0 || v > 2) v = 0;
+        viewMode = (uint8_t)v;
+        p.end();
+    }
+}
+
+static void bearModeSave()
+{
+    Preferences p;
+    if (p.begin("race", false)) { p.putInt("bearMode", (int)viewMode); p.end(); }
+}
 
 static int lastRaceCourseKey = -1; // sessionId+version fingerprint
 static int lastResetCourseKey = -2; // tracks the session key raceRun was last reset for
@@ -1462,6 +1490,7 @@ static void drawRaceText(TinyGPSPlus& gps)
             finHold = true;
             finHoldSession = raceSession.valid ? raceSession.sessionId : -1;
             finHoldElapsed = raceRunEndEpoch() - raceRunStartEpoch();
+            finBannerAt = millis();
         }
     } else if (finHold && raceRunStarted()) {
         finHold = false; // a new run is under way: the last result is history
@@ -1476,7 +1505,8 @@ static void drawRaceText(TinyGPSPlus& gps)
     // The held finish is the resting state after the line, but an 8s committee
     // signal still interrupts it — a DSQ/SCP has to be seen — and FINISHED
     // comes back on its own when the signal expires.
-    const bool finBanner = finHold && !(millis() < sigUntil && sigMsg[0]);
+    const bool finBanner = finHold && millis() - finBannerAt < FIN_BANNER_MS &&
+                           !(millis() < sigUntil && sigMsg[0]);
     if (millis() < sigUntil && sigMsg[0]) {
         snprintf(ban, sizeof(ban), "%-8.8s", sigMsg);
     } else if (finBanner) {
@@ -1623,7 +1653,11 @@ static void drawRaceText(TinyGPSPlus& gps)
     const bool haveBanner = ban[0] != '\0';
     const uint8_t bandMode = haveBanner ? 2 : 0;
     if (bandMode != lastBandMode) {
-        tft.fillRect(0, BAND_Y, MAP_W, BAND_H, RBG);
+        // Inset by the frame's 1 px border: the band is chart chrome and it may
+        // cover the chart, but it may NOT eat the frame. The old full-width fill
+        // (0..MAP_W-1) left a gap in the left and right rules over the band's
+        // height, which read as the frame being cut at the bottom-left corner.
+        tft.fillRect(1, BAND_Y, MAP_W - 2, BAND_H, RBG);
         lastBandMode = bandMode;
         pBan[0] = 0; pBanW = 0; // the band is black: force the banner back
     }
@@ -2041,21 +2075,21 @@ static void raceHints()
         return;
     }
     if (raceSession.valid) {
-        // The words are the NEXT option each press selects, the same rule MAIN
-        // follows for PARTIAL/SESSION: `2S` walks the view, `2L` the bearing, so
-        // the spine says where you are in each cycle (and what the press buys)
-        // without a tag on the chart. Short press is the top word (white), long
-        // press the bottom one (orange), as on every other page.
-        static const char* const VIEW_NEXT[3] = {"TARGET", "AUTO", "MAP"};
-        static const char* const BEAR_NEXT[3] = {"HDG", "WIDE", "N-UP"};
+        // The label is the CURRENT selection, and the press advances it — so the
+        // spine answers "where am I" for both axes at a glance: 2S walks the
+        // view (cell 1), 3S the bearing (cell 2). Neither has a long-press
+        // action any more, and with no session both are dead (the cells are
+        // blanked below), which is why nothing is printed there.
+        static const char* const VIEW_NAME[3] = {"MAP", "TARGET", "AUTO"};
+        static const char* const BEAR_NAME[3] = {"N-UP", "HDG", "WIDE"};
         hintBarCell(0, "MAIN", "MENU", TFT_WHITE, HINT_LONG);
-        hintBarCell(1, VIEW_NEXT[focusMode % 3], BEAR_NEXT[viewMode % 3],
-                    TFT_WHITE, HINT_LONG);
+        hintBarCell(1, VIEW_NAME[focusMode % 3], nullptr, TFT_WHITE, TFT_WHITE);
+        hintBarCell(2, BEAR_NAME[viewMode % 3], nullptr, TFT_WHITE, TFT_WHITE);
     } else {
         hintBarCell(0, "MENU", nullptr, HINT_LONG, HINT_LONG);
         hintBarCell(1, "", nullptr, HINT_LONG, HINT_LONG);
+        hintBarCell(2, "", nullptr, HINT_LONG, HINT_LONG);
     }
-    hintBarCell(2, "", nullptr, TFT_WHITE, TFT_WHITE);
 }
 
 void drawScreenRace(TinyGPSPlus &gps, bool requiresInit)
@@ -2063,6 +2097,7 @@ void drawScreenRace(TinyGPSPlus &gps, bool requiresInit)
     raceSampleFix(gps);
     autoDistEnsure();
     viewModeEnsure();
+    bearModeEnsure();
     if (requiresInit) {
         tft.fillScreen(RBG);
         mapDirty = true; // force a full map redraw after the clear
@@ -2316,6 +2351,18 @@ void drawScreenRace(TinyGPSPlus &gps, bool requiresInit)
     if (!courseOpen) {
         mapRepainted = false;
         drawRaceMap(gps, mapFull || focusSwitch);
+        if (mapRepainted) {
+            // NOTHING MAY LIVE OUTSIDE THE CHART. Lines are clipped to the map
+            // rect (todo 36) and labels are clamped, but a mark CIRCLE is only
+            // culled when it is wholly outside, so a buoy near an edge paints its
+            // right/top arc over the hint spine or the header readouts — and those
+            // are change-detected, so the damage would sit there until their text
+            // happened to change. Forget both caches so the next pass repaints
+            // them, and re-stamp the header rules the arc crossed.
+            ovDst[0] = 0; ovSpd[0] = 0; ovTim[0] = 0;
+            drawFrameChrome();
+            hintBarReset();
+        }
     }
     // Deferred repeat: the library landed (or never did), act on it now.
     if (pendingRepeat) {
@@ -2453,10 +2500,10 @@ void screenRaceButton(Button button, ButtonEvent event)
         menuFull = true;
         return;
     }
-    // Right short: cycle map views — overall, next-target, auto (10/50/100/200 m).
-    // With NO session there is no picture to re-frame: the cycle would only
-    // force a redraw of the empty state, which reads as a flicker and changes
-    // nothing, so the press is a no-op (the mode is not even advanced).
+    // Right short: `2S` cycles the VIEW (framing) — Map, Target, Auto. With NO
+    // session there is no picture to re-frame: the cycle would only force a
+    // redraw of the empty state, which reads as a flicker and changes nothing,
+    // so the press is a no-op (the mode is not even advanced).
     if (button == Button::Right && event == ButtonEvent::ShortPress) {
         if (!raceSession.valid) return;
         focusMode = (focusMode + 1) % 3;
@@ -2466,11 +2513,15 @@ void screenRaceButton(Button button, ButtonEvent event)
         redrawCurrentPage();
         return;
     }
-    // Right long: cycle the bearing — north-up, heading-up, wide (todo 48).
-    // `redrawCurrentPage()` forces the repaint, so a new orientation shows up
-    // immediately instead of waiting for the 1 Hz rotation throttle.
-    if (button == Button::Right && event == ButtonEvent::LongPress) {
+    // `3S` cycles the BEARING — north-up, heading-up, wide (todo 48). It lives
+    // on button 3 since 2026-11-04 (it was `2L`) so each axis has its own
+    // button, one spine cell each. Saved, so it survives a reboot.
+    // `2L`, `3L`: no action on this page; with no session every one of these is
+    // a hard no-op (there is nothing to re-frame or re-orient).
+    if (button == Button::Third && event == ButtonEvent::ShortPress) {
+        if (!raceSession.valid) return;
         viewMode = (uint8_t)((viewMode + 1) % 3);
+        bearModeSave();
         redrawCurrentPage();
         return;
     }
