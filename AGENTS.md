@@ -4,7 +4,7 @@ Portable marine GPS instrument: ST7796 **480×320** on the ESP32-S3 (the only bo
 since 2026-11-01; the classic-ESP32 240×320 build is retired), 3 buttons, GPS
 UART2, WiFi AP+STA, OTA self-update on the `/ota/v2` channel. Main screen: top
 bar (WiFi/data/FX tiles + DEV tile when the server mode is DEV, sat count right),
-then row 1 = instant speed + a square bearing-ring cell, row 2 = max speed,
+then row 1 = instant speed + a square bearing-ring cell, row 2 = avg+max,
 session time, wind and bearing, plus a hint spine down the right edge naming each
 of the three buttons.
 
@@ -152,10 +152,14 @@ above the digit line). Row 1 (`ROW1_H` 188 px = 29 mm): instant speed cell
 re-fits its font and height to the cell, per-glyph diff + one-off wipe on a
 width change) | SQUARE bearing-ring cell (`BRG_W` 188, dial `cmpR` 86 = o172,
 inscribed with an 8 px margin). Row 2 (`ROW2_Y` 218, 102 px): four cells —
-max speed | session time (136 px: the clock needs it, "12:34" is 123 px) | wind |
-bearing — each a font-6 VALUE with its font-2 label **UNDERNEATH it** (`ROW2_VALUE_Y`
+avg+max | session time (136 px: the clock needs it, "12:34" is 123 px) | wind |
+bearing — a font-6 VALUE with its font-2 label **UNDERNEATH it** (`ROW2_VALUE_Y`
 266, `ROW2_LABEL_Y` 292), and the wipes keyed to `ROW2_VALUE_TOP`, never to the
-label. Right edge: a 29 px (4.5 mm) **hint spine** running the FULL panel height,
+label. Cell 1 is the exception (`3S` scope toggle): avg and max are **STACKED**,
+one font-4 (26 px) value per line right-aligned at `AVGMAX_VALUE_R`, each with its
+own font-2 caption at the cell's left edge (`AVGMAX_ROW1_Y` 248 / `AVGMAX_ROW2_Y`
+290), and each line wipes only itself (the average moves every fix, the max
+rarely). Right edge: a 29 px (4.5 mm) **hint spine** running the FULL panel height,
 cut into three cells at the panel thirds — one label per physical button, turned
 90° (spine text: letters on their side, read top to bottom), short press WHITE
 and long press GRAY: `RACE CFG`, `BEAR DIAG`, `PART ALL`. It replaces the old

@@ -344,6 +344,7 @@ void drawTopBar(TinyGPSPlus &gps)
 // Cell caches: values redrawn only on change (no flicker), space-padded
 // to overwrite narrower predecessors. Reset in initScreen().
 static String lastMaxStr = "";
+static String lastAvgStr = "";   // cell 1 carries avg AND max now
 static String lastSesStr = "";
 static String lastWndStr = "";
 static String lastBrgStr = "";
@@ -425,6 +426,19 @@ static const int ROW2_VALUE_Y = SCR_H - 54;                  // 266: font-6 bloc
 static const int ROW2_LABEL_Y = SCR_H - 28;                  // 292: label top (font 2)
 static const int ROW2_VALUE_TOP = ROW2_VALUE_Y - 24;         // 250: font-6 block top
 static const int ROW2_VALUE_H = 48;                          // font 6 height
+
+// Cell 1 is the only row-2 cell with TWO numbers, so it has its own anatomy
+// (2026-11-04): avg and max STACKED, one per line, each with a font-2 caption
+// against the cell's left edge and a font-4 (26 px) value right-aligned. Side by
+// side each number had 45 px — enough for font 4 but the pair read as one lump
+// with no room to name it. 26 px rows on 42 px pitch in the 102 px cell leave
+// the same air above the top line as the other cells have above their value,
+// and the captions carry what the single "Avg/Max" label could not.
+static const int AVGMAX_LABEL_X = 6;                    // caption left edge
+static const int AVGMAX_ROW1_Y = ROW2_Y + 30;           // 248: avg value centre
+static const int AVGMAX_ROW2_Y = ROW2_Y + 72;           // 290: max value centre
+static const int AVGMAX_VALUE_R = ROW2_EDGE[1] - 5;     // 95: value right edge
+static const int AVGMAX_VALUE_X0 = 40;                  // value band's left edge
 
 static void drawMainGrid()
 {
@@ -598,6 +612,7 @@ static void statsSample(double kn, bool valid)
 }
 
 static double statsSessionMaxKn() { return stSesMaxKn; }
+static double statsSessionAvgKn() { return stSesMs ? stSesSumKn / stSesMs : 0.0; }
 static double statsPartialAvgKn() { return stParMs ? stParSumKn / stParMs : 0.0; }
 static double statsPartialMaxKn() { return stParMaxKn; }
 static unsigned long statsSessionMs() { return millis(); }                    // since boot
@@ -615,6 +630,7 @@ static void partialReset()
 static void statsForceRedraw()
 {
   lastMaxStr = "";
+  lastAvgStr = "";   // cell 1's pair changes together with the 3S scope
   lastSesStr = "";
 }
 
@@ -872,12 +888,14 @@ void drawSpeed(TinyGPSPlus &gps)
   statsSample(knots, fixOk);
 
   double value = knots;
-  // Cell 1: the session's max, or the PARTIAL's average (3S toggles).
-  double maxValue = showPartial ? statsPartialAvgKn() : statsSessionMaxKn();
-  double avgPartial = statsPartialAvgKn();
-  if (config.speedUnit == 1) { value *= 1.852; maxValue *= 1.852; avgPartial *= 1.852; }
-  else if (config.speedUnit == 2) { value *= 1.15078; maxValue *= 1.15078; avgPartial *= 1.15078; }
-  (void)avgPartial;
+  // Cell 1 shows BOTH numbers for the selected scope (3S): the average and the
+  // max together, so the toggle changes which window they describe rather than
+  // which number you get. The partial max is reset by 3L with the rest of the
+  // partial, so "start a new partial" clears both.
+  double avgValue = showPartial ? statsPartialAvgKn() : statsSessionAvgKn();
+  double maxValue = showPartial ? statsPartialMaxKn() : statsSessionMaxKn();
+  if (config.speedUnit == 1) { value *= 1.852; avgValue *= 1.852; maxValue *= 1.852; }
+  else if (config.speedUnit == 2) { value *= 1.15078; avgValue *= 1.15078; maxValue *= 1.15078; }
 
   // Instant speed cell (row 1, cols 1-2): unit label top-center, value
   // centered below — sized for "88.8" (font 8) + margins top and bottom.
@@ -917,44 +935,59 @@ void drawSpeed(TinyGPSPlus &gps)
     lastSpdFont = 8;   // font 8 equivalent; kept so initScreen() resets cleanly
   }
 
-  // Row 2, cells 1 and 2: max speed and session time. Each value redraws only
-  // on change; a narrower value wipes its cell zone first (no ghosts).
-  const int cellMaxX = ROW2_CX[0];
+  // Row 2, cells 1 and 2: avg+max speed (stacked) and the clock. Each number
+  // redraws only on change, and only its OWN line is wiped: the average moves
+  // on every valid fix while the max moves rarely, so one shared wipe would
+  // blink the pair once a second.
   const int cellSesX = ROW2_CX[1];
   const bool hasValue = stHasFix;
-  String maxPadded;
-  if (hasValue) {
-    maxPadded = " " + String(maxValue, 1) + " ";
-  } else {
-    maxPadded = " --- ";
-  }
-  // The two row-2 mode labels are the only text whose glyph widths change with
-  // the 3S toggle ("Session time" vs "Partial time" are both 12 chars, but not
-  // the same 12). Wipe their band once on a mode change so the old string's
-  // edges cannot survive. Only cells 1-2: the wind label does not change with
-  // the mode, so wiping across it just made it blink on every toggle.
+  String avgTxt = hasValue ? String(avgValue, 1) : String("---");
+  String maxTxt = hasValue ? String(maxValue, 1) : String("---");
+  // Only cell 2's label changes with the 3S toggle ("Session time" vs "Partial
+  // time" — both 12 chars, but not the same 12). Wipe its band once on a mode
+  // change so the old string's edges cannot survive. Cell 1's "Avg"/"Max"
+  // captions are static and its stacked values reach further down than the
+  // other cells' single value, so this must NOT start at x=1 any more.
   static int lastLabelMode = -1;
   const int labelMode = showPartial ? 1 : 0;
   if (labelMode != lastLabelMode) {
     // From just under the value block to the bottom edge: the value's own clear
     // -out stops at ROW2_VALUE_Y + 24, and a wipe that started any higher would
     // shave the digits' last rows on every 3S toggle.
-    tft.fillRect(1, ROW2_VALUE_Y + 25, ROW2_EDGE[2] - 2,
+    tft.fillRect(ROW2_EDGE[1] + 1, ROW2_VALUE_Y + 25,
+                 ROW2_EDGE[2] - ROW2_EDGE[1] - 2,
                  SCR_H - (ROW2_VALUE_Y + 25), BG);
     lastLabelMode = labelMode;
   }
 
-  if (maxPadded != lastMaxStr) {
-    if (maxPadded.length() < lastMaxStr.length())
-      tft.fillRect(ROW2_EDGE[0] + 3, ROW2_VALUE_TOP - 4,
-                   ROW2_EDGE[1] - ROW2_EDGE[0] - 6, ROW2_VALUE_H + 8, BG);
+  if (avgTxt != lastAvgStr) {
+    // Only this line: the pair no longer shares a band, so one number changing
+    // cannot drag the other with it.
+    tft.fillRect(AVGMAX_VALUE_X0, AVGMAX_ROW1_Y - 14,
+                 AVGMAX_VALUE_R - AVGMAX_VALUE_X0 + 1, 28, BG);
+    const int valW = AVGMAX_VALUE_R - AVGMAX_VALUE_X0;
     tft.setTextColor(WHITE, BG);
-    tft.setTextDatum(MC_DATUM);
-    tft.drawString(maxPadded, cellMaxX, ROW2_VALUE_Y,
-                   fitValueFont(maxPadded, ROW2_EDGE[1] - ROW2_EDGE[0] - 4));
-    lastMaxStr = maxPadded;
+    tft.setTextDatum(MR_DATUM);
+    tft.drawString(avgTxt, AVGMAX_VALUE_R, AVGMAX_ROW1_Y,
+                   tft.textWidth(avgTxt, 4) <= valW ? 4 : 2);
+    lastAvgStr = avgTxt;
   }
-  drawCellLabel(showPartial ? "Avg Speed" : "Max Speed", cellMaxX, ROW2_LABEL_Y);
+  if (maxTxt != lastMaxStr) {
+    tft.fillRect(AVGMAX_VALUE_X0, AVGMAX_ROW2_Y - 14,
+                 AVGMAX_VALUE_R - AVGMAX_VALUE_X0 + 1, 28, BG);
+    const int valW = AVGMAX_VALUE_R - AVGMAX_VALUE_X0;
+    tft.setTextColor(WHITE, BG);
+    tft.setTextDatum(MR_DATUM);
+    tft.drawString(maxTxt, AVGMAX_VALUE_R, AVGMAX_ROW2_Y,
+                   tft.textWidth(maxTxt, 4) <= valW ? 4 : 2);
+    lastMaxStr = maxTxt;
+  }
+  // Captions name the two lines, in the order they are stacked. Static strings,
+  // redrawn in place (the pair's own clear-outs start to their right).
+  tft.setTextColor(WHITE, BG);
+  tft.setTextDatum(ML_DATUM);
+  tft.drawString("Avg", AVGMAX_LABEL_X, AVGMAX_ROW1_Y, 2);
+  tft.drawString("Max", AVGMAX_LABEL_X, AVGMAX_ROW2_Y, 2);
 
   // Cell 2: session time (since boot) or the partial's clock (since 3L).
   // One font-6 string, real colon: the cell is 136px and "12:34" is 123px.
@@ -1297,6 +1330,7 @@ void initScreen() {
   prevFixTile = -1;
   prevDevMode = TriState::Unknown;
   lastMaxStr = "";
+  lastAvgStr = "";
   lastSesStr = "";
   lastWndStr = "";
   lastBrgStr = "";
