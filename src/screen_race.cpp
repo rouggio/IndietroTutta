@@ -912,8 +912,11 @@ static void drawStaticLayer(const RaceProj& p, double rotEff,
         if (havePrev && haveNext && raceSession.markCount > 0) {
             projToPx(p, prevLat, prevLon, px, py);
             projToPx(p, nxtLat, nxtLon, qx, qy);
-            if ((px != qx || py != qy) && clipToMap(px, py, qx, qy))
-                tft.drawLine(px, py, qx, qy, RFG);
+            // 2 px wide (user, 2026-11-04): the grey connectors are hairlines, the
+            // leg you are sailing has to read as the course's main line. Inset 1
+            // because a wide line is drawn centred on the segment.
+            if ((px != qx || py != qy) && clipToMap(px, py, qx, qy, 1))
+                tft.drawWideLine(px, py, qx, qy, 2, RFG);
         }
     }
     uint8_t tIdx = 255;

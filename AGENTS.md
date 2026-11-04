@@ -219,7 +219,9 @@ except the leg being sailed, which is WHITE** (user, 2026-11-04): mark→mark,
 start-line centre→first mark and last mark→finish (or the start line again when
 the finish is the same line — that last leg is real on a W/L) are `RDIM`, and the
 one from the mark just rounded (or the line crossed) to the current destination is
-`RFG`; pre-start the lit leg is start line→mark 1, the leg you are about to sail.
+`RFG` — and it is drawn **2 px wide** (the grey ones are hairlines), so the leg you
+are sailing reads as the course's main line; pre-start the lit leg is start
+line→mark 1, the leg you are about to sail.
 Spine words (`raceHints()`):
 `MAIN`/`MENU` and the **current view**, `FULL` or `AUTO` (`2S` flips it); cells 2
 and 3 are empty — nothing else has a button on this page — and
