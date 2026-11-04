@@ -155,9 +155,13 @@ re-fits its font and height to the cell, per-glyph diff + one-off wipe on a
 width change) | SQUARE bearing-ring cell (`BRG_W` 188, dial `cmpR` 86 = o172,
 inscribed with an 8 px margin). Row 2 (`ROW2_Y` 218, 102 px): four cells —
 avg+max | session time (136 px: the clock needs it, "12:34" is 123 px) | wind |
-bearing — a font-6 VALUE with its font-2 label **UNDERNEATH it** (`ROW2_VALUE_Y`
+bearing - a font-6 VALUE with its font-2 label **UNDERNEATH it** (`ROW2_VALUE_Y`
 266, `ROW2_LABEL_Y` 292), and the wipes keyed to `ROW2_VALUE_TOP`, never to the
-label. Cell 1 is the exception (`3S` scope toggle): avg and max are **STACKED**,
+label. **The session clock is `MM:SS`, and `HH:MM:SS` past the hour** (todo 76,
+user 2026-11-04): the three-field string is 8 glyphs, so `fitValueFont()` drops
+it 6 → 4 by itself and the cell keeps its width; the band is wiped on a **font**
+change as well as on a shorter string, because a font drop is a HEIGHT change and
+the clock only ever grows (the old `(sesSec/60) % 100` also wrapped at 1h39). Cell 1 is the exception (`3S` scope toggle): avg and max are **STACKED**,
 one font-4 (26 px) value per line right-aligned at `AVGMAX_VALUE_R`, each with its
 own font-2 caption at the cell's left edge (`AVGMAX_ROW1_Y` 248 / `AVGMAX_ROW2_Y`
 290), and each line wipes only itself (the average moves every fix, the max

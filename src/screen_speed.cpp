@@ -343,6 +343,7 @@ void drawTopBar(TinyGPSPlus &gps)
 static String lastMaxStr = "";
 static String lastAvgStr = "";   // cell 1 carries avg AND max now
 static String lastSesStr = "";
+static uint8_t lastSesFont = 0;   // the clock drops 6 -> 4 at the hour
 static String lastWndStr = "";
 static String lastBrgStr = "";
 static String lastCenStr = "";
@@ -629,6 +630,7 @@ static void statsForceRedraw()
   lastMaxStr = "";
   lastAvgStr = "";   // cell 1's pair changes together with the 3S scope
   lastSesStr = "";
+  lastSesFont = 0;   // and so does the clock's font decision
 }
 
 // --------------------------------------------------
@@ -969,19 +971,35 @@ void drawSpeed(TinyGPSPlus &gps)
   // One font-6 string, real colon: the cell is 136px and "12:34" is 123px.
   const unsigned long sesSec =
       (showPartial ? statsPartialMs() : statsSessionMs()) / 1000UL;
-  char sesBuf[8];
-  snprintf(sesBuf, sizeof(sesBuf), "%02lu:%02lu",
-           (sesSec / 60UL) % 100UL, sesSec % 60UL);
+  // MM:SS under an hour, HH:MM:SS past it (todo 76, user 2026-11-04). The minute
+  // field no longer wraps at 100: past 1h39 that used to run backwards to 40:00.
+  // The three-field string is 8 glyphs, which font 6 cannot hold in this cell, so
+  // fitValueFont() drops it to font 4 on its own - same font while it still fits.
+  char sesBuf[16];
+  if (sesSec >= 3600UL) {
+    snprintf(sesBuf, sizeof(sesBuf), "%02lu:%02lu:%02lu",
+             sesSec / 3600UL, (sesSec / 60UL) % 60UL, sesSec % 60UL);
+  } else {
+    snprintf(sesBuf, sizeof(sesBuf), "%02lu:%02lu",
+             sesSec / 60UL, sesSec % 60UL);
+  }
   String sesTxt = String(sesBuf);
-  if (sesTxt != lastSesStr) {
-    if (sesTxt.length() < lastSesStr.length())
+  const uint8_t sesFont =
+      fitValueFont(sesTxt, ROW2_EDGE[2] - ROW2_EDGE[1] - 4);
+  // Repaint when the TEXT changes (every second) or the FONT does. The font only
+  // changes at the hour, and it is a HEIGHT change: the "new string is shorter"
+  // wipe below cannot cover it (this clock only ever grows), so a font switch
+  // wipes the whole band - otherwise the dropped font-6 box leaves the old
+  // digits' top and bottom rows standing above and below the font-4 ones.
+  if (sesTxt != lastSesStr || sesFont != lastSesFont) {
+    if (sesTxt.length() < lastSesStr.length() || sesFont != lastSesFont)
       tft.fillRect(ROW2_EDGE[1] + 3, ROW2_VALUE_TOP - 4,
                    ROW2_EDGE[2] - ROW2_EDGE[1] - 6, ROW2_VALUE_H + 8, BG);
     tft.setTextColor(WHITE, BG);
     tft.setTextDatum(MC_DATUM);
-    tft.drawString(sesTxt, cellSesX, ROW2_VALUE_Y,
-                   fitValueFont(sesTxt, ROW2_EDGE[2] - ROW2_EDGE[1] - 4));
+    tft.drawString(sesTxt, cellSesX, ROW2_VALUE_Y, sesFont);
     lastSesStr = sesTxt;
+    lastSesFont = sesFont;
   }
   drawCellLabel(showPartial ? "Partial time" : "Session time", cellSesX, ROW2_LABEL_Y);
 
@@ -1308,6 +1326,7 @@ void initScreen() {
   lastMaxStr = "";
   lastAvgStr = "";
   lastSesStr = "";
+  lastSesFont = 0;
   lastWndStr = "";
   lastBrgStr = "";
   lastCenStr = "";
