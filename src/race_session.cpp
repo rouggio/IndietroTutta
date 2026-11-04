@@ -258,6 +258,12 @@ static void applyEnvWind(JsonObject w)
     bufferedSerialPrintln(String("[RACE] env wind ") + raceSession.envWindDir + "° " + raceSession.envWindSpeed + " kn");
 }
 
+// The session this device just ABANDONED, and the reason it is ignored for a
+// beat: see raceSessionParse(). -1 = nothing suppressed.
+static long suppressSessionId = -1;
+
+void raceSessionSuppressPush(long id) { suppressSessionId = id > 0 ? id : -1; }
+
 bool raceSessionParse(const char* healthBody)
 {
     if (!healthBody || !healthBody[0]) {
@@ -272,6 +278,7 @@ bool raceSessionParse(const char* healthBody)
     applyEnvWind(doc["wind"]);
     JsonObject sess = doc["session"];
     if (sess.isNull()) {
+        suppressSessionId = -1; // the backend agrees it is gone
         // Explicitly unassigned (backend reachable, body parsed): drop a
         // stale backend course so the display goes clean. Offline (no body
         // at all) keeps the cache; local practice (id -1) is never cleared.
@@ -291,6 +298,16 @@ bool raceSessionParse(const char* healthBody)
     RaceSession next;
     if (!sessionFromJson(sess, next)) {
         return false;
+    }
+    // The session we just ABANDONED: the backend answers /health with it for a
+    // beat or two while the request is in flight, and re-adopting it put the race
+    // screen back up only to drop it again. Ignore it (and anything else for that
+    // id) until the backend stops sending it or a different session arrives.
+    if (suppressSessionId > 0) {
+        if (next.sessionId == suppressSessionId) {
+            return false;
+        }
+        suppressSessionId = -1; // a different session: the abandon landed
     }
     const bool geometryChanged = !sameGeometry(raceSession, next);
     const bool volatileChanged = raceSession.valid &&

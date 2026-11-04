@@ -77,6 +77,12 @@ bool raceSessionSave();
 // Returns true when the live session changed.
 bool raceSessionParse(const char* healthBody);
 
+// After an ABANDON from the device: ignore pushes for this session id until the
+// backend stops sending it. The abandon request is in flight for a beat or two,
+// and re-adopting the session we just dropped put the race screen back up only to
+// remove it again — the page flickered through the whole abandon.
+void raceSessionSuppressPush(long id);
+
 // UTC epoch from GPS date/time. -1 when the fix has no usable date/time.
 // (TinyGPS++ getters are non-const, so this takes a mutable reference.)
 // Also calibrates the wall clock (see raceWallEpoch).

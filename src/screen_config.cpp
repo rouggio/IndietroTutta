@@ -49,8 +49,7 @@ static const int TITLE_H = 44;
 // right-aligned against the far edge of the content area, which lines the
 // values up vertically no matter how long each one is. No colons - the
 // alignment says "label, value" on its own.
-static const int MARK_X = 18;                     // ">" for the selected row
-static const int LABEL_X = 48;
+static const int LABEL_X = 18;
 static const int VALUE_RIGHT = HINT_BAR_X - 18;   // 433: right edge of the values
 
 static int selRow = ROW_OTA;
@@ -111,11 +110,9 @@ static void drawRow(int i)
     // value cannot leave the tail of a longer one behind.
     tft.fillRect(0, y - 3, HINT_BAR_X, ROW_DY, BG);
 
-    if (sel) {
-        tft.setTextDatum(TL_DATUM);
-        tft.setTextColor(TFT_YELLOW, BG);
-        tft.drawString(">", MARK_X, y, 4);
-    }
+    // The selected row is the YELLOW one - no ">" marker (user, 2026-11-04): it
+    // pushed every label 30 px right and was the only use of that slot, which is
+    // why the labels now start at the same x as the race menu's.
     tft.setTextColor(sel ? TFT_YELLOW : WHITE, BG);
     tft.setTextDatum(TL_DATUM);
     tft.drawString(rowLabel(i), LABEL_X, y, 4);
@@ -162,13 +159,13 @@ void drawScreenConfig(bool requiresInit)
 
     // ---- Hint spine ----
     // Same column as MAIN, with CONFIG's own words. 1S = back to MAIN, 1L = an
-    // immediate OTA check; 2S walks the selection; 3S applies (toggles) the
-    // selected row. Only button 1 has a long press, so the other two cells
+    // immediate OTA check; 2S walks the selection (NEXT); 3S applies/toggles the
+    // selected row (SET). Only button 1 has a long press, so the other two cells
     // carry a single word.
     hintBarGrid();
     hintBarCell(0, "BACK", "OTA", WHITE, HINT_LONG);
-    hintBarCell(1, "SELECT", nullptr, WHITE, WHITE);
-    hintBarCell(2, "TOGGLE", nullptr, WHITE, WHITE);
+    hintBarCell(1, "NEXT", nullptr, WHITE, WHITE);
+    hintBarCell(2, "SET", nullptr, WHITE, WHITE);
 }
 
 void screenConfigButton(Button button, ButtonEvent event)

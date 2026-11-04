@@ -170,9 +170,9 @@ clear (page switch, `/screen` grab, the race menu's `fillScreen`) must call
 `BEAR DIAG` / `PARTIAL` (or `SESSION` when the partial is on screen: that cell
 names the scope the next `3S` selects), RACE: `MAIN MENU` / the current view
 (`FULL`/`AUTO`; `MENU` alone when there is no session), `RACE OPTIONS` menu:
-`BACK` / `SELECT` / `PICK`, course picker: `BACK` / `NEXT` / `PICK`, course
-options: `ROW`+`BACK` / `CHANGE` / `START`, CONFIG: `BACK OTA` / `SELECT` /
-`TOGGLE`. **The renderer advances by each glyph's MEASURED width**
+`BACK` / `NEXT` / `SET` on **every** menu page (race options, course picker,
+course options, CONFIG) — 1S back, 2S next, 3S set (user, 2026-11-04); CONFIG's
+button 1 also carries its long press as `BACK` / `OTA`. **The renderer advances by each glyph's MEASURED width**
 (`spineCharW`/`spineLen`): a fixed 8 px step out of an 8 px sprite shaved the wide
 font-2 letters, so `MENU` came out with its stems cut - the sprite is now 16 px
 and the box length is the word's own advance. The short and long words are
@@ -198,7 +198,10 @@ back in) — see the block comment before the gate.
 (`MAP_W` = `HINT_BAR_X` 451 since 2026-11-04 — the map, its frame, the 3-cell
 header grid and every clip derive from `MAP_W`, so nothing paints over the
 spine). Header = one font-4 row DST | SPD | TIME, plus the 30 px alert banner
-over the map's bottom edge; map = wireframe +
+over the map's bottom edge. **TIME is colon form** (`fmtRaceCell()`): `MM:SS`, and
+`HH:MM:SS` once the leg passes an hour (user, 2026-11-04) — the banner's
+`GUN m'ss''` keeps sailing notation, because that one is an announcement with a
+word in front, not a clock. map = wireframe +
 **the boat as an arrow** — the usual triangle (or an edge dot when clamped) plus
 one **solid yellow tail behind it** — 2 px wide (a shaft, not a hairline),
 `STUB_PX` 20 px, starting at the triangle's **base** (`BOAT_BASE_PX` 5 px behind
@@ -211,7 +214,13 @@ stubs it replaced (yellow toward the destination, cyan along the COG) went on
 2026-11-04: the fit and the target ring already say where the mark is, and the
 destination line was drawing over the leg;
 mark numbers drawn above the circles; empty state clears the body and
-shows a 3-line message; map ≤1Hz, text padded. Spine words (`raceHints()`):
+shows a 3-line message; map ≤1Hz, text padded. **Every course connector is grey
+except the leg being sailed, which is WHITE** (user, 2026-11-04): mark→mark,
+start-line centre→first mark and last mark→finish (or the start line again when
+the finish is the same line — that last leg is real on a W/L) are `RDIM`, and the
+one from the mark just rounded (or the line crossed) to the current destination is
+`RFG`; pre-start the lit leg is start line→mark 1, the leg you are about to sail.
+Spine words (`raceHints()`):
 `MAIN`/`MENU` and the **current view**, `FULL` or `AUTO` (`2S` flips it); cells 2
 and 3 are empty — nothing else has a button on this page — and
 **with no session the only cell is `MENU`, alone and in the long-press colour**,
@@ -327,11 +336,11 @@ for old scripts, nothing else.
   backs out. It is a **CONFIG-style table** — label left at `MENU_LABEL_X` 18,
   value right-aligned at `MENU_VALUE_R` 433; no row carries a value since the
   `Auto distance` row went (2026-11-04) — and it carries its own spine: `BACK` /
-  `SELECT` / `PICK`.
-- PRACTICE SETUP: Start → course picker (`2S` next, `3S` choose, `1S` back;
+  `NEXT` / `SET`.
+- PRACTICE SETUP: Start → course picker (`2S` next, `3S` pick, `1S` back;
   pre-selected on the remembered course, else Windward-Leeward) → **Options**
-  (`2S` cycles the highlighted row's value, `1S` moves between the two rows,
-  `1L` back to the list, `3S` start). Gun 10/30/60/120/300s, line 10/20/30m,
+  (`2S` walks the rows, `3S` sets the highlighted one, `1S` back to the list).
+  Gun 10/30/60/120/300s, line 10/20/30m,
   **placement Upwind | Ahead**; the line sits `distM` metres from the boat
   along that direction, and the shape is laid against it — Upwind = the wind
   (session wind, then the cached venue wind, then the boat's own bearing),
@@ -349,8 +358,16 @@ for old scripts, nothing else.
   never drops the user into a different-looking world. The picker's `1S`/`1L`
   **returns to `RACE OPTIONS`** (`courseBackToMenu()`), not to the map: that is
   where the setup was entered from and the race page has nothing to add while it
-  is unfinished. Spine: picker `BACK`/`NEXT`/`PICK`, options
-  `ROW`+`BACK`/`CHANGE`/`START`.
+  is unfinished. The options page ends with an explicit **`Start race`** row
+  (`OPT_START`) — the action used to be "3S anywhere", which left the last screen
+  with no visible go (user, 2026-11-04) — and both setup pages carry the same
+  spine as every other menu: `BACK` / `NEXT` / `SET`.
+- **An ABANDON from the device suppresses the session it just dropped**
+  (`raceSessionSuppressPush()`): the request is asynchronous, so the next
+  heartbeat or two still carry that session, and re-adopting it put the race
+  screen back up only to remove it again — the page flickered through the whole
+  abandon. Pushes for that id are ignored until the backend answers
+  `"session":null` (or a different session arrives).
 - **The course library is in RAM and refreshed on the backend task, so the
   picker must never read it mid-rebuild.** Three rules keep the list honest
   (`race_courses.cpp`): a fetch replaces the pool **only after the payload has
@@ -380,11 +397,13 @@ for old scripts, nothing else.
   `OFFLINE` session on purpose. With nothing to show, the page's own empty state
   says so. `sys.onlineFresh` in `/status` is a **diagnostic only** now. Losing the
   link MID-session never ejects either.
-- CONFIG: `R` select row, `RR` apply, `LL` force OTA now. Seven rows in **both**
-  server modes — `OTA on boot, Server, Speed unit, Key beep, Boot sound, Gun cue,
-  FX source` (todo 51 removed the PROD-only hide of the last one, and a mode
-  switch no longer forces the fix source back to REAL). Rows are drawn from
-  `ROW_COUNT`, so an index needs no remapping; there is no shrinking list.
+- CONFIG: `2S` next row, `3S` set (apply/toggle), `1L` force OTA now. Seven rows
+  in **both** server modes - `OTA on boot, Server, Speed unit, Key beep, Boot
+  sound, Gun cue, FX source` (todo 51 removed the PROD-only hide of the last one,
+  and a mode switch no longer forces the fix source back to REAL). Rows are drawn
+  from `ROW_COUNT`, so an index needs no remapping; there is no shrinking list.
+  **No `>` marker** (user, 2026-11-04): the yellow row is the selection, and the
+  labels now start at the same x as the race menu's table.
 - Every page switch full-black clear; ghost-clear readouts in speed.
 - NO fillRect/fillScreen/clear on the 200ms refresh path — it flickers. Overwrite
   text in place with space padding instead, e.g. `" " + val + " "` (both sides

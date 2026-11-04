@@ -849,13 +849,72 @@ static bool circleOnMap(int cx, int cy, int r)
 
 // Static course layer: legs, segments, circles, numbers, header wind.
 // Identical pixels every time — safe to repaint over dirty regions.
-static void drawStaticLayer(const RaceProj& p, double rotEff)
+// `haveDest`/`destLat`/`destLon` are the pass's own destination (the same anchor
+// the stub and the AUTO fit use), so the leg being sailed can be lit WHITE.
+static void drawStaticLayer(const RaceProj& p, double rotEff,
+                            bool haveDest, double destLat, double destLon)
 {
     int px = 0, py = 0, qx = 0, qy = 0;
     for (uint8_t i = 0; i + 1 < raceSession.markCount; i++) {
         projToPx(p, raceSession.marks[i].lat, raceSession.marks[i].lon, px, py);
         projToPx(p, raceSession.marks[i + 1].lat, raceSession.marks[i + 1].lon, qx, qy);
         if (clipToMap(px, py, qx, qy)) tft.drawLine(px, py, qx, qy, RDIM);
+    }
+    // The lines are part of the course too (user, 2026-11-04): join the start
+    // line's centre to the first mark and the last mark to the finish line's
+    // centre, in the same grey as the mark-to-mark legs, so the shape reads as
+    // one connected course instead of three disjoint pieces.
+    if (raceSession.markCount > 0) {
+        if (raceSession.startLine.valid) {
+            const RaceSeg& s = raceSession.startLine;
+            projToPx(p, (s.latA + s.latB) / 2.0, (s.lonA + s.lonB) / 2.0, px, py);
+            projToPx(p, raceSession.marks[0].lat, raceSession.marks[0].lon, qx, qy);
+            if (clipToMap(px, py, qx, qy)) tft.drawLine(px, py, qx, qy, RDIM);
+        }
+        if (raceSession.finishLine.valid ||
+            (raceSession.finishSameAsStart && raceSession.startLine.valid)) {
+            // The finish is often the start line (W/L round-the-buoys) and that
+            // last leg is real: connect to whichever segment the finish is.
+            const RaceSeg& s = raceSession.finishLine.valid
+                                   ? raceSession.finishLine
+                                   : raceSession.startLine;
+            projToPx(p, raceSession.marks[raceSession.markCount - 1].lat,
+                     raceSession.marks[raceSession.markCount - 1].lon, px, py);
+            projToPx(p, (s.latA + s.latB) / 2.0, (s.lonA + s.lonB) / 2.0, qx, qy);
+            if (clipToMap(px, py, qx, qy)) tft.drawLine(px, py, qx, qy, RDIM);
+        }
+    }
+    // The leg being sailed is WHITE, every other connector stays grey (user,
+    // 2026-11-04): from the mark just rounded (or the line you crossed) to the
+    // next destination. Pre-start there is no "previous" leg yet, so the start
+    // line lights up toward mark 1 - the leg you are about to sail.
+    {
+        const bool preStart = !raceRunStarted() && !raceRunFinished();
+        double prevLat = 0.0, prevLon = 0.0;
+        bool havePrev = false;
+        const uint8_t prog = raceProgIdx();
+        if (prog > 0 && prog <= raceSession.markCount) {
+            const RaceMark& pm = raceSession.marks[prog - 1];
+            prevLat = pm.lat; prevLon = pm.lon;
+            havePrev = true;
+        } else if (raceSession.startLine.valid) {
+            prevLat = (raceSession.startLine.latA + raceSession.startLine.latB) / 2.0;
+            prevLon = (raceSession.startLine.lonA + raceSession.startLine.lonB) / 2.0;
+            havePrev = true;
+        }
+        double nxtLat = destLat, nxtLon = destLon;
+        bool haveNext = haveDest;
+        if (preStart && raceSession.markCount > 0) {
+            nxtLat = raceSession.marks[0].lat;
+            nxtLon = raceSession.marks[0].lon;
+            haveNext = true;
+        }
+        if (havePrev && haveNext && raceSession.markCount > 0) {
+            projToPx(p, prevLat, prevLon, px, py);
+            projToPx(p, nxtLat, nxtLon, qx, qy);
+            if ((px != qx || py != qy) && clipToMap(px, py, qx, qy))
+                tft.drawLine(px, py, qx, qy, RFG);
+        }
     }
     uint8_t tIdx = 255;
     bool tLine = false;
@@ -1140,7 +1199,7 @@ static void drawRaceMap(TinyGPSPlus& gps, bool full)
         // extents stay valid and the erase keeps working normally. Nothing
         // needs forgetting here any more.
         drawFrameChrome();
-        drawStaticLayer(p, rotEff);
+        drawStaticLayer(p, rotEff, haveDestHere, destLat, destLon);
         lastLat0 = p.lat0; lastLon0 = p.lon0; lastScale = p.scale;
         dynOk = false;
         mapRepainted = true; // the view tag lives in this area; see below
@@ -1219,7 +1278,7 @@ static void drawRaceMap(TinyGPSPlus& gps, bool full)
                 tft.fillTriangle(x1, y1, x2, y2, x3, y3, RBG);
             }
         }
-        drawStaticLayer(p, rotEff);
+        drawStaticLayer(p, rotEff, haveDestHere, destLat, destLon);
         drawFrameChrome();
     }
     if (haveTail) {
@@ -1498,6 +1557,20 @@ static void fmtRaceClock(char* out, size_t n, char sign, long secs)
     else snprintf(out, n, "%s%ld''", sgn, secs);
 }
 
+// Compact clock for the TIME cell: colon form (user, 2026-11-04) — "MM:SS"
+// under an hour, "HH:MM:SS" past it (and it never wraps: the old sailing
+// notation was fine, but a two-hour leg has to read 01:05:23).
+static void fmtRaceCell(char* out, size_t n, char sign, long secs)
+{
+    if (secs < 0) secs = 0;
+    char sgn[2] = {sign, 0};
+    const long h = secs / 3600;
+    const long m = (secs / 60) % 60;
+    const long s = secs % 60;
+    if (h > 0) snprintf(out, n, "%s%02ld:%02ld:%02ld", sgn, h, m, s);
+    else snprintf(out, n, "%s%02ld:%02ld", sgn, m, s);
+}
+
 static void drawRaceText(TinyGPSPlus& gps)
 {
     // Wall clock (GPS-calibrated, ticks through fix gaps) so the countdown
@@ -1611,30 +1684,30 @@ static void drawRaceText(TinyGPSPlus& gps)
         distM = (long)dist > 9999 ? 9999 : (long)dist;
         showBrg = true;
     }
-    // Compact race clock for the TIME cell: sailing notation (fmtRaceClock),
-    // SIGNED ONLY WHILE COUNTING DOWN: negative to the gun, and unsigned once
-    // the race is running (a "+" on every elapsed second was pure noise).
+    // Compact race clock for the TIME cell: COLON form (fmtRaceCell) — MM:SS,
+    // and HH:MM:SS past the hour. SIGNED ONLY WHILE COUNTING DOWN: negative to
+    // the gun, unsigned once the race is running (a "+" on every elapsed second
+    // was pure noise). The banner's "GUN m'ss''" keeps sailing notation: it is an
+    // announcement with a word in front, not a clock.
     char tim[14];
     if (finHold) {
         // The held result (todo 38): frozen at the finish, and it survives the
         // session being dropped by the backend — which is the whole point.
-        fmtRaceClock(tim, sizeof(tim), '\0', finHoldElapsed);
+        fmtRaceCell(tim, sizeof(tim), '\0', finHoldElapsed);
     } else if (raceSession.valid && gun > 0 && now > 0) {
         if (now < gun) {
-            // Negative until the gun: the countdown reads as "time to go" and
-            // the same cell flips to "0'11''" past the gun without changing
-            // shape. Under a minute it is seconds only ("-46''") — see
-            // fmtRaceClock.
-            fmtRaceClock(tim, sizeof(tim), '-', gun - now);
+            // Negative until the gun ("-00:46"), and the same cell flips to
+            // "00:11" past the gun without changing shape.
+            fmtRaceCell(tim, sizeof(tim), '-', gun - now);
         } else if (!raceRunStarted()) {
             // Past the gun but not away cleanly. Keep the clock running
             // from the gun — OCS is announced on the banner, so this cell
             // stays a time (it used to read "OCS"/"GO" and went blank as
             // a clock while the boat was still OCS).
-            fmtRaceClock(tim, sizeof(tim), '\0', now - gun);
+            fmtRaceCell(tim, sizeof(tim), '\0', now - gun);
         } else {
             const long base = raceRunFinished() && raceRunEndEpoch() > 0 ? raceRunEndEpoch() : now;
-            fmtRaceClock(tim, sizeof(tim), '\0', base - raceRunStartEpoch());
+            fmtRaceCell(tim, sizeof(tim), '\0', base - raceRunStartEpoch());
         }
     } else if (raceSession.valid && gun > 0) {
         snprintf(tim, sizeof(tim), "WAIT");
@@ -1827,8 +1900,8 @@ static void drawRaceMenu(bool full)
     // out, 2S walks the rows, 3S picks the highlighted one.
     hintBarGrid();
     hintBarCell(0, "BACK", nullptr, TFT_WHITE, TFT_WHITE);
-    hintBarCell(1, "SELECT", nullptr, TFT_WHITE, TFT_WHITE);
-    hintBarCell(2, "PICK", nullptr, TFT_WHITE, TFT_WHITE);
+    hintBarCell(1, "NEXT", nullptr, TFT_WHITE, TFT_WHITE);
+    hintBarCell(2, "SET", nullptr, TFT_WHITE, TFT_WHITE);
 }
 
 static void menuClose()
@@ -1860,8 +1933,12 @@ static void courseBackToMenu()
 }
 
 // ---- Session options (right after picking a course) ----------------------
-// Two rows; R cycles the highlighted row's value, RR starts the session.
+// Four rows: the three values, then the entry that actually starts the session.
+// 1S leaves, 2S walks the rows, 3S sets (cycles a value / starts the race) - the
+// same 1S/2S/3S language as RACE OPTIONS and CONFIG.
 static uint8_t optRow = 0;
+static const uint8_t OPT_ROWS = 4;
+static const uint8_t OPT_START = 3;
 
 static void gunCycle(int dir)
 {
@@ -1915,7 +1992,12 @@ static void drawSetupPage(bool full)
         // "course placed upwind of you" note - it IS that sentence, as a choice.
         drawTableRow(2, "Placement",
                      practicePrefs().placeAhead ? "Ahead" : "Upwind", optRow == 2);
-        clearTableRowsFrom(3);
+        // The last entry is the action, not a value (user, 2026-11-04): the page
+        // used to start the session from 3S on ANY row, which meant the last
+        // screen had no visible "go". Now it reads like the rest of the menus -
+        // walk to the row, press SET.
+        drawTableRow(3, "Start race", nullptr, optRow == OPT_START);
+        clearTableRowsFrom(4);
     } else if (!courseReady() || courseFetching()) {
         // Not "no courses saved": the pool may still be on its way (or, for a
         // few milliseconds, being rebuilt), and claiming zero rows there is
@@ -1948,18 +2030,15 @@ static void drawSetupPage(bool full)
             drawTableRow(r, nm, nullptr, (top + r) == courseSel);
         }
     }
-    // The words the buttons actually have while setup owns them: 1S leaves the
-    // list (1L backs out of the options), 2S walks/cycles, 3S picks/starts.
+    // The words the buttons actually have while setup owns them: 1S leaves,
+    // 2S walks the rows/courses, 3S sets (picks a course / changes a value /
+    // starts the race).
     hintBarGrid();
-    if (courseView == 1) {
-        hintBarCell(0, "ROW", "BACK", TFT_WHITE, HINT_LONG);
-        hintBarCell(1, "CHANGE", nullptr, TFT_WHITE, TFT_WHITE);
-        hintBarCell(2, "START", nullptr, TFT_WHITE, TFT_WHITE);
-    } else {
-        hintBarCell(0, "BACK", nullptr, TFT_WHITE, TFT_WHITE);
-        hintBarCell(1, "NEXT", nullptr, TFT_WHITE, TFT_WHITE);
-        hintBarCell(2, "PICK", nullptr, TFT_WHITE, TFT_WHITE);
-    }
+    // One language on every menu page (user, 2026-11-04): 1S BACK, 2S NEXT,
+    // 3S SET — the picker and the options differ only in what SET means.
+    hintBarCell(0, "BACK", nullptr, TFT_WHITE, TFT_WHITE);
+    hintBarCell(1, "NEXT", nullptr, TFT_WHITE, TFT_WHITE);
+    hintBarCell(2, "SET", nullptr, TFT_WHITE, TFT_WHITE);
 }
 
 // Open the course picker, pre-selected on the remembered course.
@@ -2079,13 +2158,15 @@ static void raceHints()
     // highlighted value, 3S start.
     if (courseOpen) {
         if (courseView == 1) {
-            hintBarCell(0, "ROW", "BACK", TFT_WHITE, HINT_LONG);
-            hintBarCell(1, "CHANGE", nullptr, TFT_WHITE, TFT_WHITE);
-            hintBarCell(2, "START", nullptr, TFT_WHITE, TFT_WHITE);
+            // Options: 1S leaves, 2S walks the rows (the last one starts the
+            // session), 3S changes the highlighted value / starts.
+            hintBarCell(0, "BACK", nullptr, TFT_WHITE, TFT_WHITE);
+            hintBarCell(1, "NEXT", nullptr, TFT_WHITE, TFT_WHITE);
+            hintBarCell(2, "SET", nullptr, TFT_WHITE, TFT_WHITE);
         } else {
             hintBarCell(0, "BACK", nullptr, TFT_WHITE, TFT_WHITE);
             hintBarCell(1, "NEXT", nullptr, TFT_WHITE, TFT_WHITE);
-            hintBarCell(2, "PICK", nullptr, TFT_WHITE, TFT_WHITE);
+            hintBarCell(2, "SET", nullptr, TFT_WHITE, TFT_WHITE);
         }
         return;
     }
@@ -2331,8 +2412,10 @@ void screenRaceButton(Button button, ButtonEvent event)
     if (courseOpen) {
         if (button == Button::Left && event == ButtonEvent::ShortPress) {
             if (courseView == 1) {
-                // Options: 1S walks Gun -> Distance -> Placement, 1L backs out.
-                optRow = (uint8_t)((optRow + 1) % 3);
+                // Options: 1S BACKS OUT to the course list (the menu language is
+                // 1S back / 2S next / 3S set, user 2026-11-04).
+                courseView = 0;
+                setupFull = true;
                 courseDirty = true;
             } else {
                 courseBackToMenu();   // the picker returns to RACE OPTIONS
@@ -2350,20 +2433,26 @@ void screenRaceButton(Button button, ButtonEvent event)
             return;
         }
         if (courseView == 1) {
-            // Options: R cycles the highlighted row, RR starts.
+            // 2S walks the rows (values then Start race), 3S sets: cycles the
+            // highlighted value, or starts the session on the last row.
             if (button == Button::Right && event == ButtonEvent::ShortPress) {
-                if (optRow == 0) gunCycle(1);
-                else if (optRow == 1) distCycle(1);
-                else placeCycle();
+                optRow = (uint8_t)((optRow + 1) % OPT_ROWS);
                 courseDirty = true;
                 return;
             }
             if (button == Button::Third && event == ButtonEvent::ShortPress) {
-                if (startPickedCourse()) {
-                    courseClose(); // courseVersion bump redraws the new course
-                } else {
-                    showTransient("NO FIX ");
+                if (optRow == OPT_START) {
+                    if (startPickedCourse()) {
+                        courseClose(); // courseVersion bump redraws the new course
+                    } else {
+                        showTransient("NO FIX ");
+                    }
+                    return;
                 }
+                if (optRow == 0) gunCycle(1);
+                else if (optRow == 1) distCycle(1);
+                else placeCycle();
+                courseDirty = true;
                 return;
             }
             return;

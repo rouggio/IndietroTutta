@@ -390,6 +390,10 @@ void courseAbandonSession()
 {
     if (raceSession.valid && raceSession.sessionId > 0) {
         backendAbandonSession(raceSession.sessionId);
+        // Do not let the next few heartbeats hand the same session back: the
+        // abandon is asynchronous, and re-adopting it made the page flicker
+        // through the race screen before it finally went empty.
+        raceSessionSuppressPush(raceSession.sessionId);
     }
     raceRunReset();
     raceSession.valid = false;
