@@ -149,13 +149,24 @@ void hintBarCell(int index, const char *topWord, const char *bottomWord,
   // block has to be centred on the cell as a whole.
   const int len1 = spineLen(topWord);
   const int len2 = n2 ? spineLen(c.bottom.c_str()) : 0;
-  static const int SPINE_GAP = 3;                  // air between the two words
-  const int total = n2 ? (len1 + SPINE_GAP + len2) : len1;
+  // Air between the two words: a visible space, not a seam. The glyph boxes are
+  // tight (a letter's advance is its ink plus a pixel), so 3 px read as one word
+  // run together ("VIEWBEAR"). 8 px is about a font-2 space and separates them.
+  // A pair too tall for the cell shrinks the gap first (never below 3), so
+  // TARGET/WIDE still fits instead of bleeding into the neighbouring cell.
+  static const int SPINE_GAP = 8;
+  const int cellH = cellBot - cellTop - 2;
+  int gap = SPINE_GAP;
+  if (n2 && len1 + gap + len2 > cellH) {
+    gap = cellH - len1 - len2;
+    if (gap < 3) gap = 3;
+  }
+  const int total = n2 ? (len1 + gap + len2) : len1;
   const int cy = (cellTop + cellBot) / 2;
   const int y0 = cy - total / 2;                   // whole block, centred
   const int x = HINT_BAR_X + (HINT_BAR_W - 16) / 2;
   drawSpineWord(x, y0, topWord, topColor);
-  if (n2) drawSpineWord(x, y0 + len1 + SPINE_GAP, bottomWord, bottomColor);
+  if (n2) drawSpineWord(x, y0 + len1 + gap, bottomWord, bottomColor);
 }
 
 void hintBarReset()

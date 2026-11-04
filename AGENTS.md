@@ -168,14 +168,20 @@ one cell only, so no `requiresInit` bookkeeping is needed, but a FULL-SCREEN
 clear (page switch, `/screen` grab, the race menu's `fillScreen`) must call
 `hintBarReset()` or the warm cache leaves a blank column. MAIN: `RACE CFG` /
 `BEAR DIAG` / `PARTIAL` (or `SESSION` when the partial is on screen: that cell
-names the scope the next `3S` selects), RACE: `MAIN MENU` /
-`VIEW BEAR` (and `MENU` alone when there is no session), `RACE OPTIONS` menu:
+names the scope the next `3S` selects), RACE: `MAIN MENU` / the next view & the
+next bearing (`TARGET`/`AUTO`/`MAP` + `HDG`/`WIDE`/`N-UP`; `MENU` alone when
+there is no session), `RACE OPTIONS` menu:
 `BACK` / `SELECT` / `PICK`, course picker: `BACK` / `NEXT` / `PICK`, course
 options: `ROW`+`BACK` / `CHANGE` / `START`, CONFIG: `BACK OTA` / `SELECT` /
 `TOGGLE`. **The renderer advances by each glyph's MEASURED width**
 (`spineCharW`/`spineLen`): a fixed 8 px step out of an 8 px sprite shaved the wide
-font-2 letters, so `MENU` came out with its stems cut — the sprite is now 16 px
-and the box length is the word's own advance.
+font-2 letters, so `MENU` came out with its stems cut - the sprite is now 16 px
+and the box length is the word's own advance. The short and long words are
+separated by `SPINE_GAP` 8 px (about one font-2 space): at the old 3 px the two
+ran together ("VIEWBEAR"), since a font-2 advance is a glyph's ink plus ~1 px.
+The whole block is still centred, and a pair taller than the cell shrinks the gap
+first (never below 3) rather than bleeding into the next cell — `TARGET`/`WIDE`
+is the case that needs it.
 Ring cell (spans both rows, `cmpCx` = `SPEED_W` + 94, `cmpCy` = `BODY_TOP` + 94):
 a **2 px** ring line (TFT_eSPI has no pen width, so two adjacent circles at r and
 r-1 — `drawCompassCircle()`), 30° radial ticks that are TRUE-BEARING marks and
@@ -197,15 +203,12 @@ over the map's bottom edge; map = wireframe +
 boat triangle/edge-dot + ~1 cm dashed yellow stub toward the next mark (2/3 the
 length of the COG stub) + a cyan dashed stub along the boat's own COG (`gps.course`,
 only above 0.5 kn, clipped to the map rect — it can point into the header band);
-mark numbers drawn above the circles; **mode tag** bottom-left (`drawModeTag()`:
-`Map|Target|Auto` + `N-up|Hdg|Wide`, the two axes `2S`/`2L` walk, naming the
-**selected** option — the picture may still fall back, e.g. Auto not engaged or
-heading-up with no destination; it mirrors the scale bar's corner on the right,
-sits 20 px above the banner band, and is a change-detected cache like the rest:
-`mapRepainted` and `resetRaceText()` forget it because both wipe its rect); empty
-state clears the body and
+mark numbers drawn above the circles; empty state clears the body and
 shows a 3-line message; map ≤1Hz, text padded. Spine words (`raceHints()`):
-`MAIN`/`MENU` and `VIEW`/`BEAR`, cell 3 empty (no action on this page) — and
+`MAIN`/`MENU` and the **next option of each axis** — `2S`'s view next
+(`TARGET`/`AUTO`/`MAP`) over `2L`'s bearing next (`HDG`/`WIDE`/`N-UP`), so the
+spine says where you are in both cycles and the chart needs no tag; cell 3 empty
+(no action on this page) — and
 **with no session the only cell is `MENU`, alone and in the long-press colour**,
 because it is the one thing an empty page can do; `2S` is a hard no-op there (it
 used to force a redraw of the empty state, which read as a flicker),
