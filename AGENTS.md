@@ -167,7 +167,8 @@ painted by `hintBarCell()` from the 200 ms pass — it change-detects and repain
 one cell only, so no `requiresInit` bookkeeping is needed, but a FULL-SCREEN
 clear (page switch, `/screen` grab, the race menu's `fillScreen`) must call
 `hintBarReset()` or the warm cache leaves a blank column. MAIN: `RACE CFG` /
-`BEAR DIAG` / `PARTIAL` (`ALL` when a partial is running), RACE: `MAIN MENU` /
+`BEAR DIAG` / `PARTIAL` (or `SESSION` when the partial is on screen: that cell
+names the scope the next `3S` selects), RACE: `MAIN MENU` /
 `VIEW BEAR` (and `MENU` alone when there is no session), `RACE OPTIONS` menu:
 `BACK` / `SELECT` / `PICK`, course picker: `BACK` / `NEXT` / `PICK`, course
 options: `ROW`+`BACK` / `CHANGE` / `START`, CONFIG: `BACK OTA` / `SELECT` /

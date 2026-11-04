@@ -1360,11 +1360,13 @@ void drawScreenSpeed(TinyGPSPlus &gps, bool requiresInit)
   drawMainGrid();
   // MAIN's three cells. Words are page-specific on purpose: button 1 goes to
   // RACE (long: CONFIG), button 2 cycles the ring view (long: DIAGNOSTICS), and
-  // button 3 toggles the stats - so its cell names the state the NEXT press
-  // selects, not a pair.
+  // button 3 toggles the stats - so its cell names the scope the NEXT press
+  // selects, not the one on screen: `PARTIAL` while the session stats are up,
+  // `SESSION` while the partial is. (`SESSION` replaced the old `ALL`, which
+  // read as "everything" rather than "the session totals".)
   hintBarCell(0, "RACE", "CFG", WHITE, HINT_LONG);
   hintBarCell(1, "BEAR", "DIAG", WHITE, HINT_LONG);
-  hintBarCell(2, showPartial ? "ALL" : "PARTIAL", nullptr, WHITE, WHITE);
+  hintBarCell(2, showPartial ? "SESSION" : "PARTIAL", nullptr, WHITE, WHITE);
 }
 
 void screenSpeedButton(
