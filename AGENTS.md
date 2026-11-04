@@ -312,10 +312,15 @@ for old scripts, nothing else.
   `1L` back to the list, `3S` start). Gun 10/30/60/120/300s, line 10/20/30m;
   the line sits `distM` metres UPWIND of the boat. Values + course are
   remembered in NVS (`race` ns `prefCourse`/`prefGun`/`prefDist`) and are
-  written **only on confirm**, so browsing never changes a default. Both boxes
-  live inside the body and are **two-column tables** (label left, value
-  right-aligned), and each has its own spine: picker `BACK`/`NEXT`/`PICK`,
-  options `ROW`+`BACK`/`CHANGE`/`START`.
+  written **only on confirm**, so browsing never changes a default. The picker
+  and the options are **full-screen pages in `RACE OPTIONS`' own chrome** (navy
+  title bar, the same label/value table, the same spine) — `drawTableTitle()` +
+  `drawTableRow()` — not a box floating over the frozen map, so pressing Start
+  never drops the user into a different-looking world. The picker's `1S`/`1L`
+  **returns to `RACE OPTIONS`** (`courseBackToMenu()`), not to the map: that is
+  where the setup was entered from and the race page has nothing to add while it
+  is unfinished. Spine: picker `BACK`/`NEXT`/`PICK`, options
+  `ROW`+`BACK`/`CHANGE`/`START`.
 - Confirming a practice start does BOTH: builds the local session (countdown
   to `startTime = now + gun`) and `POST /sessions` on the backend task with
   `courseId` + placement + `startTime` + this boat, so the session is real on
@@ -371,9 +376,17 @@ for old scripts, nothing else.
   session from menu / or await committee instructions" lines are drawn (centred
   where the old `Race finished` headline sat). Banner precedence: signal (8 s) →
   FINISHED → countdown → OCS → transient.
-- Race screen overlays (menu, course picker, options) carry **no `>` cursor**: the
-  selected row is the yellow one, and the course box is sized off `MAP_W` so it
-  cannot paint over the hint spine.
+- Race screen overlays (**`RACE OPTIONS`, the course picker and that course's
+  options**) are the SAME page in three faces: navy title bar, a column of
+  label/value rows, the hint spine — and **no `>` cursor** (the yellow row is the
+  selection). A row repaints **itself** through `drawTableRow()` and only when its
+  text or its selection changed, so walking the highlight is a two-row touch-up,
+  never a rows-band fill (which read as a flash on every press); `drawTableTitle()`
+  is the only thing that clears, and it resets the row **and** spine caches
+  (`tableRowsForget()` + `hintBarReset()`), because `fillScreen` wipes both.
+  `clearTableRowsFrom()` wipes rows a shorter page no longer uses through the same
+  change-detect. A page-level note must be drawn **after** the rows: a row wipe is
+  a band fill and erases anything in the band below it.
 - Race screen: full-screen overlays (menu, course browse/options) are removed via
   `redrawCurrentPage()`; a REAL session change closes them too, and
   `resetRaceText()` runs on `courseChanged` so the pane (grid+labels) always repaints.

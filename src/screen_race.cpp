@@ -1381,6 +1381,7 @@ static uint8_t courseView = 0;
 static uint8_t courseSel = 0;
 static bool coursePreselected = false; // picker already jumped to the default
 static bool courseDirty = false;
+static bool setupFull = false; // next pass repaints the setup page's title too
 static bool courseAsked = false;
 static bool courseWasReady = false;
 static unsigned long courseT0 = 0;
@@ -1682,6 +1683,77 @@ static const char* menuRowValue(MenuRow r)
     return r == MenuAutoDist ? menuAutoDistVal : "";
 }
 
+// ---- Table rows: one page, three faces ------------------------------------
+// RACE OPTIONS and the practice setup (the course list, then that course's
+// options) are the SAME page in different faces: brand-navy title bar, a column
+// of label/value rows, the hint spine. A row repaints ITSELF and only when its
+// text or its selection changed, so moving the highlight costs two rows — not
+// the rows-band fill it used to be, which read as a flash on every press.
+static const int TABLE_ROW_Y0 = 60;
+static const int TABLE_ROW_DY = 34;
+static const int TABLE_ROWS = 6;
+
+static char tblLabel[TABLE_ROWS][48];
+static char tblValue[TABLE_ROWS][20];
+static int8_t tblSel[TABLE_ROWS];     // -1 = unknown, 0 = plain, 1 = selected
+
+static void tableRowsForget()
+{
+    for (int i = 0; i < TABLE_ROWS; i++) {
+        tblLabel[i][0] = '\0';
+        tblValue[i][0] = '\0';
+        tblSel[i] = -1;
+    }
+}
+
+static void drawTableRow(int i, const char* label, const char* value, bool sel)
+{
+    if (i < 0 || i >= TABLE_ROWS) return;
+    if (!label) label = "";
+    if (!value) value = "";
+    const int8_t s = sel ? 1 : 0;
+    if (tblSel[i] == s && strcmp(tblLabel[i], label) == 0 &&
+        strcmp(tblValue[i], value) == 0) {
+        return; // already on screen, exactly like this
+    }
+    tblSel[i] = s;
+    snprintf(tblLabel[i], sizeof(tblLabel[i]), "%s", label);
+    snprintf(tblValue[i], sizeof(tblValue[i]), "%s", value);
+    const int y = TABLE_ROW_Y0 + i * TABLE_ROW_DY;
+    tft.fillRect(0, y - 4, HINT_BAR_X, TABLE_ROW_DY, TFT_BLACK);
+    tft.setTextColor(sel ? TFT_YELLOW : TFT_WHITE, TFT_BLACK);
+    tft.setTextDatum(TL_DATUM);
+    tft.drawString(label, MENU_LABEL_X, y, 4);
+    if (value[0]) {
+        tft.setTextDatum(TR_DATUM);
+        tft.drawString(value, MENU_VALUE_R, y, 4);
+    }
+}
+
+// A shorter row set (options = 2 rows, menu = 5) must not leave the previous
+// page's longer one standing: rows past `used` are wiped through the same
+// change-detect, so an unchanged blank row costs nothing.
+static void clearTableRowsFrom(int used)
+{
+    for (int i = used < 0 ? 0 : used; i < TABLE_ROWS; i++) {
+        drawTableRow(i, "", nullptr, false);
+    }
+}
+
+// Title bar + rule. A FULL pass is the only thing that touches them, and it
+// also owns the two caches the clear invalidates: the rows and the spine.
+static void drawTableTitle(const char* title)
+{
+    tft.fillScreen(TFT_BLACK);
+    tft.fillRect(0, 0, HINT_BAR_X, 44, brandNavy());
+    tft.setTextColor(TFT_WHITE, brandNavy());
+    tft.setTextDatum(MC_DATUM);
+    tft.drawString(title, HINT_BAR_X / 2, 22, 4);
+    tft.drawFastHLine(0, 44, HINT_BAR_X, MENU_GRAY);
+    tableRowsForget();
+    hintBarReset();
+}
+
 static void drawRaceMenu(bool full)
 {
     // Same chrome as CONFIG: brand-navy title bar, rows in font 4 with a
@@ -1689,30 +1761,14 @@ static void drawRaceMenu(bool full)
     // every label 26 px right and read as clutter at arm's length). The bar and
     // the row band stop at the hint spine, so the column keeps its own pixels
     // and its cells survive a selection change (same rule as MAIN's header).
-    if (full) {
-        tft.fillScreen(TFT_BLACK);
-        tft.fillRect(0, 0, HINT_BAR_X, 44, brandNavy());
-        tft.setTextColor(TFT_WHITE, brandNavy());
-        tft.setTextDatum(MC_DATUM);
-        tft.drawString("RACE OPTIONS", HINT_BAR_X / 2, 22, 4);
-        tft.drawFastHLine(0, 44, HINT_BAR_X, MENU_GRAY);
-    } else {
-        tft.fillRect(0, 52, HINT_BAR_X, 200, TFT_BLACK);
-    }
+    if (full) drawTableTitle("RACE OPTIONS");
     for (uint8_t i = 0; i < menuN; i++) {
-        const uint16_t fg = i == menuSel ? TFT_YELLOW : TFT_WHITE;
-        tft.setTextColor(fg, TFT_BLACK);
-        tft.setTextDatum(TL_DATUM);
-        tft.drawString(menuRowText(menuRows[i]), MENU_LABEL_X, 60 + i * 34, 4);
-        const char* v = menuRowValue(menuRows[i]);
-        if (v && v[0]) {
-            tft.setTextDatum(TR_DATUM);
-            tft.drawString(v, MENU_VALUE_R, 60 + i * 34, 4);
-        }
+        drawTableRow(i, menuRowText(menuRows[i]), menuRowValue(menuRows[i]),
+                     i == menuSel);
     }
+    clearTableRowsFrom(menuN);
     // The menu's own spine: 1S (or 1L - anything but the right button) backs
-    // out, 2S walks the rows, 3S picks the highlighted one. Only the open
-    // transition is a full clear, so the cells repaint themselves here.
+    // out, 2S walks the rows, 3S picks the highlighted one.
     hintBarGrid();
     hintBarCell(0, "BACK", nullptr, TFT_WHITE, TFT_WHITE);
     hintBarCell(1, "SELECT", nullptr, TFT_WHITE, TFT_WHITE);
@@ -1729,6 +1785,21 @@ static void courseClose()
 {
     courseOpen = false;
     courseView = 0;
+    redrawCurrentPage();
+}
+
+// Back out of the practice setup the way it was entered: RACE OPTIONS. The
+// race page has nothing to add while the setup is unfinished, and dropping the
+// user onto the map (the old behaviour) looked like the menu had been abandoned.
+static void courseBackToMenu()
+{
+    courseOpen = false;
+    courseView = 0;
+    menuOpen = true;
+    menuN = buildMenuRows();
+    if (menuSel >= menuN) menuSel = 0;
+    menuFull = true;   // full clear + title: the setup page owned the panel
+    menuDirty = true;
     redrawCurrentPage();
 }
 
@@ -1756,89 +1827,76 @@ static void distCycle(int dir)
     practicePrefsSetDist(PRACTICE_DISTS[cur]);
 }
 
-static void drawCourseOptions()
+// The practice setup page: the course list and that course's options, one at a
+// time, in RACE OPTIONS' own chrome — pressing Start must not drop the user
+// into a different-looking world. `full` repaints the title; the row set is
+// walked on every pass and each row repaints only if it changed.
+static void drawSetupPage(bool full)
 {
-    // Inside the BODY (MAP_W = the panel minus the hint spine): the box used to
-    // be 448 px wide off a 480 px panel and would paint over the spine's cells.
-    const int bx = 12, bw = MAP_W - 24, by = 34, bh = 190;
-    tft.fillRect(bx, by, bw, bh, RBG);
-    tft.drawRect(bx, by, bw, bh, RFG);
-    tft.setTextDatum(TC_DATUM);
-    tft.setTextColor(RFG, RBG);
-    char head[20];
-    const Course* c = courseGet(courseSel);
-    snprintf(head, sizeof(head), "%s", c && c->name[0] ? c->name : "OPTIONS");
-    tft.drawString(head, bx + bw / 2, by + 5, 2);
-    tft.drawFastHLine(bx + 8, by + 26, bw - 16, RDIM);
-
-    const int g = practicePrefs().gunSec;
-    const int d = practicePrefs().distM;
-    char valG[16], valD[16];
-    snprintf(valG, sizeof(valG), "%d:%02d", g / 60, g % 60);
-    snprintf(valD, sizeof(valD), "%3d m", d);
-
-    // Label left, value right-aligned — the same two-column split as the race
-    // menu and CONFIG, so the numbers line up on their own instead of leaning on
-    // hand-padded spaces inside one string.
-    const int lx = bx + 14, vr = bx + bw - 14;
-    for (int row = 0; row < 2; row++) {
-        const int y = by + (row == 0 ? 46 : 76);
-        tft.setTextColor(optRow == row ? TFT_YELLOW : RFG, RBG);
+    if (full) {
+        const Course* c = courseGet(courseSel);
+        const bool opt = (courseView == 1);
+        drawTableTitle(opt ? ((c && c->name[0]) ? c->name : "OPTIONS")
+                           : "SELECT COURSE");
+    }
+    if (courseView == 1) {
+        char vg[16], vd[16];
+        const int g = practicePrefs().gunSec;
+        const int d = practicePrefs().distM;
+        snprintf(vg, sizeof(vg), "%d:%02d", g / 60, g % 60);
+        snprintf(vd, sizeof(vd), "%d m", d);
+        drawTableRow(0, "Gun", vg, optRow == 0);
+        drawTableRow(1, "Distance", vd, optRow == 1);
+        clearTableRowsFrom(2);
+    } else if (!courseReady()) {
+        drawTableRow(0, "COURSES ...", nullptr, false);
+        drawTableRow(1, "asking backend", nullptr, false);
+        clearTableRowsFrom(2);
+    } else if (!courseCount()) {
+        drawTableRow(0, "no courses saved", nullptr, false);
+        clearTableRowsFrom(1);
+    } else {
+        const uint8_t n = courseCount();
+        if (courseSel >= n) courseSel = 0;
+        uint8_t top = courseSel > 2 ? (uint8_t)(courseSel - 2) : 0;
+        if (n > TABLE_ROWS && top + TABLE_ROWS > n) top = (uint8_t)(n - TABLE_ROWS);
+        for (uint8_t r = 0; r < TABLE_ROWS; r++) {
+            if (top + r >= n) {
+                drawTableRow(r, "", nullptr, false);
+                continue;
+            }
+            const Course* t = courseGet(top + r);
+            char nm[48];
+            snprintf(nm, sizeof(nm), "%d  %s", top + r + 1,
+                     (t && t->name[0]) ? t->name : "?");
+            // Font 4 is wide: clip a long name instead of letting it walk into
+            // the hint spine (this face has no value column to stop it).
+            while (nm[0] && tft.textWidth(nm, 4) > (MENU_VALUE_R - MENU_LABEL_X)) {
+                nm[strlen(nm) - 1] = '\0';
+            }
+            drawTableRow(r, nm, nullptr, (top + r) == courseSel);
+        }
+    }
+    // Below the rows, not above them: the row wipe is a band fill and would
+    // erase this note on the very pass that clears the unused rows.
+    if (courseView == 1) {
+        tft.setTextColor(RDIM, RBG);
         tft.setTextDatum(TL_DATUM);
-        tft.drawString(row == 0 ? "Gun" : "Distance", lx, y, 2);
-        tft.setTextDatum(TR_DATUM);
-        tft.drawString(row == 0 ? valG : valD, vr, y, 2);
+        tft.drawString("course placed upwind of you", MENU_LABEL_X,
+                       TABLE_ROW_Y0 + 2 * TABLE_ROW_DY + 14, 2);
     }
-
-    tft.setTextColor(RDIM, RBG);
-    tft.setTextDatum(TL_DATUM);
-    tft.drawString("course placed upwind of you", lx, by + 116, 2);
-}
-
-// Course browse list (below header; map frozen behind it). Repainted on
-// open/selection/fetch-ready only.
-static void drawCourseList()
-{
-    const int bx = 12, bw = MAP_W - 24, by = 34, bh = 190;
-    tft.fillRect(bx, by, bw, bh, RBG);
-    tft.drawRect(bx, by, bw, bh, RFG);
-    tft.setTextDatum(TL_DATUM);
-    tft.setTextColor(RDIM, RBG);
-    if (!courseReady()) {
-        tft.drawString("COURSES ...", bx + 8, by + 5, 2);
-        tft.setTextColor(RFG, RBG);
-        tft.drawString("asking backend", bx + 8, by + 27, 2);
-        return;
+    // The words the buttons actually have while setup owns them: 1S leaves the
+    // list (1L backs out of the options), 2S walks/cycles, 3S picks/starts.
+    hintBarGrid();
+    if (courseView == 1) {
+        hintBarCell(0, "ROW", "BACK", TFT_WHITE, HINT_LONG);
+        hintBarCell(1, "CHANGE", nullptr, TFT_WHITE, TFT_WHITE);
+        hintBarCell(2, "START", nullptr, TFT_WHITE, TFT_WHITE);
+    } else {
+        hintBarCell(0, "BACK", nullptr, TFT_WHITE, TFT_WHITE);
+        hintBarCell(1, "NEXT", nullptr, TFT_WHITE, TFT_WHITE);
+        hintBarCell(2, "PICK", nullptr, TFT_WHITE, TFT_WHITE);
     }
-    const uint8_t n = courseCount();
-    char head[20];
-    snprintf(head, sizeof(head), "COURSES %d", n);
-    tft.setTextDatum(TC_DATUM);
-    tft.drawString(head, bx + bw / 2, by + 5, 2);
-    tft.drawFastHLine(bx + 8, by + 26, bw - 16, RDIM);
-    if (!n) {
-        tft.setTextColor(RFG, RBG);
-        tft.setTextDatum(TL_DATUM);
-        tft.drawString("none saved", bx + 8, by + 30, 2);
-        return;
-    }
-    if (courseSel >= n) courseSel = 0;
-    uint8_t top = courseSel > 2 ? courseSel - 2 : 0;
-    if (top + 6 > n && n > 6) top = n - 6;
-    for (uint8_t r = 0; r < 6 && top + r < n; r++) {
-        const Course* t = courseGet(top + r);
-        if (!t) continue;
-        const int ry = by + 30 + r * 22;
-        const bool sel = (top + r) == courseSel;
-        char nm[36];
-        // No cursor glyph: the selected row is the yellow one (the "> " prefix
-        // used to push the number 26 px in and was the only use of the slot).
-        snprintf(nm, sizeof(nm), "%d %s", top + r + 1, t->name);
-        tft.setTextDatum(TL_DATUM);
-        tft.setTextColor(sel ? TFT_YELLOW : RFG, RBG);
-        tft.drawString(nm, bx + 12, ry, 2);
-    }
-    tft.setTextColor(RDIM, RBG);
 }
 
 // Open the course picker, pre-selected on the remembered course.
@@ -1856,6 +1914,7 @@ static void openCoursePicker()
     courseDirty = true;
     courseAsked = false;
     courseWasReady = courseReady();
+    setupFull = true;   // the setup page takes the whole panel
     redrawCurrentPage();
 }
 
@@ -2070,8 +2129,7 @@ void drawScreenRace(TinyGPSPlus &gps, bool requiresInit)
         // The open transition always takes the full path (clear + title)
         // so no map ghosts survive behind the rows.
         if (menuFull) {
-            drawRaceMenu(true);
-            hintBarReset();   // the full-screen menu took the spine with it
+            drawRaceMenu(true);   // takes the cleared spine with it
             menuFull = false;
             menuDirty = false;
         } else if (menuDirty || mapFull) {
@@ -2268,10 +2326,10 @@ void drawScreenRace(TinyGPSPlus &gps, bool requiresInit)
     if (backendAbandonFailed()) {
         showSignal("ABANDON ERR");
     }
-    if (courseOpen && (courseDirty || mapFull)) {
-        if (courseView == 0) drawCourseList();
-        else drawCourseOptions();
+    if (courseOpen && (courseDirty || mapFull || setupFull)) {
+        drawSetupPage(mapFull || setupFull);
         courseDirty = false;
+        setupFull = false;
     }
 }
 
@@ -2282,20 +2340,21 @@ void screenRaceButton(Button button, ButtonEvent event)
     if (courseOpen) {
         if (button == Button::Left && event == ButtonEvent::ShortPress) {
             if (courseView == 1) {
-                // Options: L moves between the two rows, LL backs out.
+                // Options: 1S moves between the two rows, 1L backs out to the list.
                 optRow = (uint8_t)((optRow + 1) % 2);
                 courseDirty = true;
             } else {
-                courseClose();
+                courseBackToMenu();   // the picker returns to RACE OPTIONS
             }
             return;
         }
         if (button == Button::Left && event == ButtonEvent::LongPress) {
             if (courseView == 1) {
                 courseView = 0; // options -> back to the list
+                setupFull = true;
                 courseDirty = true;
             } else {
-                courseClose();
+                courseBackToMenu();
             }
             return;
         }
@@ -2332,6 +2391,7 @@ void screenRaceButton(Button button, ButtonEvent event)
             }
             courseView = 1; // pick -> options
             optRow = 0;
+            setupFull = true;
             courseDirty = true;
             return;
         }
