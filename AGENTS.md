@@ -309,10 +309,18 @@ for old scripts, nothing else.
 - PRACTICE SETUP: Start → course picker (`2S` next, `3S` choose, `1S` back;
   pre-selected on the remembered course, else Windward-Leeward) → **Options**
   (`2S` cycles the highlighted row's value, `1S` moves between the two rows,
-  `1L` back to the list, `3S` start). Gun 10/30/60/120/300s, line 10/20/30m;
-  the line sits `distM` metres UPWIND of the boat. Values + course are
-  remembered in NVS (`race` ns `prefCourse`/`prefGun`/`prefDist`) and are
-  written **only on confirm**, so browsing never changes a default. The picker
+  `1L` back to the list, `3S` start). Gun 10/30/60/120/300s, line 10/20/30m,
+  **placement Upwind | Ahead**; the line sits `distM` metres from the boat
+  along that direction, and the shape is laid against it — Upwind = the wind
+  (session wind, then the cached venue wind, then the boat's own bearing),
+  Ahead = the boat's own heading, i.e. the course appears where you point
+  (no COG yet degrades to Upwind). Because the backend re-resolves the shape
+  from `courseId + origin + windDir` and the device adopts those marks, the
+  session's `windDir` **is** the placement angle: with Ahead the session wind
+  reads the heading, so the no-go arc follows the course. The row replaced the
+  old "course placed upwind of you" note. Values + course + placement are
+  remembered in NVS (`race` ns `prefCourse`/`prefGun`/`prefDist`/`prefAhead`)
+  and are written **only on confirm**, so browsing never changes a default. The picker
   and the options are **full-screen pages in `RACE OPTIONS`' own chrome** (navy
   title bar, the same label/value table, the same spine) — `drawTableTitle()` +
   `drawTableRow()` — not a box floating over the frozen map, so pressing Start

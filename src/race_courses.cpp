@@ -250,6 +250,7 @@ void practicePrefsLoad()
     sPrefs.courseId = (long)prefs.getInt("prefCourse", -1);
     sPrefs.gunSec = prefs.getInt("prefGun", 30);
     sPrefs.distM = prefs.getInt("prefDist", 20);
+    sPrefs.placeAhead = prefs.getInt("prefAhead", 0) != 0;
     prefs.end();
     // Snap a stale/hand-edited value back to the offered set.
     unsigned gi = 0, di = 0;
@@ -270,6 +271,7 @@ void practicePrefsSave(long courseId)
         prefs.putInt("prefCourse", (int)sPrefs.courseId);
         prefs.putInt("prefGun", sPrefs.gunSec);
         prefs.putInt("prefDist", sPrefs.distM);
+        prefs.putInt("prefAhead", sPrefs.placeAhead ? 1 : 0);
         prefs.end();
     }
 }
@@ -280,6 +282,7 @@ bool practicePrefsValid() { return sPrefs.courseId > 0; }
 // only when a session is actually started (practicePrefsSave).
 void practicePrefsSetGun(int sec) { sPrefs.gunSec = sec; }
 void practicePrefsSetDist(int m) { sPrefs.distM = m; }
+void practicePrefsSetAhead(bool ahead) { sPrefs.placeAhead = ahead; }
 
 // Wind for placement: session wind wins, then the venue wind carried by the
 // health piggyback, then the boat's own bearing (no wind known => assume the
@@ -303,19 +306,29 @@ bool courseStartSession(uint8_t i, double boatLat, double boatLon, long nowEpoch
     if (!t || nowEpoch <= 0) return false;
     const PracticePrefs& p = practicePrefs();
     const int wind = practiceWindDir(boatCourse);
-    // Reference: start-line center in wind-frame (the course origin sits at
+    // PLACEMENT (the options row): the shape is laid against this one angle and
+    // the start line goes p.distM metres from the boat along it.
+    //   Upwind -> the wind (session wind, then venue wind, then the boat's own
+    //             bearing - the fallback practiceWindDir() already applies);
+    //   Ahead  -> the boat's own heading: put the course where you point.
+    //             No COG yet (drifting, no fix) degrades to upwind.
+    // The session's windDir becomes the placement angle on purpose: the backend
+    // re-resolves the shape from courseId + origin + windDir and the device
+    // adopts those marks, so geometry and payload must share one frame.
+    const int place = (p.placeAhead && boatCourse >= 0) ? boatCourse : wind;
+    // Reference: start-line center in course-frame (the course origin sits at
     // the leeward edge), else the origin itself.
     double refX = 0.0, refY = 0.0;
     if (t->startLine.valid) {
         refX = (t->startLine.ax + t->startLine.bx) / 2.0;
         refY = (t->startLine.ay + t->startLine.by) / 2.0;
     }
-    // Desired start center: p.distM metres upwind of the boat (toward windDir).
-    const double wb = wind * M_PI / 180.0;
+    // Desired start center: p.distM metres from the boat along `place`.
+    const double wb = place * M_PI / 180.0;
     const double scLat = boatLat + ((double)p.distM * cos(wb)) / 111320.0;
     const double scLon = boatLon + ((double)p.distM * sin(wb)) / (111320.0 * cos(boatLat * M_PI / 180.0));
     // Origin = start center minus the rotated reference offset.
-    const double wt = wind * M_PI / 180.0;
+    const double wt = place * M_PI / 180.0;
     const double Eoff = refX * cos(wt) + refY * sin(wt);
     const double Noff = -refX * sin(wt) + refY * cos(wt);
     const double originLat = scLat - Noff / 111320.0;
@@ -327,14 +340,14 @@ bool courseStartSession(uint8_t i, double boatLat, double boatLon, long nowEpoch
     strncpy(next.mode, "practice", sizeof(next.mode) - 1);
     strncpy(next.status, "scheduled", sizeof(next.status) - 1);
     next.startTime = nowEpoch + p.gunSec; // the gun the countdown runs to
-    next.windDir = wind;
+    next.windDir = place; // the frame the shape was just resolved in (see above)
     next.windSpeed = practiceWindSpeed();
     next.courseVersion = raceSession.valid ? raceSession.courseVersion + 1 : 1;
     next.markCount = 0;
     for (uint8_t k = 0; k < t->markCount && k < 10; k++) {
         const CourseMark& s = t->marks[k];
         RaceMark& d = next.marks[k];
-        courseResolvePt(originLat, originLon, wind, s.x, s.y, d.lat, d.lon);
+        courseResolvePt(originLat, originLon, place, s.x, s.y, d.lat, d.lon);
         d.r = s.r;
         d.side = s.side;
         d.type = (RaceMarkType)s.type;
@@ -342,7 +355,7 @@ bool courseStartSession(uint8_t i, double boatLat, double boatLon, long nowEpoch
         next.markCount++;
     }
     if (t->startLine.valid) {
-        courseResolveSeg(originLat, originLon, wind, t->startLine,
+        courseResolveSeg(originLat, originLon, place, t->startLine,
                       next.startLine.latA, next.startLine.lonA,
                       next.startLine.latB, next.startLine.lonB);
         next.startLine.valid = true;
@@ -352,7 +365,7 @@ bool courseStartSession(uint8_t i, double boatLat, double boatLon, long nowEpoch
         next.finishLine = next.startLine;
     } else if (t->finishLine.valid) {
         next.finishSameAsStart = false;
-        courseResolveSeg(originLat, originLon, wind, t->finishLine,
+        courseResolveSeg(originLat, originLon, place, t->finishLine,
                       next.finishLine.latA, next.finishLine.lonA,
                       next.finishLine.latB, next.finishLine.lonB);
         next.finishLine.valid = true;
@@ -365,7 +378,7 @@ bool courseStartSession(uint8_t i, double boatLat, double boatLon, long nowEpoch
     // adopted by the UI thread (courseCreatedPoll). Until then the device
     // still runs this local copy, so a failed POST never costs the sailor
     // the start.
-    backendCreateSession(t->id, nowEpoch + p.gunSec, originLat, originLon, wind, next.windSpeed);
+    backendCreateSession(t->id, nowEpoch + p.gunSec, originLat, originLon, place, next.windSpeed);
     practicePrefsSave(t->id);
     bufferedSerialPrintln("[CRS] session started");
     return true;

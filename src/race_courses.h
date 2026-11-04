@@ -24,12 +24,14 @@ struct PracticePrefs {
     long courseId = -1; // -1 = never started a practice session
     int gunSec = 30;     // countdown to the gun
     int distM = 20;      // boat -> start line, metres
+    bool placeAhead = false; // false = laid against the wind, true = your heading
 };
 
 void practicePrefsLoad();               // NVS -> RAM (call once at boot)
 const PracticePrefs& practicePrefs();
 void practicePrefsSetGun(int sec);     // cycles in the options screen
 void practicePrefsSetDist(int m);
+void practicePrefsSetAhead(bool ahead); // course placement row
 void practicePrefsSave(long courseId);  // called on confirm only
 bool practicePrefsValid();              // a course was chosen before
 // Offered countdown lengths (seconds) and boat->start-line distances (m).

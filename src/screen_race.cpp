@@ -1827,6 +1827,12 @@ static void distCycle(int dir)
     practicePrefsSetDist(PRACTICE_DISTS[cur]);
 }
 
+// Placement is a two-way switch (Upwind | Ahead), so there is nothing to walk.
+static void placeCycle()
+{
+    practicePrefsSetAhead(!practicePrefs().placeAhead);
+}
+
 // The practice setup page: the course list and that course's options, one at a
 // time, in RACE OPTIONS' own chrome — pressing Start must not drop the user
 // into a different-looking world. `full` repaints the title; the row set is
@@ -1847,7 +1853,13 @@ static void drawSetupPage(bool full)
         snprintf(vd, sizeof(vd), "%d m", d);
         drawTableRow(0, "Gun", vg, optRow == 0);
         drawTableRow(1, "Distance", vd, optRow == 1);
-        clearTableRowsFrom(2);
+        // Where the course is put relative to the boat: laid against the wind
+        // (the way you would go upwind to the line) or against your own
+        // heading (the shape sits ahead of you). This row replaced the
+        // "course placed upwind of you" note - it IS that sentence, as a choice.
+        drawTableRow(2, "Placement",
+                     practicePrefs().placeAhead ? "Ahead" : "Upwind", optRow == 2);
+        clearTableRowsFrom(3);
     } else if (!courseReady() || courseFetching()) {
         // Not "no courses saved": the pool may still be on its way (or, for a
         // few milliseconds, being rebuilt), and claiming zero rows there is
@@ -1879,14 +1891,6 @@ static void drawSetupPage(bool full)
             }
             drawTableRow(r, nm, nullptr, (top + r) == courseSel);
         }
-    }
-    // Below the rows, not above them: the row wipe is a band fill and would
-    // erase this note on the very pass that clears the unused rows.
-    if (courseView == 1) {
-        tft.setTextColor(RDIM, RBG);
-        tft.setTextDatum(TL_DATUM);
-        tft.drawString("course placed upwind of you", MENU_LABEL_X,
-                       TABLE_ROW_Y0 + 2 * TABLE_ROW_DY + 14, 2);
     }
     // The words the buttons actually have while setup owns them: 1S leaves the
     // list (1L backs out of the options), 2S walks/cycles, 3S picks/starts.
@@ -2348,8 +2352,8 @@ void screenRaceButton(Button button, ButtonEvent event)
     if (courseOpen) {
         if (button == Button::Left && event == ButtonEvent::ShortPress) {
             if (courseView == 1) {
-                // Options: 1S moves between the two rows, 1L backs out to the list.
-                optRow = (uint8_t)((optRow + 1) % 2);
+                // Options: 1S walks Gun -> Distance -> Placement, 1L backs out.
+                optRow = (uint8_t)((optRow + 1) % 3);
                 courseDirty = true;
             } else {
                 courseBackToMenu();   // the picker returns to RACE OPTIONS
@@ -2370,7 +2374,8 @@ void screenRaceButton(Button button, ButtonEvent event)
             // Options: R cycles the highlighted row, RR starts.
             if (button == Button::Right && event == ButtonEvent::ShortPress) {
                 if (optRow == 0) gunCycle(1);
-                else distCycle(1);
+                else if (optRow == 1) distCycle(1);
+                else placeCycle();
                 courseDirty = true;
                 return;
             }
