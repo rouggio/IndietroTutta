@@ -20,47 +20,81 @@ struct HintCell {
 static HintCell cells[HINT_CELLS];
 
 // Draw `word` turned 90 deg clockwise with its top-left corner at (x, y): the
-// box is 16 px wide and 8 px per glyph tall.
+// box is 16 px wide (one font-2 glyph height) and as long as the word's own
+// ADVANCE, not a fixed number of characters.
 //
-// The glyph pixels come from a throwaway 16-bit sprite (font 2, one 8x16 cell
-// at a time) which we re-map ourselves, so the result is a plain image and goes
+// The glyph pixels come from a throwaway 16-bit sprite (font 2, one glyph at a
+// time) which we re-map ourselves, so the result is a plain image and goes
 // out through pushImage — the path the /screen capture already understands.
 // Drawing rotated text directly is not an option: TFT_eSPI rotates per display,
 // not per string, and pushRotated() is non-virtual, i.e. it would bypass the
 // capture target and write to the panel mid-grab.
+//
+// Each glyph advances by its OWN width (font 2 is proportional, ~5..13 px). A
+// fixed 8 px step was clipping the wide letters: the sprite was 8 px wide, so
+// everything past its edge was dropped and "MENU" came out with its stems
+// shaved. A 16 px sprite holds the widest font-2 glyph plus its bearings.
+static int spineCharW(char ch)
+{
+  char s[2] = { ch, 0 };
+  return tft.textWidth(s, 2);
+}
+
+// Length of a word along the spine, in px (the same measure the drawing uses).
+static int spineLen(const char *word)
+{
+  int total = 0;
+  for (const char *p = word; p && *p; ++p) total += spineCharW(*p);
+  return total;
+}
+
 static void drawSpineWord(int x, int y, const char *word, uint16_t fg)
 {
   static const int BOX_W = 16;          // = one font-2 glyph height
   static const int MAX_CH = 12;         // longest label we will ever print
-  static uint16_t buf[BOX_W * 8 * MAX_CH];
+  static const int MAX_ROWS = 120;      // ...and the longest advance it needs
+  static uint16_t buf[BOX_W * MAX_ROWS];
   static TFT_eSprite glyph(gPanel);
   static bool glyphReady = false;
   if (!glyphReady) {
     glyph.setColorDepth(16);
-    glyphReady = (glyph.createSprite(8, 16) != nullptr);
+    glyphReady = (glyph.createSprite(16, 16) != nullptr);
   }
   if (!glyphReady || !word) return;
   const int n = (int)strlen(word);
   if (n < 1 || n > MAX_CH) return;
 
-  const int boxH = n * 8;
-  for (int i = 0; i < BOX_W * boxH; i++) buf[i] = BG;
-
+  // Measure first: the box is exactly the word's advance, so the caller can
+  // centre it on the cell (and stack a second word) with no padding guesswork.
+  int w[MAX_CH];
+  int rows = 0;
   for (int k = 0; k < n; k++) {
+    w[k] = spineCharW(word[k]);
+    if (w[k] < 1) w[k] = 1;
+    rows += w[k];
+  }
+  if (rows > MAX_ROWS) return;
+
+  for (int i = 0; i < BOX_W * rows; i++) buf[i] = BG;
+
+  int cursor = 0;
+  for (int k = 0; k < n; k++) {
+    char ch[2] = { word[k], 0 };
     glyph.fillSprite(BG);
-    glyph.setTextDatum(MC_DATUM);
+    glyph.setTextDatum(TL_DATUM);      // ink anchored at the sprite's origin
     glyph.setTextColor(fg, BG);
-    glyph.drawString(String(word[k]), 4, 8, 2);
+    glyph.drawString(ch, 0, 0, 2);
     for (int sy = 0; sy < 16; sy++)
-      for (int sx = 0; sx < 8; sx++) {
+      for (int sx = 0; sx < w[k]; sx++) {
         // The glyph comes back as ordinary RGB565 from readPixel(); the swap
         // that the panel needs happens once, on the whole box, before the push.
         const uint16_t c = glyph.readPixel(sx, sy);
         if (c != BG) {
           // 90 deg clockwise: the glyph's top-left corner lands top-right.
-          buf[(k * 8 + sx) * BOX_W + (BOX_W - 1 - sy)] = c;
+          buf[(cursor + sx) * BOX_W + (BOX_W - 1 - sy)] = c;
         }
       }
+    cursor += w[k];
   }
   // pushImage does NOT take host-order pixels on this panel: a host-order buffer
   // arrives with R and B swapped (0xFD20 orange arrived as 0x20FD blue, and the
@@ -73,10 +107,10 @@ static void drawSpineWord(int x, int y, const char *word, uint16_t fg)
   // turned blue, and the measured strip colour (255,182,0 vs 32,0,255) said the
   // two paths disagree. Keep them separate: panel swapped, grab as-is.
   if (!gCapture) {
-    for (int i = 0; i < BOX_W * boxH; i++)
+    for (int i = 0; i < BOX_W * rows; i++)
       buf[i] = (uint16_t)((buf[i] >> 8) | (buf[i] << 8));
   }
-  tft.pushImage(x, y, BOX_W, boxH, buf);
+  tft.pushImage(x, y, BOX_W, rows, buf);
 }
 
 void hintBarGrid()
@@ -110,14 +144,18 @@ void hintBarCell(int index, const char *topWord, const char *bottomWord,
   const int cellBot = (HINT_BAR_H * (index + 1)) / HINT_CELLS;
   tft.fillRect(HINT_BAR_X + 1, cellTop + 1, HINT_BAR_W - 2, cellBot - cellTop - 2, BG);
 
-  const int n1 = (int)strlen(topWord);
   const int n2 = (int)strlen(c.bottom.c_str());
-  const int total = n2 ? (n1 + 1 + n2) : n1;      // one glyph slot between them
+  // Measured, not 8 px per character: the glyphs are proportional, and the
+  // block has to be centred on the cell as a whole.
+  const int len1 = spineLen(topWord);
+  const int len2 = n2 ? spineLen(c.bottom.c_str()) : 0;
+  static const int SPINE_GAP = 3;                  // air between the two words
+  const int total = n2 ? (len1 + SPINE_GAP + len2) : len1;
   const int cy = (cellTop + cellBot) / 2;
-  const int y0 = cy - (total * 8) / 2;            // whole block, centred
+  const int y0 = cy - total / 2;                   // whole block, centred
   const int x = HINT_BAR_X + (HINT_BAR_W - 16) / 2;
   drawSpineWord(x, y0, topWord, topColor);
-  if (n2) drawSpineWord(x, y0 + (n1 + 1) * 8, bottomWord, bottomColor);
+  if (n2) drawSpineWord(x, y0 + len1 + SPINE_GAP, bottomWord, bottomColor);
 }
 
 void hintBarReset()

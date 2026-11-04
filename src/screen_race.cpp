@@ -15,6 +15,7 @@
 #include <string.h>
 
 #include "canvas.h"
+#include "hint_bar.h"
 #include "sound.h"
 
 static const uint16_t RBG = TFT_BLACK;
@@ -79,20 +80,28 @@ static const int HDR_H = 30;           // one 26px text row + 4px top inset
 static const int HDR_ROW1_Y = 4;       // glyph top of the row
 static const int HDR_CY = HDR_ROW1_Y + 13; // MC_DATUM centre of a font-4 value
 static const int MAP_X = 0;
-static const int MAP_W = 480;          // full panel width (no side pane)
+// The hint spine is shared chrome now (2026-11-04): the map stops at its left
+// edge instead of running to the panel edge, so 29 px of the width became the
+// instrument's spine — the same column MAIN paints. Every rect below is derived
+// from MAP_W, so the map, its frame, the header grid and the clips all follow.
+static const int MAP_W = HINT_BAR_X;   // 451: body = panel minus the hint spine
 static const int WIRE_TOP = HDR_H + 2; // map top: the map owns from here down
 static const int WIRE_Y1 = 320;        // ...to the panel edge: the map is full-screen
 static const int FRAME_SOUTH = 319;
 // The grid's bottom rule. It closes the three cells AND is the map area's top
 // border: the map fill starts at WIRE_TOP, so this row is never painted over.
 static const int HDR_RULE_Y = WIRE_TOP - 1;  // 31
-// The grid: three cells across 480px, 160 each.
-static const int CELL_EDGE[4] = {0, 160, 320, 480};
-static const int CELL_CX[3] = {80, 240, 400}; // DST | SPD | TIME centres
-// Banner strip: no hint bar any more (the buttons are on the enclosure's right
-// edge), so the bottom of the panel belongs to the map. The banner still needs
-// a slot for the alerts you must not miss (FINISHED, OCS, GO, countdown, a
-// committee signal) — it overlays the map's bottom edge, 30px tall.
+// The grid: three equal cells across the body. Derived, not 160/320/480: the
+// body lost the spine's 29 px (2026-11-04).
+static const int CELL_EDGE[4] = {0, MAP_W / 3, (2 * MAP_W) / 3, MAP_W};
+static const int CELL_CX[3] = {(CELL_EDGE[0] + CELL_EDGE[1]) / 2,
+                               (CELL_EDGE[1] + CELL_EDGE[2]) / 2,
+                               (CELL_EDGE[2] + CELL_EDGE[3]) / 2}; // DST | SPD | TIME
+// Banner strip: the map owns the body down to the panel edge, and the hint
+// spine owns the right column (2026-11-04), so the bottom of the panel is
+// chart. The banner still needs a slot for the alerts you must not miss
+// (FINISHED, OCS, GO, countdown, a committee signal) — it overlays the map's
+// bottom edge, 30px tall, across the body only.
 static const int BAND_Y = 288;
 static const int BAND_H = 30;
 static const int BAND_BANNER_Y = BAND_Y + 2;  // TC top of a font-4 banner
@@ -973,17 +982,19 @@ static void drawRaceMap(TinyGPSPlus& gps, bool full)
             const int cx = MAP_X + MAP_W / 2;
             const int cy = WIRE_TOP + (WIRE_Y1 - WIRE_TOP) / 2;
             tft.setTextDatum(MC_DATUM);
+            // No "Race finished" headline: the FINISHED banner below already
+            // says it and the header holds the frozen time (todo 38), so a third
+            // copy was pure repetition. Only what comes NEXT belongs here.
+            int l1 = cy + 6, l2 = cy + 28;
             if (finHold) {
-                // The race is over and the backend has taken the session away;
-                // the header still carries the result (todo 38), so this must
-                // not claim there was never a session.
-                tft.drawString("Race finished", cx, cy - 34, 4);
+                l1 = cy - 8;
+                l2 = cy + 14;
             } else {
                 tft.drawString("No session available", cx, cy - 34, 4);
             }
             tft.setTextColor(RDIM, RBG);
-            tft.drawString("Start a practice session from menu", cx, cy + 6, 2);
-            tft.drawString("or await committee instructions", cx, cy + 28, 2);
+            tft.drawString("Start a practice session from menu", cx, l1, 2);
+            tft.drawString("or await committee instructions", cx, l2, 2);
             // The view tag sits inside the cleared area; force it back.
             mapRepainted = true;
         }
@@ -1594,7 +1605,8 @@ static void drawRaceText(TinyGPSPlus& gps)
         drawReadoutC(CELL_CX[2], HDR_CY, 4, tim, ovTim, sizeof(ovTim), ovTimW);
     }
 
-    // Bottom strip: BANNER ONLY now (the hint bar is gone). A banner change
+    // Bottom strip: BANNER ONLY (the hint spine lives in its own column, so the
+    // band is body-width). A banner change
     // does NOT clear: the countdown re-renders once a second, and a full-band
     // blank every second would flash the way the header countdown used to, so
     // the banner keeps its suffix erase. The strip is cleared once when it
@@ -1657,8 +1669,9 @@ static const char* menuRowText(MenuRow r)
 
 static void drawRaceMenu(bool full)
 {
-    // Same chrome as CONFIG: brand-navy title bar, `>` rows in font 4 with a
-    // yellow selection, no hint bar (the buttons are on the enclosure's edge).
+    // Same chrome as CONFIG: brand-navy title bar, rows in font 4 with a
+    // yellow selection (colour is the ONLY cursor: the old "> " prefix pushed
+    // every label 26 px right and read as clutter at arm's length).
     if (full) {
         tft.fillScreen(TFT_BLACK);
         tft.fillRect(0, 0, tft.width(), 44, brandNavy());
@@ -1669,12 +1682,10 @@ static void drawRaceMenu(bool full)
     } else {
         tft.fillRect(0, 52, tft.width(), 200, TFT_BLACK);
     }
-    char row[40];
     for (uint8_t i = 0; i < menuN; i++) {
-        snprintf(row, sizeof(row), "%s %s", i == menuSel ? ">" : " ", menuRowText(menuRows[i]));
         tft.setTextDatum(TL_DATUM);
         tft.setTextColor(i == menuSel ? TFT_YELLOW : TFT_WHITE, TFT_BLACK);
-        tft.drawString(row, 12, 60 + i * 34, 4);
+        tft.drawString(menuRowText(menuRows[i]), 12, 60 + i * 34, 4);
     }
 }
 
@@ -1717,7 +1728,9 @@ static void distCycle(int dir)
 
 static void drawCourseOptions()
 {
-    const int bx = 16, bw = 448, by = 34, bh = 190;
+    // Inside the BODY (MAP_W = the panel minus the hint spine): the box used to
+    // be 448 px wide off a 480 px panel and would paint over the spine's cells.
+    const int bx = 12, bw = MAP_W - 24, by = 34, bh = 190;
     tft.fillRect(bx, by, bw, bh, RBG);
     tft.drawRect(bx, by, bw, bh, RFG);
     tft.setTextDatum(TC_DATUM);
@@ -1731,8 +1744,8 @@ static void drawCourseOptions()
     const int g = practicePrefs().gunSec;
     const int d = practicePrefs().distM;
     char rowG[28], rowD[28];
-    snprintf(rowG, sizeof(rowG), "%s Gun      %d:%02d", optRow == 0 ? ">" : " ", g / 60, g % 60);
-    snprintf(rowD, sizeof(rowD), "%s Distance %3d m", optRow == 1 ? ">" : " ", d);
+    snprintf(rowG, sizeof(rowG), "Gun      %d:%02d", g / 60, g % 60);
+    snprintf(rowD, sizeof(rowD), "Distance %3d m", d);
 
     tft.setTextDatum(TL_DATUM);
     tft.setTextColor(optRow == 0 ? TFT_YELLOW : RFG, RBG);
@@ -1748,7 +1761,7 @@ static void drawCourseOptions()
 // open/selection/fetch-ready only.
 static void drawCourseList()
 {
-    const int bx = 16, bw = 448, by = 34, bh = 190;
+    const int bx = 12, bw = MAP_W - 24, by = 34, bh = 190;
     tft.fillRect(bx, by, bw, bh, RBG);
     tft.drawRect(bx, by, bw, bh, RFG);
     tft.setTextDatum(TL_DATUM);
@@ -1780,7 +1793,9 @@ static void drawCourseList()
         const int ry = by + 30 + r * 22;
         const bool sel = (top + r) == courseSel;
         char nm[36];
-        snprintf(nm, sizeof(nm), "%s %d %s", sel ? ">" : " ", top + r + 1, t->name);
+        // No cursor glyph: the selected row is the yellow one (the "> " prefix
+        // used to push the number 26 px in and was the only use of the slot).
+        snprintf(nm, sizeof(nm), "%d %s", top + r + 1, t->name);
         tft.setTextDatum(TL_DATUM);
         tft.setTextColor(sel ? TFT_YELLOW : RFG, RBG);
         tft.drawString(nm, bx + 12, ry, 2);
@@ -1893,6 +1908,30 @@ static void menuConfirm()
     menuClose();
 }
 
+// ---- Hint spine (shared chrome, the same column MAIN paints) --------------
+// One cell per physical button; short press above, long press below. RACE names
+// its own gestures: 1S leaves for MAIN, 1L opens the menu, 2S cycles the VIEW
+// (Map -> Target -> Auto), 2L the BEARING (north-up -> heading-up -> wide); the
+// third button has no action on this page, so its cell stays empty.
+//
+// With NO session the page offers exactly ONE action — the menu — and it is a
+// LONG press, so the cell carries the single word alone and in the long-press
+// colour. Nothing else is offered because nothing else would do anything:
+// 1S still pages away, but a hint is a promise about this screen, and on an
+// empty screen the only thing to do is open the menu.
+static void raceHints()
+{
+    hintBarGrid();
+    if (raceSession.valid) {
+        hintBarCell(0, "MAIN", "MENU", TFT_WHITE, HINT_LONG);
+        hintBarCell(1, "VIEW", "BEAR", TFT_WHITE, HINT_LONG);
+    } else {
+        hintBarCell(0, "MENU", nullptr, HINT_LONG, HINT_LONG);
+        hintBarCell(1, "", nullptr, HINT_LONG, HINT_LONG);
+    }
+    hintBarCell(2, "", nullptr, TFT_WHITE, TFT_WHITE);
+}
+
 void drawScreenRace(TinyGPSPlus &gps, bool requiresInit)
 {
     raceSampleFix(gps);
@@ -1902,6 +1941,9 @@ void drawScreenRace(TinyGPSPlus &gps, bool requiresInit)
         tft.fillScreen(RBG);
         mapDirty = true; // force a full map redraw after the clear
         resetRaceText();
+        // ...and the spine with it: the cells are change-detected, so a cleared
+        // column with a warm cache would never repaint (same rule as MAIN).
+        hintBarReset();
         // A REPAINT MUST NEVER RESET THE RUN. This used to call
         // raceRunReset() whenever !raceRunStarted(), and `started` only
         // becomes true once the START is SCORED — so any redraw before that
@@ -1976,6 +2018,7 @@ void drawScreenRace(TinyGPSPlus &gps, bool requiresInit)
         // so no map ghosts survive behind the rows.
         if (menuFull) {
             drawRaceMenu(true);
+            hintBarReset();   // the full-screen menu took the spine with it
             menuFull = false;
             menuDirty = false;
         } else if (menuDirty || mapFull) {
@@ -2154,6 +2197,7 @@ void drawScreenRace(TinyGPSPlus &gps, bool requiresInit)
         }
     }
     drawRaceText(gps);
+    raceHints();
     // The backend answers a device-started create asynchronously: adopt the
     // real session id as soon as it lands (until then the local copy runs).
     long createdId = 0;
@@ -2276,7 +2320,11 @@ void screenRaceButton(Button button, ButtonEvent event)
         return;
     }
     // Right short: cycle map views — overall, next-target, auto (10/50/100/200 m).
+    // With NO session there is no picture to re-frame: the cycle would only
+    // force a redraw of the empty state, which reads as a flicker and changes
+    // nothing, so the press is a no-op (the mode is not even advanced).
     if (button == Button::Right && event == ButtonEvent::ShortPress) {
+        if (!raceSession.valid) return;
         focusMode = (focusMode + 1) % 3;
         focusEnabled = (focusMode == 1); // auto upgrades in draw pass
         focusNext = focusEnabled;

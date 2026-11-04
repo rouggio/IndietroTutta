@@ -7,9 +7,10 @@
 // THIRDS — one cell per physical button, at the button.
 //
 // The text is rotated 90 degrees (a spine label: letters on their side, read
-// top to bottom) because rotation is what lets a real word fit 4.5 mm: 8 glyphs
-// are 64 px down a 16 px column, where upright stacked letters would cost
-// 128 px AND a second 8 px column beside them.
+// top to bottom) because rotation is what lets a real word fit 4.5 mm: the
+// glyphs advance along the column at their own font-2 widths (~11 px each), so
+// 8 glyphs are ~90 px down a 16 px column, where upright stacked letters would
+// cost 128 px AND a second 8 px column beside them.
 //
 // A cell carries up to two words: the SHORT press on top in `topColor`, the
 // LONG press beneath in `bottomColor`. A cell with no long press passes nullptr

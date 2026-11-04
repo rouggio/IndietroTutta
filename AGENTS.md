@@ -160,11 +160,19 @@ one font-4 (26 px) value per line right-aligned at `AVGMAX_VALUE_R`, each with i
 own font-2 caption at the cell's left edge (`AVGMAX_ROW1_Y` 248 / `AVGMAX_ROW2_Y`
 290), and each line wipes only itself (the average moves every fix, the max
 rarely). Right edge: a 29 px (4.5 mm) **hint spine** running the FULL panel height,
-cut into three cells at the panel thirds — one label per physical button, turned
+cut into three cells at the panel thirds — one cell per physical button, turned
 90° (spine text: letters on their side, read top to bottom), short press WHITE
-and long press GRAY: `RACE CFG`, `BEAR DIAG`, `PART ALL`. It replaces the old
-"No hint bar" rule; the words are page-specific, and RACE/DIAG/CONFIG would need
-their own three (`drawHints()` paints once per page init, `hintsDrawn`).
+over long press **orange** (`HINT_LONG` 0xFD20). Words are page-specific and
+painted by `hintBarCell()` from the 200 ms pass — it change-detects and repaints
+one cell only, so no `requiresInit` bookkeeping is needed, but a FULL-SCREEN
+clear (page switch, `/screen` grab, the race menu's `fillScreen`) must call
+`hintBarReset()` or the warm cache leaves a blank column. MAIN: `RACE CFG` /
+`BEAR DIAG` / `PARTIAL` (`ALL` when a partial is running), RACE: `MAIN MENU` /
+`VIEW BEAR` (and `MENU` alone when there is no session), CONFIG: `BACK OTA` /
+`SELECT` / `TOGGLE`. **The renderer advances by each glyph's MEASURED width**
+(`spineCharW`/`spineLen`): a fixed 8 px step out of an 8 px sprite shaved the wide
+font-2 letters, so `MENU` came out with its stems cut — the sprite is now 16 px
+and the box length is the word's own advance.
 Ring cell (spans both rows, `cmpCx` = `SPEED_W` + 94, `cmpCy` = `BODY_TOP` + 94):
 a **2 px** ring line (TFT_eSPI has no pen width, so two adjacent circles at r and
 r-1 — `drawCompassCircle()`), 30° radial ticks that are TRUE-BEARING marks and
@@ -178,17 +186,20 @@ flicker rule: every element is change-detected on its own angle, erased in BG at
 its PREVIOUS geometry and repainted in z-order band → wind → boat, with damage
 propagation in both directions (a moved shape drags its neighbours and the band
 back in) — see the block comment before the gate.
-`screen_race.*` shared RACE/PRAC screen (map viewport = left 4/5; wireframe +
-
-`screen_race.*` shared RACE/PRAC screen (map viewport = left 4/5; wireframe +
+`screen_race.*` shared RACE/PRAC screen: **body = the panel minus the hint spine**
+(`MAP_W` = `HINT_BAR_X` 451 since 2026-11-04 — the map, its frame, the 3-cell
+header grid and every clip derive from `MAP_W`, so nothing paints over the
+spine). Header = one font-4 row DST | SPD | TIME, plus the 30 px alert banner
+over the map's bottom edge; map = wireframe +
 boat triangle/edge-dot + ~1 cm dashed yellow stub toward the next mark (2/3 the
 length of the COG stub) + a cyan dashed stub along the boat's own COG (`gps.course`,
 only above 0.5 kn, clipped to the map rect — it can point into the header band);
-right pane =
-6 equal rows from the very top, labels via `drawLabel1`, values font-2 right-aligned,
-WND row = wind arrow + whole-knot speed; mark numbers drawn above the circles;
-N-UP/BRG-UP/FIT view tag; empty state clears map+pane and shows a 3-line message;
-map ≤1Hz, text padded),
+mark numbers drawn above the circles; view tag; empty state clears the body and
+shows a 3-line message; map ≤1Hz, text padded. Spine words (`raceHints()`):
+`MAIN`/`MENU` and `VIEW`/`BEAR`, cell 3 empty (no action on this page) — and
+**with no session the only cell is `MENU`, alone and in the long-press colour**,
+because it is the one thing an empty page can do; `2S` is a hard no-op there (it
+used to force a redraw of the empty state, which read as a flicker),
 `gps_mock.*` scripted GPS for indoor testing: ONE request buys the WHOLE
 journey (`GET /sim/tape`, CSV, ~18KB) into a 640-fix tape in RAM, released one
 fix per second and synthesised into RMC+GGA for `gps.encode()` (the endless
@@ -246,7 +257,8 @@ for old scripts, nothing else.
   is named in the cell's top-left corner `North`/`Head`/`Wind`, with
   `/status` `sys.ring` reporting mode vs drawn),
   `2L`→DIAGNOSTICS. RACE: `1S` next, `2S` cycles the **view** Map → Target →
-  Auto, `2L` toggles the **bearing** north-up ↔ heading-up, `1L`→MENU.
+  Auto (**no-op with no session** — there is no picture to re-frame), `2L`
+  toggles the **bearing** north-up ↔ heading-up, `1L`→MENU.
   DIAGNOSTICS/CONFIG: `1S` back to MAIN.
 - **Terminology, race screen — canonical, use these words in code comments,
   docs and bug reports**:
@@ -345,7 +357,14 @@ for old scripts, nothing else.
   backend drops the finished session** (it returns `session:null` seconds after
   the run uploads) until a new run/session arrives or the page is left
   (`raceFinishHoldClear()` from `screens.cpp`). The distance readout blanks while
-  held. Banner precedence: signal (8 s) → FINISHED → countdown → OCS → transient.
+  held, and the empty state does **not** repeat the word: the `FINISHED` banner
+  already says it and the header holds the time, so only the "start a practice
+  session from menu / or await committee instructions" lines are drawn (centred
+  where the old `Race finished` headline sat). Banner precedence: signal (8 s) →
+  FINISHED → countdown → OCS → transient.
+- Race screen overlays (menu, course picker, options) carry **no `>` cursor**: the
+  selected row is the yellow one, and the course box is sized off `MAP_W` so it
+  cannot paint over the hint spine.
 - Race screen: full-screen overlays (menu, course browse/options) are removed via
   `redrawCurrentPage()`; a REAL session change closes them too, and
   `resetRaceText()` runs on `courseChanged` so the pane (grid+labels) always repaints.
