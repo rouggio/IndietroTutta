@@ -88,6 +88,11 @@ static QueueHandle_t workQueue = nullptr;
 static TaskHandle_t backendTaskHandle = nullptr;
 static TaskHandle_t healthTaskHandle = nullptr;
 static volatile bool online = false;
+// Todo 67: per-boot RANDOM STREAM ID. Every fix carries it (HTTP header
+// Stream-Id) and the backend keeps it on the point, so the map can split a
+// boat's day into streams EXACTLY - a reboot starts a new one - instead of
+// guessing from gaps. RAM only, on purpose: surviving a reboot defeats it.
+static char streamId[9] = {0};
 static volatile bool healthNow = false;
 static volatile bool courseWant = false;
 static volatile bool createWant = false;
@@ -267,6 +272,10 @@ static int sendPosition(const BackendWork &w)
     link.http.addHeader("Content-Type", "application/json");
     link.http.addHeader("DeviceId", String(WiFi.macAddress()));
     link.http.addHeader("Firmware-Version", BUILD_VERSION);
+    // Todo 67: this boot's random stream id. The backend stores it with every
+    // fix, so two data streams can be told apart EXACTLY (a reboot is a new
+    // stream, and so is two outings after one) instead of guessing from gaps.
+    if (streamId[0]) link.http.addHeader("Stream-Id", streamId);
 
     String body = "{";
     body += "\"lat\":" + String(w.lat, 7);
@@ -657,9 +666,14 @@ static void healthTask(void *param)
 // UI-thread side: cheap, never blocking
 // ---------------------------------------------------------
 
+const char* deviceStreamId() { return streamId; }
+
 void backendInit(TinyGPSPlus* gps)
 {
     mainGps = gps;
+    if (!streamId[0]) {
+        snprintf(streamId, sizeof(streamId), "%08X", (unsigned)esp_random());
+    }
     if (workQueue) {
         return;
     }

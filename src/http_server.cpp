@@ -736,6 +736,9 @@ static void handleStatus()
     sys["username"] = config.username;
     sys["mock"] = gpsMockActive();
     sys["server"] = serverBaseUrl();
+    // Todo 67: this boot's random stream id - the value every /gps fix carries,
+    // so two streams can be told apart exactly. Changes on every reboot.
+    sys["stream"] = deviceStreamId();
     // AP name is per-board ("IndietroTutta-XXXX", MAC suffix) so boards in
     // range never collide; handy when the portal has to be opened by hand.
     sys["ap"] = wifiApSsid();

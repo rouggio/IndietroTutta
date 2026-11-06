@@ -127,6 +127,12 @@ new retry path needs the same discipline.
   creates waypoints — flagged/deleted points are a WEB-side feature, backend
   `/gps?flagged=true` + `DELETE /gps/flagged` stay for the builder's waypoint adopter),
 - Task drains queue → `POST /gps`, plus `GET /health` every 30s.
+- **Every fix carries a per-boot RANDOM STREAM ID** (todo 67): `backendInit()`
+  makes 8 hex chars with `esp_random()` (RAM only — a restart IS a new stream) and
+  `sendPosition()` sends them as the `Stream-Id` header. The backend stores it on
+  the point (`gps_points.stream`) so the map splits a boat's day into streams
+  **exactly** instead of inferring breaks from gaps; `/status` reports it as
+  `sys.stream`, which changes on every reboot.
 - `backendLoop()` adaptive GPS throttle: `30s@0kn → 2s@5kn` linear (`gpsIntervalForSpeed`).
 - `backend.h: backendOnline()`, `backendOnlineFresh()` (health <60s old — gates
   the race screen), `backendFetchCourses()`, `backendCreateSession()` +
@@ -580,7 +586,8 @@ for old scripts, nothing else.
 - `GET /health` headers `DeviceId:<MAC>` + `Username:`; response body parsed for
   `session` push (course + startTime + offset, cached in NVS) and top-level `wind`
   (venue wind at the boat's last stored position, env fallback, RAM); `POST /gps`
-  JSON lat/lon/speed/course/alt/sats/flagged/username. `setInsecure()` everywhere, no auth.
+  JSON lat/lon/speed/course/alt/sats/flagged/username, plus the `Stream-Id` header
+  (`DeviceId`/`Firmware-Version` likewise). `setInsecure()` everywhere, no auth.
 - `server_link.*`: dev/prod switch (NVS `srv` mode/host, portal `/server`); dev+host = plain HTTP to LAN backend, else TLS prod. All fetchers (`health/gps/sim/courses/OTA`) go through `ServerLink`.
 - **`/screen` captures in 320x40 bands (fw 1.0.374) - it needs 12.8 KB of
   contiguous heap, not 77 KB.** The old capture was one 320x240 8bpp sprite: a

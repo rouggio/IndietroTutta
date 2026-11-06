@@ -33,6 +33,11 @@ bool backendTakeRacePageRequest();
 
 void backendInit(TinyGPSPlus* gps);
 
+// Todo 67: the random id this boot stamps on every fix ("" before backendInit).
+// The backend stores it per point, so two data streams are told apart exactly;
+// /status reports it as sys.stream.
+const char* deviceStreamId();
+
 void backendLoop(TinyGPSPlus &gps);
 
 // Bytes still unused on the backend task's stack at the worst moment since
